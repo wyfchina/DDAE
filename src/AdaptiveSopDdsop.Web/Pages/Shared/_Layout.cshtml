@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"]</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <header class="topbar">
+        <a class="brand" asp-page="/Index">
+            <span class="brand-mark">DD</span>
+            <span>Adaptive Enterprise</span>
+        </a>
+        <nav>
+            <a href="#kpiGrid">KPI</a>
+            <a href="#processSection">流程</a>
+            <a href="#scenarioSection">DDS&amp;OP</a>
+            <a href="#financialSection">财务</a>
+            <a href="#feedbackSection">反馈</a>
+            <a href="#decisionSection">决策</a>
+        </nav>
+    </header>
+    <main class="page-shell">
+        @RenderBody()
+    </main>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
