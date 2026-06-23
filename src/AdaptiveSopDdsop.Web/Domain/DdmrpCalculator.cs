@@ -20,7 +20,7 @@ public sealed class DdmrpCalculator
         var zones = CalculateZones(sku);
         var netFlow = CalculateNetFlow(position);
         var status = GetBufferStatus(netFlow, zones);
-        var shouldOrder = netFlow < zones.TopOfYellow;
+        var shouldOrder = netFlow <= zones.TopOfYellow;
         var quantity = shouldOrder ? zones.TopOfGreen - netFlow : 0;
         var action = shouldOrder ? "Order" : "Observe";
         return new PlanningRecommendation(

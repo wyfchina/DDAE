@@ -1,309 +1,344 @@
 @page
 @model IndexModel
 @{
-    ViewData["Title"] = "Adaptive S&OP + DDS&OP";
+    ViewData["Title"] = "场景运行工作台";
 }
 
-<section class="hero">
-    <div>
-        <p class="eyebrow">Demand Driven Adaptive Enterprise</p>
-        <h1>Adaptive S&amp;OP 与 DDS&amp;OP 实用决策驾驶舱</h1>
-        <p class="hero-copy">
-            面向 CEO 与 C-Level 的月度跨职能流程：上层管理 24-36 个月战略、财务和产品组合，
-            中层 DDS&amp;OP 把战略翻译成 DDOM 主设置，并用真实运营反馈反向校验战略可行性。
-        </p>
-    </div>
-    <div class="hero-panel">
-        <span>当前教学模型</span>
-        <strong>AS&amp;OP + DDS&amp;OP</strong>
-        <small>4 个中文产品族、12 个 SKU、36 个月展望期、DDMRP 缓冲区与三性反馈验证数据</small>
-    </div>
-</section>
-
-<section class="kpi-grid" id="kpiGrid"></section>
-
-<section class="wide-section" id="processSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Single Game Plan</p>
-            <h2>跨职能月度闭环</h2>
+<div id="scenario-workspace-app" class="app-shell">
+    <aside id="primary-navigation" class="navigation" aria-label="主导航">
+        <div class="brand-block">
+            <div class="brand-mark" aria-hidden="true">DD</div>
+            <div class="brand-copy">
+                <strong>DDAE</strong>
+                <span>需求驱动 S&OP 工作台</span>
+            </div>
         </div>
-        <span class="badge" id="horizonBadge">36 个月滚动展望</span>
-    </div>
-    <div class="module-grid two">
-        <article>
-            <h3>Adaptive S&amp;OP 高管流程</h3>
-            <div class="table-wrap compact"><table><tbody id="asopStepsBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>DDS&amp;OP 战术衔接 Hub</h3>
-            <div class="table-wrap compact"><table><tbody id="ddsopElementsBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
-
-<section class="wide-section" id="portfolioSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Portfolio / New Activities</p>
-            <h2>产品组合、NPI 与退出治理</h2>
-        </div>
-        <span class="badge">每月第一步</span>
-    </div>
-    <div class="table-wrap"><table><tbody id="portfolioBody"></tbody></table></div>
-</section>
-
-<section class="wide-section" id="financialSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Monetized Plan</p>
-            <h2>36 个月财务化投影</h2>
-        </div>
-        <span class="badge">收入 / 贡献毛利 / ROI / 现金缺口</span>
-    </div>
-    <div class="table-wrap"><table><tbody id="financialProjectionBody"></tbody></table></div>
-</section>
-
-<section class="wide-section" id="resourceSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Resource Profile / RRP</p>
-            <h2>高层资源、供应商与资本可行性</h2>
-        </div>
-        <span class="badge">红黄绿约束</span>
-    </div>
-    <div class="module-grid three">
-        <article>
-            <h3>瓶颈资源剖面</h3>
-            <div class="table-wrap compact"><table><tbody id="resourceProfileBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>关键供应商约束</h3>
-            <div class="table-wrap compact"><table><tbody id="supplierBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>资本与固定成本边界</h3>
-            <div class="table-wrap compact"><table><tbody id="capitalBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
-
-<section class="wide-section" id="settingsSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Master Settings</p>
-            <h2>DDOM 主设置、已知事件与能力缓冲</h2>
-        </div>
-        <span class="badge">替代传统远期 MPS</span>
-    </div>
-    <div class="module-grid three">
-        <article>
-            <h3>库存 / 时间 / 产能 / 解耦点设置</h3>
-            <div class="table-wrap compact"><table><tbody id="masterSettingsBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>已知事件与 DAF</h3>
-            <div class="table-wrap compact"><table><tbody id="eventsBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>技能与保护性能力</h3>
-            <div class="table-wrap compact"><table><tbody id="skillBufferBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
-
-<main class="workspace" id="scenarioSection">
-    <aside class="process-panel">
-        <div class="panel-title">
-            <span>DDS&amp;OP 主设置</span>
-            <strong>驾驶员视角</strong>
-        </div>
-        <ol class="steps">
-            <li class="active"><b>1</b><span>读取真实 DDOM 偏差</span></li>
-            <li><b>2</b><span>识别已知事件与外部变化</span></li>
-            <li><b>3</b><span>调整 DAF / 区域调整因子</span></li>
-            <li><b>4</b><span>配置库存、时间、产能缓冲</span></li>
-            <li><b>5</b><span>形成战术机会或战略建议</span></li>
-        </ol>
-        <div class="doctrine">
-            <strong>管理原则</strong>
-            <p>DDAE 不把远期 MPS 当作战略流程的核心输出，而是维护解耦点与缓冲区主设置，让执行层由真实订单和 Net Flow Equation 拉动。</p>
+        <nav class="nav-list">
+            <a class="nav-item is-active" href="#overview-panel"><span class="nav-index">01</span><span>总览</span></a>
+            <a class="nav-item" href="#data-readiness-panel"><span class="nav-index">02</span><span>数据准备</span></a>
+            <a class="nav-item" href="#scenario-run-panel"><span class="nav-index">03</span><span>场景运行</span></a>
+            <a class="nav-item" href="#scenario-comparison"><span class="nav-index">04</span><span>方案比较</span></a>
+            <a class="nav-item" href="#rccp-panel"><span class="nav-index">05</span><span>RCCP</span></a>
+            <a class="nav-item" href="#buffer-trend-panel"><span class="nav-index">06</span><span>缓冲趋势</span></a>
+            <a class="nav-item" href="#projected-supply-panel"><span class="nav-index">07</span><span>供应需求</span></a>
+            <a class="nav-item" href="#variance-panel"><span class="nav-index">08</span><span>异常中心</span></a>
+        </nav>
+        <div class="navigation-footer">
+            <span class="service-dot" aria-hidden="true"></span>
+            <span>本地数据源已连接</span>
         </div>
     </aside>
 
-    <section class="scenario-card">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">DDS&amp;OP Scenario Lab</p>
-                <h2>战术情景与 DDMRP 缓冲投影</h2>
-            </div>
-            <button id="resetBtn" class="ghost-button" type="button">恢复基线</button>
-        </div>
-
-        <div class="control-grid">
-            <label>
-                <span>促销需求上调</span>
-                <input id="promotionPercent" type="range" min="0" max="40" step="5" value="0" />
-                <output id="promotionPercentOut">0%</output>
-            </label>
-            <label>
-                <span>供应中断周数</span>
-                <input id="supplyDisruptionWeeks" type="range" min="0" max="6" step="1" value="0" />
-                <output id="supplyDisruptionWeeksOut">0 周</output>
-            </label>
-            <label>
-                <span>计划停线天数</span>
-                <input id="plannedShutdownDays" type="range" min="0" max="10" step="1" value="0" />
-                <output id="plannedShutdownDaysOut">0 天</output>
-            </label>
-            <label>
-                <span>新品周需求</span>
-                <input id="newProductWeeklyDemand" type="range" min="0" max="600" step="50" value="0" />
-                <output id="newProductWeeklyDemandOut">0</output>
-            </label>
-        </div>
-
-        <div class="split-panels">
-            <article>
-                <h3>DDOM / DDMRP 缓冲投影</h3>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>SKU</th>
-                                <th>ADU</th>
-                                <th>状态</th>
-                                <th>Net Flow</th>
-                                <th>建议补货</th>
-                                <th>现金占用</th>
-                            </tr>
-                        </thead>
-                        <tbody id="skuProjectionBody"></tbody>
-                    </table>
+    <div class="application-area">
+        <header class="top-context">
+            <div class="top-context-leading">
+                <button id="navigation-toggle" class="icon-button" type="button" aria-label="切换导航">&#9776;</button>
+                <div class="factory-context">
+                    <span class="context-label">计划范围</span>
+                    <strong>卫星制造企业</strong>
                 </div>
-            </article>
-            <article>
-                <h3>Management Review 行动建议</h3>
-                <ul id="actionsList" class="actions"></ul>
-            </article>
-        </div>
+            </div>
+            <div class="context-strip" aria-label="计划上下文">
+                <div class="context-item">
+                    <span class="context-label">主数据版本</span>
+                    <strong id="master-data-version">演示数据-2026-06</strong>
+                </div>
+                <div class="context-item">
+                    <span class="context-label">运行快照</span>
+                    <strong id="snapshot-freshness">未加载</strong>
+                </div>
+                <div class="context-item">
+                    <span class="context-label">系统健康</span>
+                    <strong id="system-health" class="status-inline is-loading">检查中</strong>
+                </div>
+            </div>
+            <div class="top-actions">
+                <button id="refresh-workspace" class="button secondary" type="button">刷新</button>
+                <div class="user-context">
+                    <span class="user-avatar" aria-hidden="true">PL</span>
+                    <span><strong>计划员</strong><small>计划角色</small></span>
+                </div>
+            </div>
+        </header>
 
-        <article class="guardrail-panel">
-            <div class="section-head">
+        <main id="workspace" class="workspace" tabindex="-1">
+            <div class="page-heading">
                 <div>
-                    <p class="eyebrow">AS&amp;OP Guardrails</p>
-                    <h3>授权栅栏校验</h3>
+                    <p class="eyebrow">场景运行工作台</p>
+                    <h1>需求驱动 S&OP 场景运行工作台</h1>
+                    <p class="page-description">基于卫星制造基础数据，运行非持久化场景预览，比较基准方案与预览方案的影响。</p>
                 </div>
-                <span id="guardrailStatus" class="status">待计算</span>
+                <span id="route-status" class="status-chip neutral">正在加载</span>
             </div>
-            <p id="guardrailDecision" class="guardrail-decision"></p>
-            <div class="table-wrap compact">
-                <table>
-                    <tbody id="guardrailBody"></tbody>
-                </table>
+
+            <section id="workspace-loading" class="readiness-banner is-loading" aria-live="polite">
+                <div>
+                    <span class="context-label">数据状态</span>
+                    <strong>正在读取场景工作台数据</strong>
+                    <p>当前阶段支持场景预览重算，但不保存、不审批、不调用优化求解器。</p>
+                </div>
+            </section>
+
+            <div id="workspace-error" class="persistent-error" role="alert" hidden>
+                <strong>无法读取场景工作台数据</strong>
+                <span id="workspace-error-message">请检查本地服务后刷新。</span>
             </div>
-        </article>
-    </section>
-</main>
 
-<section class="wide-section" id="planRunSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">White-box Plan Run</p>
-            <h2>缓冲补货投影与需求驱动 RCCP</h2>
-        </div>
-        <span class="badge">Net Flow -> Order -> Capacity</span>
-    </div>
-    <div class="module-grid two">
-        <article>
-            <h3>Buffer Trend Graph</h3>
-            <div class="table-wrap compact"><table><tbody id="bufferTrendBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>Demand Driven RCCP</h3>
-            <div class="table-wrap compact"><table><tbody id="rccpLoadBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>Projected Supply Requirements</h3>
-            <div class="table-wrap compact"><table><tbody id="supplyRequirementBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>Calculation Trace</h3>
-            <div class="table-wrap compact"><table><tbody id="planTraceBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
+            <section id="overview-panel" class="workspace-section" hidden>
+                <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标"></div>
+            </section>
 
-<section class="wide-section" id="feedbackSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">DDOM Performance Feedback</p>
-            <h2>可靠性、稳定性、流速偏差分析</h2>
-        </div>
-        <span class="badge">运行图 / 帕累托 / 例外频率</span>
-    </div>
-    <div class="module-grid two">
-        <article>
-            <h3>三性运行图</h3>
-            <div class="table-wrap compact"><table><tbody id="feedbackBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>根因帕累托</h3>
-            <div id="paretoBody" class="bar-list"></div>
-        </article>
-    </div>
-</section>
+            <section id="data-readiness-panel" class="workspace-section" hidden>
+                <div class="result-context-bar" aria-label="筛选条件">
+                    <label><span>产品族</span><select id="family-filter"></select></label>
+                    <label><span>SKU</span><select id="sku-filter"></select></label>
+                    <label><span>资源</span><select id="resource-filter"></select></label>
+                    <label><span>供应风险</span><select id="risk-filter"></select></label>
+                    <button id="clear-filters" class="button secondary" type="button">清除筛选</button>
+                </div>
+                <div class="readiness-grid">
+                    <section class="readiness-panel">
+                        <div class="panel-heading">
+                            <div><span class="panel-kicker">主数据</span><h2>数据覆盖</h2></div>
+                            <span id="data-status-chip" class="status-chip neutral">未加载</span>
+                        </div>
+                        <dl id="data-readiness-list" class="metadata-list"></dl>
+                    </section>
+                    <section class="readiness-panel">
+                        <div class="panel-heading">
+                            <div><span class="panel-kicker">业务栅栏</span><h2>采纳约束</h2></div>
+                        </div>
+                        <div class="table-scroll"><table class="data-table"><tbody id="guardrail-table-body"></tbody></table></div>
+                    </section>
+                </div>
+            </section>
 
-<section class="wide-section" id="decisionSection">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Strategic Adaptive Loop</p>
-            <h2>战术机会、战略建议与远期可行性校验</h2>
-        </div>
-        <span class="badge">向上反馈给 AS&amp;OP</span>
-    </div>
-    <div class="module-grid three">
-        <article>
-            <h3>战术开拓</h3>
-            <div class="table-wrap compact"><table><tbody id="tacticalOpportunityBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>战略建议渠道</h3>
-            <div class="table-wrap compact"><table><tbody id="strategicRecommendationBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>运营可行性校验</h3>
-            <div class="table-wrap compact"><table><tbody id="feasibilityBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
+            <section id="scenario-run-panel" class="workspace-section" hidden>
+                <div class="panel-heading">
+                    <div>
+                        <span class="panel-kicker">场景配置</span>
+                        <h2>运行预览</h2>
+                    </div>
+                    <span id="preview-persistence-chip" class="status-chip is-paused">预览结果，未保存</span>
+                </div>
+                <div class="scenario-run-layout">
+                    <section class="scenario-config-panel">
+                        <div class="form-grid compact">
+                            <label><span>场景模板</span><select id="template-select"></select></label>
+                            <label><span>采纳约束</span><select id="adoption-constraint-select">
+                                <option value="Balanced">综合平衡</option>
+                                <option value="ServiceFirst">服务优先</option>
+                                <option value="FlowFirst">流速优先</option>
+                                <option value="CashFirst">现金优先</option>
+                                <option value="CapacityFirst">产能优先</option>
+                                <option value="SupplyFirst">供应优先</option>
+                            </select></label>
+                            <label><span>目标 SKU</span><select id="preview-sku-select"></select></label>
+                            <label><span>提前建库周</span><input id="prebuild-week" type="number" min="1" max="52" value="1"></label>
+                            <label><span>提前建库数量</span><input id="prebuild-quantity" type="number" min="0" step="1" value="0"></label>
+                            <label><span>产能资源</span><select id="capacity-resource-select"></select></label>
+                            <label><span>产能调整周</span><input id="capacity-week" type="number" min="1" max="52" value="1"></label>
+                            <label><span>能力倍率</span><input id="capacity-multiplier" type="number" min="0.1" max="3" step="0.05" value="1.00"></label>
+                            <label><span>MOQ 覆盖值</span><input id="moq-override" type="number" min="0" step="1" value="0"></label>
+                            <label><span>订货周期覆盖值</span><input id="order-cycle-override" type="number" min="1" max="60" step="1" value="1"></label>
+                            <label><span>供应限制</span><select id="supplier-limit-select"></select></label>
+                            <label><span>供应限制开始周</span><input id="supplier-limit-start-week" type="number" min="1" max="52" value="1"></label>
+                            <label><span>供应限制结束周</span><input id="supplier-limit-end-week" type="number" min="1" max="52" value="12"></label>
+                            <label><span>供应承诺能力</span><input id="supplier-capacity-limit" type="number" min="0" step="1" value="0"></label>
+                        </div>
+                        <div class="preview-actions">
+                            <button id="run-preview" class="button primary" type="button">运行预览</button>
+                            <span id="preview-status" class="status-chip neutral">尚未运行</span>
+                        </div>
+                    </section>
+                    <section>
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">模板与动作</span><h2>可选模板</h2></div>
+                        </div>
+                        <div id="scenario-template-list" class="case-card-grid"></div>
+                    </section>
+                </div>
+            </section>
 
-<section class="validation">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Auditable Data</p>
-            <h2>基础验证数据</h2>
-        </div>
-        <span class="badge" id="dataBadge">验证数据</span>
-    </div>
-    <div class="validation-grid">
-        <article>
-            <h3>产品族</h3>
-            <div class="table-wrap compact"><table><tbody id="familyBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>周产能资源</h3>
-            <div class="table-wrap compact"><table><tbody id="resourceBody"></tbody></table></div>
-        </article>
-        <article>
-            <h3>SKU DDMRP 参数</h3>
-            <div class="table-wrap compact"><table><tbody id="settingsBody"></tbody></table></div>
-        </article>
-    </div>
-</section>
+            <section id="scenario-comparison" class="scenario-comparison workspace-section" hidden>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">基准方案与预览方案</span><h2>方案比较</h2></div>
+                    <span class="status-chip neutral">预览结果，未保存</span>
+                </div>
+                <div id="scenario-comparison-result" class="comparison-grid"></div>
+                <section class="budget-panel">
+                    <div class="panel-heading compact-heading">
+                        <div><span class="panel-kicker">预算 / 去年同期</span><h2>预算与去年同期对照</h2></div>
+                    </div>
+                    <div class="table-scroll"><table class="data-table"><thead><tr><th>产品族</th><th>周</th><th>预算库存</th><th>去年同期库存</th><th>预览库存</th><th>预算偏差</th></tr></thead><tbody id="budget-comparison-body"></tbody></table></div>
+                </section>
+            </section>
 
-<script>
-    window.initialScenarioResult = @Html.Raw(Model.InitialResultJson);
-    window.validationData = @Html.Raw(Model.ValidationDataJson);
-</script>
+            <section class="workspace-section tab-workspace" hidden>
+                <div class="schedule-tabs" role="tablist" aria-label="工作区视图">
+                    <button class="schedule-tab is-active" type="button" data-tab="buffer-trend-panel">缓冲趋势</button>
+                    <button class="schedule-tab" type="button" data-tab="rccp-panel">需求驱动 RCCP</button>
+                    <button class="schedule-tab" type="button" data-tab="projected-supply-panel">预计供应需求</button>
+                    <button class="schedule-tab" type="button" data-tab="variance-panel">异常分析</button>
+                    <button class="schedule-tab" type="button" data-tab="trace-panel">计算追踪</button>
+                </div>
+
+                <section id="buffer-trend-panel" class="schedule-panel" data-tab-panel>
+                    <div class="panel-heading">
+                        <div><span class="panel-kicker">缓冲 / 库存趋势</span><h2>未来水位投影</h2></div>
+                        <span id="buffer-trend-case-chip" class="status-chip neutral">基准方案</span>
+                    </div>
+                    <div id="buffer-trend-kpis" class="rccp-kpis" aria-label="缓冲趋势关键指标"></div>
+                    <div class="buffer-trend-workbench">
+                        <section class="buffer-visual-panel">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">趋势图</span><h2 id="buffer-selected-title">选中 SKU 水位趋势</h2></div>
+                            </div>
+                            <div class="buffer-planning-layout">
+                                <aside id="buffer-inventory-options" class="buffer-inventory-options" aria-label="库存选项"></aside>
+                                <div class="buffer-chart-area">
+                                    <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
+                                    <div class="buffer-static-legend"><span>红 / 黄 / 绿山形缓冲区</span><span>净流动量位置</span><span>预计库存水位</span><span>目标库存</span><span>需求脉冲</span></div>
+                                </div>
+                            </div>
+                            <div id="buffer-comparison-strip" class="buffer-comparison-strip"></div>
+                        </section>
+                        <section class="buffer-visual-panel">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">周度状态</span><h2>SKU × 周热力格</h2></div>
+                            </div>
+                            <div id="buffer-trend-heatmap" class="buffer-trend-heatmap table-scroll" aria-label="缓冲状态周度热力格"></div>
+                        </section>
+                        <section class="buffer-visual-panel">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">产品族汇总</span><h2>库存与风险汇总</h2></div>
+                            </div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>产品族</th><th>平均库存金额</th><th>红区周</th><th>黄区周</th><th>超绿周</th><th>补货订单</th></tr></thead><tbody id="buffer-family-summary-body"></tbody></table></div>
+                        </section>
+                        <section class="buffer-visual-panel">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">选中 SKU 明细</span><h2>参数、订单与计算追踪</h2></div>
+                            </div>
+                            <div id="buffer-sku-metadata" class="buffer-sku-metadata"></div>
+                            <div class="buffer-detail-grid">
+                                <div class="table-scroll"><table class="data-table"><thead><tr><th>周期开始</th><th>周</th><th>时间相位 ADU</th><th>期初净流动量</th><th>需求</th><th>复核前 / 补货后净流动量</th><th>红 / 黄 / 绿上沿</th><th>库存金额</th><th>补货订单</th><th>状态</th></tr></thead><tbody id="buffer-trend-body"></tbody></table></div>
+                                <div class="table-scroll"><table class="data-table"><thead><tr><th>周</th><th>数量</th><th>金额</th><th>触发</th></tr></thead><tbody id="buffer-replenishment-body"></tbody></table></div>
+                            </div>
+                            <div id="buffer-trace-list" class="diagnostics-list"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="rccp-panel" class="schedule-panel" data-tab-panel hidden>
+                    <div class="panel-heading">
+                        <div><span class="panel-kicker">需求驱动 RCCP</span><h2>产品级资源负荷工作台</h2></div>
+                        <span id="rccp-case-chip" class="status-chip neutral">基准方案</span>
+                    </div>
+                    <div id="rccp-kpis" class="rccp-kpis" aria-label="RCCP 关键指标"></div>
+                    <div class="rccp-workbench">
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">资源汇总</span><h2>资源汇总</h2></div>
+                            </div>
+                            <div class="table-scroll"><table class="data-table rccp-summary-table"><thead><tr><th>资源</th><th>类型</th><th>平均负载</th><th>峰值负载</th><th>超载周</th><th>最大缺口</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="rccp-resource-summary-body"></tbody></table></div>
+                        </section>
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">周度热力格</span><h2>周度负载热力格</h2></div>
+                            </div>
+                            <div id="rccp-heatmap" class="rccp-heatmap table-scroll" aria-label="RCCP 周度热力格"></div>
+                        </section>
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">受限 / 不受限</span><h2>资源约束对比</h2></div>
+                            </div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>资源</th><th>平均负荷</th><th>峰值负荷</th><th>超载周</th><th>最大缺口</th><th>总缺口</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="constraint-capacity-summary-body"></tbody></table></div>
+                        </section>
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">缺口热力格</span><h2>资源 × 周约束缺口</h2></div>
+                            </div>
+                            <div id="constraint-heatmap" class="rccp-heatmap table-scroll" aria-label="资源约束缺口热力格"></div>
+                        </section>
+                        <section id="constraint-resource-detail" class="rccp-detail">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">约束明细</span><h2 id="constraint-selected-title">选中资源受限 / 不受限明细</h2></div>
+                            </div>
+                            <div id="constraint-gap-chart" class="resource-load-chart"></div>
+                            <div id="constraint-action-list" class="diagnostics-list"></div>
+                            <div id="constraint-trace-list" class="diagnostics-list"></div>
+                        </section>
+                        <section id="rccp-resource-detail" class="rccp-detail">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">选中资源</span><h2 id="rccp-selected-title">选中资源明细</h2></div>
+                            </div>
+                            <div id="rccp-load-chart" class="resource-load-chart"></div>
+                            <div class="rccp-detail-grid">
+                                <div class="table-scroll"><table class="data-table"><thead><tr><th>SKU</th><th>产品族</th><th>周</th><th>订单量</th><th>单位负荷</th><th>资源负荷</th><th>触发</th></tr></thead><tbody id="rccp-sku-contribution-body"></tbody></table></div>
+                                <div id="rccp-action-list" class="diagnostics-list"></div>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="projected-supply-panel" class="schedule-panel" data-tab-panel hidden>
+                    <div class="panel-heading"><div><span class="panel-kicker">预计供应需求</span><h2>供应商需求钻取</h2></div></div>
+                    <div id="supplier-collaboration-kpis" class="rccp-kpis" aria-label="供应商需求钻取关键指标"></div>
+                    <div class="rccp-workbench">
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">供应商汇总</span><h2>供应缺口与风险</h2></div>
+                            </div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>供应商</th><th>总不受限需求</th><th>总受限能力</th><th>总缺口</th><th>缺口周</th><th>受影响 SKU</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="supplier-summary-body"></tbody></table></div>
+                        </section>
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">周度网格</span><h2>供应商 × 周</h2></div>
+                            </div>
+                            <div id="supplier-weekly-grid" class="rccp-heatmap table-scroll" aria-label="供应商周度需求网格"></div>
+                        </section>
+                        <section id="supplier-detail-panel" class="rccp-detail">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">选中供应商</span><h2 id="supplier-selected-title">选中供应商明细</h2></div>
+                            </div>
+                            <div class="rccp-detail-grid">
+                                <div class="table-scroll"><table class="data-table"><thead><tr><th>物料族</th><th>SKU</th><th>产品族</th><th>周</th><th>订单量</th><th>金额</th><th>触发</th></tr></thead><tbody id="supplier-sku-requirement-body"></tbody></table></div>
+                                <div id="supplier-action-list" class="diagnostics-list"></div>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="variance-panel" class="schedule-panel" data-tab-panel hidden>
+                    <div class="panel-heading">
+                        <div><span class="panel-kicker">异常分析</span><h2>异常列表驱动场景</h2></div>
+                        <button id="apply-exception-to-scenario" class="button primary" type="button">带入场景</button>
+                    </div>
+                    <div id="exception-kpis" class="rccp-kpis" aria-label="异常 KPI"></div>
+                    <div class="rccp-workbench">
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">异常 SKU</span><h2>异常 SKU 列表</h2></div>
+                                <span id="exception-selected-chip" class="status-chip neutral">未选择</span>
+                            </div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>SKU</th><th>产品族</th><th>最近异常</th><th>最大需求偏差</th><th>最低服务</th><th>最低净流动量</th><th>次数</th><th>严重度</th><th>推荐模板</th></tr></thead><tbody id="exception-summary-body"></tbody></table></div>
+                        </section>
+                        <section class="rccp-block">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">异常信号</span><h2 id="exception-detail-title">异常信号明细</h2></div>
+                            </div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>周偏移</th><th>原因</th><th>实际</th><th>预测</th><th>需求偏差</th><th>服务水平</th><th>期末净流动量</th><th>严重度</th></tr></thead><tbody id="exception-signal-body"></tbody></table></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="trace-panel" class="schedule-panel" data-tab-panel hidden>
+                    <div class="panel-heading"><div><span class="panel-kicker">计算追踪</span><h2>白盒解释</h2></div></div>
+                    <div class="diagnostics-list" id="trace-list"></div>
+                </section>
+            </section>
+        </main>
+    </div>
+</div>
+
 <script src="~/js/app.js" asp-append-version="true"></script>

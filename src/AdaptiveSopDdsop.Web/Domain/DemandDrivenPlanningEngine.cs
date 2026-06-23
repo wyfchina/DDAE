@@ -19,6 +19,7 @@ public static class DemandDrivenPlanningEngine
             var position = inventory.First(item => item.Sku == sku.Sku);
             var zones = DdmrpCalculator.CalculateZones(sku);
             var netFlow = DdmrpCalculator.CalculateNetFlow(position);
+            var orderCycleWeeks = Math.Max(1, (int)Math.Ceiling(sku.OrderCycleDays / 7m));
 
             for (var week = 1; week <= horizonWeeks; week++)
             {
@@ -35,7 +36,7 @@ public static class DemandDrivenPlanningEngine
                     traces.Add(new PlanningTrace(
                         sku.Sku,
                         week,
-                        $"Pre-build campaign {campaign.CampaignId} adds {campaign.Quantity:0} before weeks {campaign.ProtectFromWeek}-{campaign.ProtectThroughWeek}."));
+                        $"提前建库 {campaign.CampaignId} 在第 {week} 周增加 {campaign.Quantity:0}，保护第 {campaign.ProtectFromWeek}-{campaign.ProtectThroughWeek} 周。"));
                 }
 
                 var weeklyDemand = demand
@@ -43,7 +44,8 @@ public static class DemandDrivenPlanningEngine
                     .Sum(item => item.BaselineDemand);
                 var endBeforeReplenishment = startNetFlow - weeklyDemand;
                 var status = DdmrpCalculator.GetBufferStatus(endBeforeReplenishment, zones);
-                var orderQuantity = endBeforeReplenishment < zones.TopOfYellow
+                var isOrderReviewWeek = (week - 1) % orderCycleWeeks == 0;
+                var orderQuantity = isOrderReviewWeek && endBeforeReplenishment <= zones.TopOfYellow
                     ? zones.TopOfGreen - endBeforeReplenishment
                     : 0;
                 var endAfterReplenishment = endBeforeReplenishment + orderQuantity;
@@ -68,14 +70,21 @@ public static class DemandDrivenPlanningEngine
                     traces.Add(new PlanningTrace(
                         sku.Sku,
                         week,
-                        $"Net flow {endBeforeReplenishment:0} below top of yellow {zones.TopOfYellow:0}; replenish to top of green {zones.TopOfGreen:0}."));
+                        $"净流动量 {endBeforeReplenishment:0} 位于黄区上沿 {zones.TopOfYellow:0} 及以下，且本周为订货周期复核点，补货到绿区上沿 {zones.TopOfGreen:0}。"));
+                }
+                else if (endBeforeReplenishment <= zones.TopOfYellow)
+                {
+                    traces.Add(new PlanningTrace(
+                        sku.Sku,
+                        week,
+                        $"净流动量 {endBeforeReplenishment:0} 位于黄区上沿 {zones.TopOfYellow:0} 及以下，但本周不是订货周期复核点，暂不生成补货订单。"));
                 }
                 else
                 {
                     traces.Add(new PlanningTrace(
                         sku.Sku,
                         week,
-                        $"Net flow {endBeforeReplenishment:0} remains at or above top of yellow {zones.TopOfYellow:0}; no replenishment order projected."));
+                        $"净流动量 {endBeforeReplenishment:0} 高于黄区上沿 {zones.TopOfYellow:0}，不生成补货订单。"));
                 }
 
                 netFlow = endAfterReplenishment;
