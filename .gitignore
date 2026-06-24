@@ -6,5 +6,10 @@ obj/
 *.suo
 TestResults/
 node_modules/
+.tmp/
 outputs/
 *.log
+data/*.db
+data/*.db-*
+**/data/*.db
+**/data/*.db-*

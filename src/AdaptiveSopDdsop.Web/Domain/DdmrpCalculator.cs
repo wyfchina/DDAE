@@ -4,9 +4,11 @@ public sealed class DdmrpCalculator
 {
     public static BufferZones CalculateZones(SkuBufferSetting sku)
     {
-        var yellow = sku.Adu * sku.DecoupledLeadTimeDays;
+        var effectiveAdu = sku.Adu * Math.Max(0.01m, sku.DemandAdjustmentFactor);
+        var zoneAdjustment = Math.Max(0.01m, sku.ZoneAdjustmentFactor);
+        var yellow = effectiveAdu * sku.DecoupledLeadTimeDays * zoneAdjustment;
         var red = yellow * sku.VariabilityFactor;
-        var green = Math.Max(sku.MinimumOrderQuantity, sku.Adu * sku.OrderCycleDays);
+        var green = Math.Max(sku.MinimumOrderQuantity, effectiveAdu * sku.OrderCycleDays) * zoneAdjustment;
         return new BufferZones(decimal.Round(red, 0), decimal.Round(yellow, 0), decimal.Round(green, 0));
     }
 

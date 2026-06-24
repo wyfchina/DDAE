@@ -197,7 +197,7 @@ public sealed class DdsopScenarioService
         var decision = status switch
         {
             "Blocked" => "超出 AS&OP 授权栅栏，DDS&OP 只能模拟和提交建议，不得直接应用主设置。",
-            "Reconcile" => "存在黄色超限项，需要进入 Integrated Reconciliation 后再决定是否采纳。",
+            "Reconcile" => "存在黄色超限项，需要进入集成协调评审后再决定是否采纳。",
             _ => "情景仍在战术授权范围内，可由 DDS&OP 调整 DDOM 主设置。"
         };
 
@@ -261,7 +261,7 @@ public sealed class DdsopScenarioService
 
         if (workingCapital > 50000)
         {
-            actions.Add($"财务联动：建议订单形成 {workingCapital:C0} 现金占用，需进入财务计划和 Integrated Reconciliation。");
+            actions.Add($"财务联动：建议订单形成 {workingCapital:C0} 现金占用，需进入财务计划和集成协调评审。");
         }
 
         return actions;

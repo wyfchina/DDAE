@@ -33,12 +33,12 @@
 
 - 场景推演和优化推荐必须分层：推演引擎负责解释某个场景会发生什么，优化引擎负责推荐值得比较的方案。
 - 后续优化能力必须通过 Solver Adapter 接入，例如 `IOptimizationSolver`。
-- 第一版优化求解器默认 OR-Tools；Gurobi 仅作为未来可选高级求解器，不在业务服务或 UI 中写死具体求解器。
-- Solver Adapter 的实现必须保留可替换性，避免产品早期被商业许可、部署方式或单一求解器 API 绑定。
+- 第一版优化求解器以 Gurobi 作为默认选项，同时在界面提供 OR-Tools 可选 Adapter；OR-Tools 后续可替换为真实 CP-SAT 实现。
+- 不在业务服务或 UI 中写死具体求解器，Solver Adapter 的实现必须保留可替换性，避免产品被单一许可、部署方式或求解器 API 绑定。
 
 ## 4. 数据环境原则
 
-当前系统使用内存 seed data：`SeedData.Create()` 生成验证数据，`SeedScenarioWorkspaceDataSource` 通过 `IScenarioWorkspaceDataSource` 提供 Scenario Run Workspace 数据。当前还没有数据库持久化。
+当前系统的主数据仍使用内存 seed data：`SeedData.Create()` 生成验证数据，`SeedScenarioWorkspaceDataSource` 通过 `IScenarioWorkspaceDataSource` 提供 Scenario Run Workspace 数据。场景运行记录和主设置治理记录已经进入 SQLite 本地持久化：`src/AdaptiveSopDdsop.Web/data/ddae-scenario-runs.db`。这不替代主数据生产库，只保存场景/治理快照与审计链。
 
 后续必须遵守：
 

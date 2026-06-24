@@ -35,6 +35,9 @@ public sealed class ScenarioRunPreviewService
         var bufferTrendComparison = BufferTrendWorkspaceService.Compare(baseline.BufferTrend, scenario.BufferTrend);
         scenario = scenario with
         {
+            ProductFamilyDashboard = ProductFamilyDashboardService.WithComparison(
+                scenario.ProductFamilyDashboard,
+                ProductFamilyDashboardService.Compare(baseline.ProductFamilyDashboard, scenario.ProductFamilyDashboard)),
             BufferTrend = BufferTrendWorkspaceService.WithComparison(scenario.BufferTrend, bufferTrendComparison)
         };
         var trace = BuildAuditTrace(data, request, parameters, baseline, scenario);
@@ -83,6 +86,14 @@ public sealed class ScenarioRunPreviewService
         var supplierCapacity = ConstraintWorkspaceService.CompareSupplierCapacity(data.SupplierCapacityWindows, supplyRequirements, supplierCapacityLimits);
         var budget = CompareBudget(data, skus, bufferRun.BufferProjections);
         var bufferTrend = BufferTrendWorkspaceService.Build(data, caseId, name, skus, plan);
+        var productFamilyDashboard = ProductFamilyDashboardService.Build(
+            data,
+            caseId,
+            $"{name} 产品族看板",
+            skus,
+            plan,
+            supplierCapacity,
+            budget);
         var rccp = RccpWorkspaceService.Build(data, caseId, $"{name} RCCP", plan);
         var constraints = ConstraintWorkspaceService.Build(data, caseId, $"{name} 受限 / 不受限", plan, supplierCapacity);
         var supplierCollaboration = SupplierCollaborationWorkspaceService.Build(
@@ -97,6 +108,7 @@ public sealed class ScenarioRunPreviewService
             name,
             plan,
             CalculateMetrics(data, skus, bufferRun.BufferProjections, bufferRun.ReplenishmentOrders, capacityLoads, supplierCapacity),
+            productFamilyDashboard,
             bufferTrend,
             rccp,
             constraints,

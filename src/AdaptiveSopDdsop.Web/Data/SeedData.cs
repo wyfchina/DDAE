@@ -28,7 +28,7 @@ public static class SeedData
             new("TC-RAD-302", "蜂窝散热板", "热控结构", 54, 6, 1.5m, 4, 220, 86_000m, 620),
             new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 24, 11, 1.9m, 5, 100, 420_000m, 240),
             new("CBL-HAR-402", "星上电缆束套件", "星载电子", 96, 4, 1.2m, 3, 360, 38_000m, 980),
-        };
+        }.Select(ApplyDdmrpParameterProfile).ToList();
 
         var inventory = new List<InventoryPosition>
         {
@@ -208,8 +208,8 @@ public static class SeedData
                 $"MS-{sku.Sku}",
                 "Inventory Buffer",
                 sku.Name,
-                $"ADU {sku.Adu:0.#}, DLT {sku.DecoupledLeadTimeDays}d, VF {sku.VariabilityFactor:0.0}",
-                proposedDaf,
+                FormatDdmrpCurrentValue(sku),
+                $"{proposedDaf}，{sku.DecouplingPoint}，{sku.BufferProfile}",
                 sku.Family == "星载电子" ? "发射窗口/进口器件风险" : "滚动需求与实际 ADU 偏差",
                 "2026-08 至 2026-12",
                 sku.Family == "星载电子" ? "Proposed" : "Current",
@@ -286,6 +286,63 @@ public static class SeedData
             strategicRecommendations,
             feasibilityChecks,
             skillBuffers);
+    }
+
+    private static SkuBufferSetting ApplyDdmrpParameterProfile(SkuBufferSetting sku)
+    {
+        var daf = sku.Family switch
+        {
+            "星载电子" => 1.18m,
+            "有效载荷" => 1.08m,
+            "卫星平台" => 1.04m,
+            _ => 1.00m
+        };
+        var zoneAdjustment = sku.Family switch
+        {
+            "星载电子" => 1.10m,
+            "有效载荷" => 1.05m,
+            "卫星平台" => 1.03m,
+            _ => 1.00m
+        };
+        var decouplingPoint = sku.Family switch
+        {
+            "星载电子" => "星载电子半成品超市",
+            "有效载荷" => "载荷洁净装配前缓冲",
+            "卫星平台" => "平台总装前解耦点",
+            _ => "热控结构件超市"
+        };
+        var profile = sku.Family switch
+        {
+            "星载电子" => "长 DLT 高变异库存缓冲",
+            "有效载荷" => "关键载荷保护缓冲",
+            "卫星平台" => "平台总装节奏缓冲",
+            _ => "结构件标准补货缓冲"
+        };
+        var aduSource = sku.Family == "星载电子"
+            ? "90 天 demonstrated ADU + 发射窗口 DAF"
+            : "90 天滚动 demonstrated ADU";
+        var dltSource = sku.Sku.StartsWith("AV-FPGA", StringComparison.Ordinal)
+            ? "供应商承诺 DLT + 出口许可风险"
+            : "供应链主数据 + DDOM 执行反馈";
+
+        return sku with
+        {
+            DecouplingPoint = decouplingPoint,
+            BufferProfile = profile,
+            AduSource = aduSource,
+            AduCalculationWindowDays = 90,
+            DltSource = dltSource,
+            DemandAdjustmentFactor = daf,
+            ZoneAdjustmentFactor = zoneAdjustment,
+            EffectiveFromWeek = 1,
+            EffectiveThroughWeek = 12,
+            ParameterStatus = sku.Family == "星载电子" ? "Proposed" : "Current"
+        };
+    }
+
+    private static string FormatDdmrpCurrentValue(SkuBufferSetting sku)
+    {
+        return $"解耦点 {sku.DecouplingPoint}，ADU {sku.Adu:0.#}，DLT {sku.DecoupledLeadTimeDays} 天，VF {sku.VariabilityFactor:0.00}，DAF {sku.DemandAdjustmentFactor:0.00}，Zone {sku.ZoneAdjustmentFactor:0.00}，MOQ {sku.MinimumOrderQuantity:0}，订货周期 {sku.OrderCycleDays} 天";
     }
 
     private static ResourceProfile ResourceRow(StrategicMonth month, string resource, string family, decimal required, decimal available)

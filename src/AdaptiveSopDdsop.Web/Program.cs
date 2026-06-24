@@ -10,11 +10,32 @@ builder.Services.AddSingleton<DdmrpCalculator>();
 builder.Services.AddSingleton<DdsopScenarioService>();
 builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
+builder.Services.AddSingleton<IOptimizationSolver, GurobiOptimizationSolver>();
+builder.Services.AddSingleton<IOptimizationSolver, OrToolsOptimizationSolver>();
+builder.Services.AddSingleton<ScenarioOptimizationService>();
+builder.Services.AddSingleton<ProductFamilyDashboardService>();
 builder.Services.AddSingleton<RccpWorkspaceService>();
 builder.Services.AddSingleton<ExceptionWorkspaceService>();
 builder.Services.AddSingleton<BufferTrendWorkspaceService>();
 builder.Services.AddSingleton<ConstraintWorkspaceService>();
 builder.Services.AddSingleton<SupplierCollaborationWorkspaceService>();
+builder.Services.AddSingleton(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new ScenarioRunPersistenceService(
+        sp.GetRequiredService<ScenarioRunPreviewService>(),
+        databasePath);
+});
+builder.Services.AddSingleton(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new MasterSettingsGovernanceService(
+        sp.GetRequiredService<IScenarioWorkspaceDataSource>(),
+        sp.GetRequiredService<ScenarioRunPreviewService>(),
+        databasePath);
+});
 
 var app = builder.Build();
 
@@ -64,6 +85,11 @@ app.MapGet("/api/rccp-workspace", (int? horizonWeeks, RccpWorkspaceService servi
     return Results.Ok(service.GetBaseline(horizonWeeks.GetValueOrDefault(12)));
 });
 
+app.MapGet("/api/product-family-dashboard", (int? horizonWeeks, ProductFamilyDashboardService service) =>
+{
+    return Results.Ok(service.GetBaseline(horizonWeeks.GetValueOrDefault(12)));
+});
+
 app.MapGet("/api/exception-workspace", (int? horizonWeeks, ExceptionWorkspaceService service) =>
 {
     return Results.Ok(service.GetExceptions(horizonWeeks.GetValueOrDefault(12)));
@@ -87,6 +113,89 @@ app.MapGet("/api/supplier-collaboration-workspace", (int? horizonWeeks, Supplier
 app.MapPost("/api/scenario-runs/preview", (ScenarioRunPreviewRequest request, ScenarioRunPreviewService service) =>
 {
     return Results.Ok(service.Preview(request));
+});
+
+app.MapPost("/api/scenario-runs/optimize", (ScenarioOptimizationRequest request, ScenarioOptimizationService service) =>
+{
+    return Results.Ok(service.Optimize(request));
+});
+
+app.MapPost("/api/scenario-runs", (ScenarioRunSaveRequest request, ScenarioRunPersistenceService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Save(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/scenario-runs", (int? limit, ScenarioRunPersistenceService service) =>
+{
+    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+});
+
+app.MapGet("/api/scenario-runs/{runId}", (string runId, ScenarioRunPersistenceService service) =>
+{
+    var detail = service.GetDetail(runId);
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+
+app.MapGet("/api/scenario-runs/{runId}/audit", (string runId, ScenarioRunPersistenceService service) =>
+{
+    return Results.Ok(service.GetAuditEvents(runId));
+});
+
+app.MapGet("/api/master-settings-workspace", (int? limit, MasterSettingsGovernanceService service) =>
+{
+    return Results.Ok(service.GetWorkspace(limit.GetValueOrDefault(50)));
+});
+
+app.MapPost("/api/master-settings/proposals/from-preview", (ScenarioRunPreviewRequest request, MasterSettingsGovernanceService service) =>
+{
+    return Results.Ok(service.ProposeFromPreview(request));
+});
+
+app.MapPost("/api/master-settings/changes", (MasterSettingChangeSaveRequest request, MasterSettingsGovernanceService service) =>
+{
+    try
+    {
+        return Results.Ok(service.SaveChange(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/master-settings/changes", (int? limit, MasterSettingsGovernanceService service) =>
+{
+    return Results.Ok(service.ListChanges(limit.GetValueOrDefault(50)));
+});
+
+app.MapGet("/api/master-settings/changes/{changeId}", (string changeId, MasterSettingsGovernanceService service) =>
+{
+    var detail = service.GetDetail(changeId);
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+
+app.MapGet("/api/master-settings/changes/{changeId}/audit", (string changeId, MasterSettingsGovernanceService service) =>
+{
+    return Results.Ok(service.GetAuditEvents(changeId));
+});
+
+app.MapPost("/api/master-settings/changes/{changeId}/status", (string changeId, MasterSettingStatusUpdateRequest request, MasterSettingsGovernanceService service) =>
+{
+    try
+    {
+        return Results.Ok(service.UpdateStatus(changeId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
 });
 
 app.Run();

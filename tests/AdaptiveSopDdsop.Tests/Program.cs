@@ -24,11 +24,19 @@ var tests = new (string Name, Action Run)[]
     ("Projected supply requirements aggregate replenishment by supplier", TestProjectedSupplyRequirementsAggregateBySupplier),
     ("Supplier collaboration workspace summarizes supplier demand drilldown", TestSupplierCollaborationWorkspaceSummarizesSupplierDrilldown),
     ("Supplier collaboration explains yellow and red status reasons", TestSupplierCollaborationExplainsStatusReasons),
+    ("Product family dashboard summarizes management view", TestProductFamilyDashboardSummarizesManagementView),
+    ("Scenario preview returns product family dashboard comparison", TestScenarioPreviewReturnsProductFamilyDashboardComparison),
     ("Scenario Run Workspace script fetches workspace data", TestScenarioRunWorkspaceScriptFetchesWorkspaceData),
     ("Scenario Run Workspace script delegates business calculations to services", TestScenarioRunWorkspaceScriptDelegatesBusinessCalculationsToServices),
     ("Scenario workspace seed data covers baseline scenario use cases", TestScenarioWorkspaceSeedDataCoversUseCases),
+    ("Scenario workspace exposes complete DDMRP parameter profiles", TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles),
     ("Scenario workspace adapter can map alternate source structures", TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
+    ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
+    ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
+    ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
+    ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
+    ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
     ("Scenario preview applies pre-build capacity policy and supplier limits", TestScenarioPreviewAppliesScenarioParameters),
     ("Product RCCP workspace summarizes resources heatmap and detail", TestProductRccpWorkspaceSummarizesResourcesHeatmapAndDetail),
     ("Scenario preview returns product RCCP comparison", TestScenarioPreviewReturnsProductRccpComparison),
@@ -38,6 +46,9 @@ var tests = new (string Name, Action Run)[]
     ("Buffer trend workspace summarizes KPIs heatmap and SKU detail", TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail),
     ("Scenario preview returns graphical buffer trend comparison", TestScenarioPreviewReturnsBufferTrendComparison),
     ("Exception workspace detects variance signals and scenario presets", TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets),
+    ("Scenario optimization service uses solver adapter and returns recommendations", TestScenarioOptimizationServiceUsesSolverAdapter),
+    ("Gurobi optimization solver solves toy problem or reports unavailable", TestGurobiOptimizationSolverToyProblem),
+    ("OR-Tools optimization solver solves toy problem", TestOrToolsOptimizationSolverSolvesToyProblem),
 };
 
 var failed = 0;
@@ -161,6 +172,15 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     var page = File.ReadAllText(Path.GetFullPath(pagePath));
 
     AssertTrue(page.Contains("id=\"scenario-workspace-app\"", StringComparison.Ordinal), "homepage should expose Scenario Run Workspace shell");
+    AssertTrue(page.Contains("id=\"product-family-dashboard-panel\"", StringComparison.Ordinal), "homepage should expose product family dashboard panel");
+    AssertTrue(page.Contains("id=\"product-family-kpis\"", StringComparison.Ordinal), "homepage should expose product family KPI strip");
+    AssertTrue(page.Contains("id=\"product-family-card-grid\"", StringComparison.Ordinal), "homepage should expose product family cards");
+    AssertTrue(page.Contains("id=\"product-family-weekly-grid\"", StringComparison.Ordinal), "homepage should expose product family weekly grid");
+    AssertTrue(page.Contains("id=\"product-family-detail-panel\"", StringComparison.Ordinal), "homepage should expose selected product family detail");
+    AssertTrue(page.Contains("产品族看板", StringComparison.Ordinal), "homepage should expose Chinese product family dashboard label");
+    AssertTrue(page.Contains("产品族总览", StringComparison.Ordinal), "homepage should expose product family overview label");
+    AssertTrue(page.Contains("周度风险网格", StringComparison.Ordinal), "homepage should expose product family weekly risk grid label");
+    AssertTrue(page.Contains("选中产品族详情", StringComparison.Ordinal), "homepage should expose selected product family detail label");
     AssertTrue(page.Contains("需求驱动 S&OP 场景运行工作台", StringComparison.Ordinal), "homepage should be Chinese Scenario Run Workspace");
     AssertTrue(!page.Contains("class=\"hero\"", StringComparison.Ordinal), "homepage should no longer render teaching hero");
     AssertTrue(!page.Contains("Pre-build", StringComparison.Ordinal), "homepage should not expose English pre-build labels");
@@ -169,14 +189,104 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(!page.Contains("Projected Supply", StringComparison.Ordinal), "homepage should use Chinese supply labels");
     AssertTrue(!page.Contains("Variance Analysis", StringComparison.Ordinal), "homepage should use Chinese exception labels");
     AssertTrue(!page.Contains("Calculation Trace", StringComparison.Ordinal), "homepage should use Chinese trace labels");
+    AssertTrue(!page.Contains("Current / Proposed / Reviewed / Approved / Effective / Expired", StringComparison.Ordinal), "homepage should not expose English governance status chain");
+    AssertTrue(!page.Contains("DDOM Master Settings", StringComparison.Ordinal), "homepage should not expose English master settings heading");
+    AssertTrue(page.Contains("当前 / 待评审 / 已评审 / 已批准 / 已生效 / 已失效", StringComparison.Ordinal), "homepage should show Chinese governance status chain");
+    AssertTrue(page.Contains(">异常识别<", StringComparison.Ordinal), "navigation should expose exception-first workflow");
+    AssertTrue(page.Contains(">RCCP 与约束<", StringComparison.Ordinal), "navigation should expose RCCP and constraints workflow");
+    AssertTrue(page.Contains(">供应商需求<", StringComparison.Ordinal), "navigation should expose supplier demand workflow");
+    AssertTrue(page.Contains(">场景留痕<", StringComparison.Ordinal), "navigation should expose scenario audit workflow");
+    AssertTrue(page.Contains(">白盒追踪<", StringComparison.Ordinal), "navigation should expose white-box trace workflow");
     AssertTrue(page.Contains("id=\"order-cycle-override\" type=\"number\" min=\"1\"", StringComparison.Ordinal), "order cycle override should not allow zero");
     AssertTrue(page.Contains("id=\"supplier-limit-start-week\"", StringComparison.Ordinal), "supplier limit should expose a start week");
     AssertTrue(page.Contains("id=\"supplier-limit-end-week\"", StringComparison.Ordinal), "supplier limit should expose an end week");
     AssertTrue(page.Contains("id=\"adoption-constraint-select\"", StringComparison.Ordinal), "scenario run should expose customizable adoption constraints");
+    AssertTrue(page.Contains("id=\"ddmrp-completeness-chip\"", StringComparison.Ordinal), "data readiness should expose DDMRP parameter completeness chip");
+    AssertTrue(page.Contains("id=\"ddmrp-parameter-body\"", StringComparison.Ordinal), "data readiness should expose DDMRP parameter table");
+    AssertTrue(page.Contains("id=\"ddmrp-toggle-all\"", StringComparison.Ordinal), "DDMRP parameter table should expose view all toggle");
+    AssertTrue(page.Contains("id=\"ddmrp-missing-only\"", StringComparison.Ordinal), "DDMRP parameter table should expose missing-only toggle");
+    AssertTrue(page.Contains("id=\"workspace-focus-layer\"", StringComparison.Ordinal), "page should expose focused panel layer");
+    AssertTrue(page.Contains("id=\"workspace-detail-drawer\"", StringComparison.Ordinal), "page should expose detail drawer");
+    AssertTrue(page.Contains("参数详情", StringComparison.Ordinal), "page should expose parameter detail label");
+    AssertTrue(page.Contains("DDMRP 参数", StringComparison.Ordinal), "page should expose DDMRP parameter governance labels");
+    AssertTrue(page.Contains("参数完整性", StringComparison.Ordinal), "page should expose parameter completeness labels");
+    AssertTrue(!page.Contains("拖拽排序", StringComparison.Ordinal), "page should not expose drag sorting in first UX version");
+    AssertTrue(!page.Contains("自由布局", StringComparison.Ordinal), "page should not expose free layout in first UX version");
     AssertTrue(page.Contains("流速优先", StringComparison.Ordinal), "adoption constraints should include a flow-first mode");
+    AssertTrue(page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "scenario run should expose optimization panel");
+    AssertTrue(page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "scenario run should expose solver selector");
+    AssertTrue(page.Contains("<option value=\"Gurobi\">Gurobi</option>", StringComparison.Ordinal), "solver selector should include Gurobi");
+    AssertTrue(page.Contains("<option value=\"OR-Tools\">OR-Tools</option>", StringComparison.Ordinal), "solver selector should include OR-Tools");
+    AssertTrue(page.Contains("id=\"run-optimization\"", StringComparison.Ordinal), "scenario run should expose optimization button");
+    AssertTrue(page.Contains("id=\"optimization-status\"", StringComparison.Ordinal), "scenario run should expose Gurobi status");
+    AssertTrue(page.Contains("id=\"optimization-recommendation-list\"", StringComparison.Ordinal), "scenario run should expose optimization recommendation list");
+    AssertTrue(page.Contains("id=\"multi-scenario-comparison-body\"", StringComparison.Ordinal), "scenario comparison should expose multi-scenario comparison body");
+    AssertTrue(page.Contains("id=\"candidate-impact-matrix-body\"", StringComparison.Ordinal), "scenario comparison should expose candidate impact matrix body");
+    AssertTrue(page.Contains("多方案比较", StringComparison.Ordinal), "scenario comparison should show multi-scenario comparison label");
+    AssertTrue(page.Contains("候选动作影响矩阵", StringComparison.Ordinal), "scenario comparison should show candidate impact matrix label");
+    AssertTrue(page.Contains("优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization label");
+    AssertTrue(page.Contains("生成优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization action");
+    AssertTrue(page.Contains("求解器状态", StringComparison.Ordinal), "scenario run should show generic solver status label");
+    AssertTrue(page.Contains("带入场景", StringComparison.Ordinal), "scenario run should allow applying recommendations to scenario configuration");
+    AssertTrue(!page.Contains("自动采纳", StringComparison.Ordinal), "scenario run should not expose automatic adoption action");
+    AssertTrue(!page.Contains("自动审批", StringComparison.Ordinal), "scenario run should not expose automatic approval action");
+    AssertTrue(!page.Contains("自动保存", StringComparison.Ordinal), "scenario run should not expose automatic save action");
 
     var scriptPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js");
     var script = File.ReadAllText(Path.GetFullPath(scriptPath));
+    var cssPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css");
+    var css = File.ReadAllText(Path.GetFullPath(cssPath));
+    AssertTrue(script.Contains("const previewFieldHelp", StringComparison.Ordinal), "script should define preview field help dictionary");
+    AssertTrue(script.Contains("const navigationHelp", StringComparison.Ordinal), "script should define navigation help dictionary");
+    AssertTrue(script.Contains("renderDdmrpParameterCompleteness", StringComparison.Ordinal), "script should render DDMRP parameter completeness");
+    AssertTrue(script.Contains("data.ddmrpParameters", StringComparison.Ordinal), "script should consume DDMRP parameter profiles from API");
+    AssertTrue(script.Contains("validationMessage", StringComparison.Ordinal), "script should display DDMRP parameter validation messages");
+    AssertTrue(script.Contains("initializePanelWorkspaceActions", StringComparison.Ordinal), "script should initialize focused panel actions");
+    AssertTrue(script.Contains("openFocusedPanel", StringComparison.Ordinal), "script should open focused panel view");
+    AssertTrue(script.Contains("closeFocusedPanel", StringComparison.Ordinal), "script should close focused panel view");
+    AssertTrue(script.Contains("focusedPanelWasExpanded", StringComparison.Ordinal), "focused panel should remember original collapse state");
+    AssertTrue(script.Contains("if (!wasExpanded) return", StringComparison.Ordinal), "collapsed panels should not enter focused view");
+    AssertTrue(script.Contains("action.hidden = !expanded", StringComparison.Ordinal), "focused action should only appear for expanded panels");
+    AssertTrue(script.Contains("collapseState.set(state.focusedPanelCollapseKey", StringComparison.Ordinal), "focused panel should restore collapse state after closing");
+    AssertTrue(script.Contains("if (state.focusedPanel === panel) return", StringComparison.Ordinal), "focused panel heading should not collapse while focused");
+    AssertTrue(css.Contains(".is-focused-panel > .collapse-toggle .collapse-indicator", StringComparison.Ordinal), "focused panel should hide collapse indicator while exit focus is visible");
+    AssertTrue(script.Contains("initializeResizableTables", StringComparison.Ordinal), "script should initialize resizable table containers");
+    AssertTrue(script.Contains("openWorkspaceDrawer", StringComparison.Ordinal), "script should open workspace detail drawer");
+    AssertTrue(script.Contains("data-ddmrp-sku", StringComparison.Ordinal), "script should attach DDMRP row detail hooks");
+    AssertTrue(script.Contains("data-guardrail-index", StringComparison.Ordinal), "script should attach guardrail row detail hooks");
+    AssertTrue(script.Contains("state.data?.ddmrpParameters", StringComparison.Ordinal), "DDMRP drawer should read from state data");
+    AssertTrue(script.Contains("state.data?.guardrails", StringComparison.Ordinal), "guardrail drawer should read from state data");
+    AssertTrue(script.Contains("renderMultiScenarioComparison", StringComparison.Ordinal), "script should render multi-scenario comparison");
+    AssertTrue(script.Contains("candidateImpactMatrix", StringComparison.Ordinal), "script should consume candidate impact matrix");
+    AssertTrue(script.Contains("scenarioComparisons", StringComparison.Ordinal), "script should consume scenario comparisons");
+    AssertTrue(script.Contains("solverName", StringComparison.Ordinal), "script should send selected solver to optimization API");
+    AssertTrue(script.Contains("管理取舍", StringComparison.Ordinal), "script should expose management trade-off labels");
+    AssertTrue(css.Contains("overflow-x: auto", StringComparison.Ordinal) && css.Contains("scroll-snap-type: x proximity", StringComparison.Ordinal), "optimization recommendations should expand horizontally");
+    AssertTrue(css.Contains(".is-focused-panel .optimization-recommendation-list", StringComparison.Ordinal) && css.Contains("repeat(3, minmax(320px, 1fr))", StringComparison.Ordinal), "focused optimization recommendations should expand across the right side");
+    AssertTrue(css.Contains("width: calc(100vw - 48px)", StringComparison.Ordinal), "focused panel should use the available viewport width");
+    AssertTrue(!script.Contains("cloneNode", StringComparison.Ordinal), "focused panel should move existing DOM rather than clone stable nodes");
+    AssertTrue(script.Contains("initializeCollapsiblePanels", StringComparison.Ordinal), "script should initialize collapsible workspace panels");
+    AssertTrue(script.Contains("dataset.collapsePanel", StringComparison.Ordinal), "script should add collapse panel data attribute");
+    AssertTrue(script.Contains("dataset.collapseToggle", StringComparison.Ordinal), "script should add collapse toggle data attribute");
+    AssertTrue(script.Contains("dataset.collapseBody", StringComparison.Ordinal), "script should add collapse body data attribute");
+    AssertTrue(script.Contains("aria-expanded", StringComparison.Ordinal), "collapse toggles should expose aria-expanded");
+    AssertTrue(script.Contains("body.hidden", StringComparison.Ordinal), "collapse toggles should use hidden body state");
+    AssertTrue(script.Contains("item.setAttribute(\"title\", help)", StringComparison.Ordinal), "navigation help should use title tooltip");
+    AssertTrue(!script.Contains("item.insertAdjacentHTML(\"beforeend\", helpTrigger(help))", StringComparison.Ordinal), "navigation should not insert question mark help triggers");
+    AssertTrue(css.Contains(".collapsible-panel", StringComparison.Ordinal), "CSS should style collapsible panels");
+    AssertTrue(css.Contains(".collapse-toggle", StringComparison.Ordinal), "CSS should style collapse toggles");
+    AssertTrue(css.Contains(".collapse-body", StringComparison.Ordinal), "CSS should style collapse body");
+    AssertTrue(css.Contains(".is-focused-panel", StringComparison.Ordinal), "CSS should style focused panels");
+    AssertTrue(css.Contains(".workspace-drawer", StringComparison.Ordinal), "CSS should style workspace drawer");
+    AssertTrue(css.Contains(".resizable-table-shell", StringComparison.Ordinal), "CSS should style resizable table shell");
+    AssertTrue(css.Contains("overflow-x: auto", StringComparison.Ordinal), "wide tables should keep horizontal scroll inside containers");
+    AssertTrue(!css.Contains(".nav-item > .help-trigger", StringComparison.Ordinal), "navigation should not keep question mark trigger styles");
+    AssertTrue(script.Contains("供应限制开始周", StringComparison.Ordinal), "script should explain supplier limit start week");
+    AssertTrue(script.Contains("供应承诺能力", StringComparison.Ordinal), "script should explain supplier committed capacity");
+    AssertTrue(script.Contains("订货周期覆盖值", StringComparison.Ordinal), "script should explain order cycle override");
+    AssertTrue(script.Contains("normalizeWorkspaceFlow", StringComparison.Ordinal), "script should normalize page order to the business workflow");
+    AssertTrue(script.Contains("masterSettingTypeLabel", StringComparison.Ordinal), "script should translate master setting types");
+    AssertTrue(script.Contains("auditEventLabel", StringComparison.Ordinal), "script should translate audit event labels");
     AssertTrue(script.Contains("syncSkuPolicyDefaults", StringComparison.Ordinal), "script should sync SKU order cycle defaults");
     AssertTrue(script.Contains("syncSupplierLimitDefaults", StringComparison.Ordinal), "script should sync supplier limit defaults");
     AssertTrue(script.Contains("startWeek: supplierStartWeek", StringComparison.Ordinal), "supplier limit payload should use selected start week");
@@ -184,6 +294,12 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("adoptionConstraintMode", StringComparison.Ordinal), "preview payload should include adoption constraint mode");
     AssertTrue(script.Contains("targetFlowIndex", StringComparison.Ordinal), "script should expose target flow in the workspace");
     AssertTrue(script.Contains("evaluateAdoption", StringComparison.Ordinal), "script should evaluate preview against the selected adoption constraint");
+    AssertTrue(script.Contains("违反规则", StringComparison.Ordinal), "script should show which adoption rule is violated");
+    AssertTrue(script.Contains("adoption-rule-list", StringComparison.Ordinal), "script should render adoption rule details");
+    AssertTrue(script.Contains("服务红线", StringComparison.Ordinal), "script should explain service guardrail violations");
+    AssertTrue(script.Contains("供应硬约束", StringComparison.Ordinal), "script should explain supply guardrail violations");
+    AssertTrue(script.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "script should call optimization API");
+    AssertTrue(script.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "script should bring optimization recommendation into scenario controls");
 }
 
 static void TestAsopGuardrailBlocksExcessiveScenario()
@@ -317,6 +433,12 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
         "buffer-trend-heatmap",
         "buffer-family-summary-body",
         "buffer-sku-metadata",
+        "single-sku-workbench",
+        "single-sku-activity-body",
+        "single-sku-attribute-body",
+        "single-sku-sizing-body",
+        "single-sku-bom-body",
+        "single-sku-order-body",
         "buffer-replenishment-body",
         "buffer-trace-list",
         "rccp-kpis",
@@ -360,6 +482,11 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
     AssertTrue(page.Contains("目标库存", StringComparison.Ordinal), "page should expose target inventory label");
     AssertTrue(page.Contains("时间相位 ADU", StringComparison.Ordinal), "page should expose time-phased ADU label");
     AssertTrue(page.Contains("需求脉冲", StringComparison.Ordinal), "page should expose demand pulse label");
+    AssertTrue(page.Contains("单 SKU 仿真工作台", StringComparison.Ordinal), "page should expose single SKU simulation workbench");
+    AssertTrue(page.Contains("活动列表", StringComparison.Ordinal), "page should expose SKU activity list");
+    AssertTrue(page.Contains("缓冲 sizing", StringComparison.Ordinal), "page should expose buffer sizing");
+    AssertTrue(page.Contains("BOM", StringComparison.Ordinal), "page should expose BOM detail");
+    AssertTrue(page.Contains("订单明细", StringComparison.Ordinal), "page should expose order detail");
     AssertTrue(page.Contains("受限 / 不受限", StringComparison.Ordinal), "page should expose constrained versus unconstrained label");
     AssertTrue(page.Contains("资源约束对比", StringComparison.Ordinal), "page should expose constraint summary label");
     AssertTrue(page.Contains("不受限需求", StringComparison.Ordinal), "page should expose unconstrained supply label");
@@ -485,12 +612,53 @@ static void TestSupplierCollaborationExplainsStatusReasons()
     AssertTrue(supplierSummary!.RecommendedAction.Contains("确认", StringComparison.Ordinal), "yellow supplier summary should recommend capacity confirmation");
 }
 
+static void TestProductFamilyDashboardSummarizesManagementView()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new ProductFamilyDashboardService(source);
+
+    var result = service.GetBaseline(12);
+
+    AssertTrue(source.LoadCount == 1, "product family dashboard should read through IScenarioWorkspaceDataSource");
+    AssertTrue(result.Summaries.Count > 0, "dashboard should summarize product families");
+    AssertTrue(result.WeeklyCells.Count == result.Summaries.Count * 12, "family weekly grid should cover every family and week");
+    AssertTrue(result.Summaries.All(item => item.SkuCount > 0), "family summaries should expose SKU count");
+    AssertTrue(result.Summaries.Any(item => item.AverageInventoryValue > 0), "family summaries should expose inventory value");
+    AssertTrue(result.Summaries.Any(item => item.ReplenishmentOrderCount > 0), "family summaries should expose replenishment orders");
+    AssertTrue(result.Summaries.All(item => item.TargetServiceLevel > 0 && item.TargetFlowIndex > 0), "family summaries should expose service and flow targets");
+    AssertTrue(result.Details.Any(item => item.RiskItems.Count > 0), "family details should expose risk items");
+    AssertTrue(result.Details.Any(item => item.Recommendations.Count > 0), "family details should expose action recommendations");
+    AssertTrue(result.Details.Any(item => item.RccpContributions.Count > 0), "family details should expose RCCP contributions");
+    AssertTrue(result.Details.Any(item => item.SupplierRequirements.Count > 0), "family details should expose supplier requirements");
+    AssertTrue(result.Summaries.Any(item => item.Family == result.SelectedFamily), "selected family should exist in summaries");
+}
+
+static void TestScenarioPreviewReturnsProductFamilyDashboardComparison()
+{
+    var service = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+
+    var result = service.Preview(new ScenarioRunPreviewRequest(
+        12,
+        "TPL-PREBUILD-PEAK",
+        Parameters: new ScenarioRunParameterSet(
+            PrebuildCampaigns: new[] { new PrebuildCampaign("PB-FAMILY", "AV-FPGA-203", 1, 6, 8, 300) },
+            SupplierCapacityLimits: new[] { new SupplierCapacityLimit("Microchip Space", "进口空间级 FPGA", 1, 12, 1) })));
+
+    AssertEqual("baseline", result.Baseline.ProductFamilyDashboard.CaseId, "baseline family dashboard case id");
+    AssertEqual("scenario", result.Scenario.ProductFamilyDashboard.CaseId, "scenario family dashboard case id");
+    AssertTrue(result.Baseline.ProductFamilyDashboard.Summaries.Count > 0, "baseline should include family summaries");
+    AssertTrue(result.Scenario.ProductFamilyDashboard.Summaries.Count > 0, "scenario should include family summaries");
+    AssertTrue(result.Scenario.ProductFamilyDashboard.Comparison.SupplyGapDelta != 0m || result.Scenario.ProductFamilyDashboard.Comparison.AverageInventoryValueDelta != 0m, "scenario family dashboard should include comparison deltas");
+    AssertTrue(result.Scenario.ProductFamilyDashboard.Details.Any(item => item.RiskItems.Any()), "scenario family dashboard should expose family risks");
+}
+
 static void TestScenarioRunWorkspaceScriptFetchesWorkspaceData()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
 
     AssertTrue(script.Contains("/api/scenario-workspace-data?horizonWeeks=12", StringComparison.Ordinal), "script should fetch scenario workspace data");
+    AssertTrue(script.Contains("/api/product-family-dashboard?horizonWeeks=12", StringComparison.Ordinal), "script should fetch product family dashboard data");
     AssertTrue(script.Contains("/api/rccp-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch product RCCP workspace data");
     AssertTrue(script.Contains("/api/constraint-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch constrained versus unconstrained workspace data");
     AssertTrue(script.Contains("/api/buffer-trend-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch graphical buffer trend workspace data");
@@ -503,6 +671,11 @@ static void TestScenarioRunWorkspaceScriptFetchesWorkspaceData()
     AssertTrue(script.Contains("data-constraint-resource", StringComparison.Ordinal), "script should switch selected constraint resource");
     AssertTrue(script.Contains("renderBufferTrendWorkspace", StringComparison.Ordinal), "script should render graphical buffer trend workspace");
     AssertTrue(script.Contains("renderBufferInventoryOptions", StringComparison.Ordinal), "script should render left-side inventory options");
+    AssertTrue(script.Contains("renderSingleSkuSimulation", StringComparison.Ordinal), "script should render single SKU simulation workspace");
+    AssertTrue(script.Contains("single-sku-activity-body", StringComparison.Ordinal), "script should render single SKU activity list");
+    AssertTrue(script.Contains("single-sku-sizing-body", StringComparison.Ordinal), "script should render single SKU buffer sizing");
+    AssertTrue(script.Contains("single-sku-bom-body", StringComparison.Ordinal), "script should render single SKU BOM");
+    AssertTrue(script.Contains("single-sku-order-body", StringComparison.Ordinal), "script should render single SKU order details");
     AssertTrue(script.Contains("data-buffer-family", StringComparison.Ordinal), "script should switch buffer SKU by product family option");
     AssertTrue(script.Contains("data-buffer-sku", StringComparison.Ordinal), "script should switch selected buffer SKU from heatmap");
     AssertTrue(script.Contains("applyExceptionToScenario", StringComparison.Ordinal), "script should bring exception SKU into scenario configuration");
@@ -511,6 +684,15 @@ static void TestScenarioRunWorkspaceScriptFetchesWorkspaceData()
     AssertTrue(script.Contains("previewControls.template.value", StringComparison.Ordinal), "script should set scenario template from exception row");
     AssertTrue(script.Contains("renderSupplierCollaborationWorkspace", StringComparison.Ordinal), "script should render supplier drilldown workspace");
     AssertTrue(script.Contains("data-supplier", StringComparison.Ordinal), "script should switch selected supplier");
+    AssertTrue(script.Contains("renderProductFamilyDashboard", StringComparison.Ordinal), "script should render product family dashboard");
+    AssertTrue(script.Contains("data-product-family", StringComparison.Ordinal), "script should switch selected product family");
+    AssertTrue(script.Contains("data-product-family-reset", StringComparison.Ordinal), "product family dashboard should expose a reset action");
+    AssertTrue(!script.Contains("selectors.family.value = state.selectedProductFamily", StringComparison.Ordinal), "product family card click should not hide other family cards by applying the global filter");
+    AssertTrue(script.Contains("IntersectionObserver", StringComparison.Ordinal), "left navigation should observe right-side scroll position");
+    AssertTrue(script.Contains("setActiveNav", StringComparison.Ordinal), "right-side scroll should update active navigation item");
+    AssertTrue(script.Contains("data-family-link-week", StringComparison.Ordinal), "product family detail rows should expose linked week keys");
+    AssertTrue(script.Contains("productFamilyLinkMatches", StringComparison.Ordinal), "product family detail should link risk RCCP and supply rows");
+    AssertTrue(script.Contains("selectedProductFamilyLink", StringComparison.Ordinal), "product family detail should keep linked row selection");
     AssertTrue(script.Contains("applyFilters", StringComparison.Ordinal), "script should support client-side filters");
 }
 
@@ -559,6 +741,31 @@ static void TestScenarioWorkspaceSeedDataCoversUseCases()
     AssertTrue(actionTypes.Contains("SupplierCapacityLimit"), "scenario templates should cover constrained supply cases");
 }
 
+static void TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles()
+{
+    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+
+    var data = source.Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+
+    AssertEqual(data.Skus.Count, data.DdmrpParameters.Count, "DDMRP parameter profile count");
+    AssertTrue(data.DdmrpParameters.All(item => item.CompletenessStatus == "Complete"), "all DDMRP profiles should be complete");
+    AssertTrue(data.DdmrpParameters.All(item => !string.IsNullOrWhiteSpace(item.DecouplingPoint)), "all DDMRP profiles should expose decoupling point");
+    AssertTrue(data.DdmrpParameters.All(item => !string.IsNullOrWhiteSpace(item.BufferProfile)), "all DDMRP profiles should expose buffer profile");
+    AssertTrue(data.DdmrpParameters.All(item => item.Adu > 0 && item.DecoupledLeadTimeDays > 0), "all DDMRP profiles should expose ADU and DLT");
+    AssertTrue(data.DdmrpParameters.All(item => item.DemandAdjustmentFactor > 0 && item.ZoneAdjustmentFactor > 0), "all DDMRP profiles should expose DAF and zone adjustment");
+    AssertTrue(data.DdmrpParameters.All(item => item.EffectiveFromWeek >= 1 && item.EffectiveThroughWeek >= item.EffectiveFromWeek), "all DDMRP profiles should expose effective window");
+    AssertTrue(data.DdmrpParameters.Any(item => item.DemandAdjustmentFactor != 1m || item.ZoneAdjustmentFactor != 1m), "seed data should include non-default DAF or zone adjustments");
+
+    foreach (var sku in data.Skus)
+    {
+        var zones = DdmrpCalculator.CalculateZones(sku);
+        var profile = data.DdmrpParameters.Single(item => item.Sku == sku.Sku);
+        AssertEqual(zones.TopOfRed, profile.TopOfRed, $"top of red for {sku.Sku}");
+        AssertEqual(zones.TopOfYellow, profile.TopOfYellow, $"top of yellow for {sku.Sku}");
+        AssertEqual(zones.TopOfGreen, profile.TopOfGreen, $"top of green for {sku.Sku}");
+    }
+}
+
 static void TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures()
 {
     var adapter = new FakeLegacyScenarioWorkspaceAdapter();
@@ -589,6 +796,216 @@ static void TestScenarioPreviewReturnsComparableResults()
     AssertEqual("FlowFirst", result.Request.AdoptionConstraintMode!, "preview should preserve adoption constraint mode");
     AssertTrue(result.Trace.Any(item => item.Message.Contains("FlowFirst", StringComparison.Ordinal)), "preview trace should include adoption constraint mode");
     AssertTrue(result.Trace.Any(item => item.Message.Contains("需求驱动计划引擎", StringComparison.Ordinal)), "preview should trace shared engine use in Chinese");
+}
+
+static void TestScenarioRunPersistenceSavesPreviewResultAndAuditChain()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-runs-{Guid.NewGuid():N}.db");
+    try
+    {
+        var previewService = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+        var persistence = new ScenarioRunPersistenceService(previewService, databasePath);
+        var previewRequest = new ScenarioRunPreviewRequest(
+            12,
+            "TPL-PREBUILD-PEAK",
+            AdoptionConstraintMode: "FlowFirst",
+            Parameters: new ScenarioRunParameterSet(
+                PrebuildCampaigns: new[] { new PrebuildCampaign("PB-SAVE", "AV-FPGA-203", 1, 6, 8, 300) }));
+
+        var previewOnly = previewService.Preview(previewRequest);
+        AssertTrue(!previewOnly.IsPersisted, "preview API result should remain non-persistent");
+        AssertEqual(0, persistence.List(50).Count, "preview should not write scenario run records");
+
+        var saved = persistence.Save(new ScenarioRunSaveRequest("星载电子提前建库", "保存审计测试", "计划员", previewRequest));
+
+        AssertTrue(Guid.TryParseExact(saved.RunId, "N", out _), "saved run should return a GUID run id");
+        AssertTrue(saved.RunNumber.StartsWith("SR-", StringComparison.Ordinal), "saved run should return a readable run number");
+        AssertEqual("Saved", saved.Status, "scenario status");
+        AssertEqual("NotSubmitted", saved.ApprovalStatus, "approval status");
+        AssertTrue(saved.IsPersisted, "saved response should mark result as persisted");
+
+        var summaries = persistence.List(50);
+        AssertEqual(1, summaries.Count, "saved list count");
+        AssertEqual(saved.RunId, summaries[0].RunId, "saved list run id");
+
+        var detail = persistence.GetDetail(saved.RunId);
+        AssertTrue(detail is not null, "saved detail should be readable");
+        AssertTrue(detail!.Result.IsPersisted, "saved detail result should be persisted");
+        AssertEqual("TPL-PREBUILD-PEAK", detail.Request.TemplateId!, "saved request template");
+        AssertTrue(detail.Result.Baseline.Plan.BufferProjections.Count > 0, "saved result should include baseline plan");
+        AssertTrue(detail.Result.Scenario.Plan.BufferProjections.Count > 0, "saved result should include scenario plan");
+        AssertTrue(detail.Result.Trace.Count > 0, "saved result should include preview trace");
+
+        var audit = persistence.GetAuditEvents(saved.RunId);
+        AssertEqual(4, audit.Count, "audit event count");
+        AssertEqual("RunRequested", audit[0].EventType, "audit event 1");
+        AssertEqual("PreviewRecalculated", audit[1].EventType, "audit event 2");
+        AssertEqual("TraceCaptured", audit[2].EventType, "audit event 3");
+        AssertEqual("RunSaved", audit[3].EventType, "audit event 4");
+        AssertTrue(audit.Select(item => item.Sequence).SequenceEqual(new[] { 1, 2, 3, 4 }), "audit sequence should be append-only order");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if (File.Exists(databasePath))
+        {
+            File.Delete(databasePath);
+        }
+        if (File.Exists($"{databasePath}-wal"))
+        {
+            File.Delete($"{databasePath}-wal");
+        }
+        if (File.Exists($"{databasePath}-shm"))
+        {
+            File.Delete($"{databasePath}-shm");
+        }
+    }
+}
+
+static void TestScenarioRunWorkspaceExposesSaveAuditUi()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(page.Contains("id=\"scenario-save-panel\"", StringComparison.Ordinal), "page should expose scenario save panel");
+    AssertTrue(page.Contains("id=\"save-scenario\"", StringComparison.Ordinal), "page should expose save scenario button");
+    AssertTrue(page.Contains("id=\"saved-scenarios-panel\"", StringComparison.Ordinal), "page should expose saved scenarios panel");
+    AssertTrue(page.Contains("id=\"scenario-audit-list\"", StringComparison.Ordinal), "page should expose audit chain list");
+    AssertTrue(page.Contains("保存场景", StringComparison.Ordinal), "page should use Chinese save label");
+    AssertTrue(page.Contains("已保存场景", StringComparison.Ordinal), "page should use Chinese saved scenario label");
+    AssertTrue(page.Contains("审计链", StringComparison.Ordinal), "page should use Chinese audit chain label");
+    AssertTrue(!page.Contains(">提交审批<", StringComparison.Ordinal), "first persistence version should not expose approval submission button");
+
+    AssertTrue(script.Contains("POST", StringComparison.Ordinal) && script.Contains("/api/scenario-runs", StringComparison.Ordinal), "script should post scenario save request");
+    AssertTrue(script.Contains("/api/scenario-runs?limit=50", StringComparison.Ordinal), "script should load saved scenario runs");
+    AssertTrue(script.Contains("/audit", StringComparison.Ordinal), "script should load audit chain");
+    AssertTrue(script.Contains("已保存，未提交审批", StringComparison.Ordinal), "script should show saved but not submitted status");
+    AssertTrue(script.Contains("previewRequest: state.preview.request", StringComparison.Ordinal), "script should save only the preview request");
+}
+
+static void TestMasterSettingsGovernanceGeneratesProposalsFromPreview()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-master-settings-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+        var preview = new ScenarioRunPreviewService(source);
+        var service = new MasterSettingsGovernanceService(source, preview, databasePath);
+
+        var workspace = service.GetWorkspace();
+        AssertTrue(source.LoadCount == 1, "workspace should read master settings through IScenarioWorkspaceDataSource");
+        AssertTrue(workspace.CurrentSettings.Count > 0, "workspace should expose current master settings");
+        AssertTrue(workspace.StatusCounts.Count > 0, "workspace should expose status counts");
+        AssertTrue(workspace.TypeCounts.Count > 0, "workspace should expose type counts");
+
+        var request = new ScenarioRunPreviewRequest(
+            12,
+            "TPL-ORDER-POLICY",
+            Parameters: new ScenarioRunParameterSet(
+                PrebuildCampaigns: new[] { new PrebuildCampaign("PB-MSG", "AV-FPGA-203", 1, 6, 8, 300) },
+                CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 1, 1.25m, "治理测试") },
+                SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500, OrderCycleDays: 10) },
+                SupplierCapacityLimits: new[] { new SupplierCapacityLimit("Microchip Space", "进口空间级 FPGA", 1, 12, 1) }));
+
+        var proposals = service.ProposeFromPreview(request);
+
+        AssertTrue(source.LoadCount >= 3, "proposal generation should rerun preview and reload data through data source");
+        AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Inventory Buffer"), "MOQ/order cycle/prebuild should create inventory buffer proposals");
+        AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Capacity Buffer"), "capacity multiplier should create capacity buffer proposals");
+        AssertTrue(proposals.Proposals.Any(item => item.SettingType is "Supplier Master Setting" or "Time Buffer"), "supplier limit should create supplier or time buffer proposals");
+        AssertTrue(proposals.Proposals.Any(item => item.Rationale.Any(reason => reason.Contains("Scenario Preview", StringComparison.Ordinal))), "proposals should explain preview origin");
+        AssertTrue(proposals.Trace.Any(item => item.Stage == "MasterSettings"), "proposal response should include master settings trace");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-master-settings-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var preview = new ScenarioRunPreviewService(source);
+        var service = new MasterSettingsGovernanceService(source, preview, databasePath);
+        var proposal = service.ProposeFromPreview(new ScenarioRunPreviewRequest(
+            12,
+            Parameters: new ScenarioRunParameterSet(
+                SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500, OrderCycleDays: 10) })))
+            .Proposals
+            .First(item => item.SettingType == "Inventory Buffer");
+
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("计划员", proposal));
+
+        AssertTrue(Guid.TryParseExact(saved.ChangeId, "N", out _), "saved change should return a GUID change id");
+        AssertTrue(saved.ChangeNumber.StartsWith("MSG-", StringComparison.Ordinal), "saved change should return readable number");
+        AssertEqual("Proposed", saved.Status, "initial governance status");
+        AssertTrue(saved.IsPersisted, "saved change should be persisted");
+
+        var list = service.ListChanges(50);
+        AssertEqual(1, list.Count, "change list count");
+        var detail = service.GetDetail(saved.ChangeId);
+        AssertTrue(detail is not null, "saved change detail should be readable");
+        AssertEqual("Inventory Buffer", detail!.Summary.SettingType, "saved setting type");
+        AssertTrue(detail.Proposal.Rationale.Count > 0, "saved proposal should keep rationale");
+
+        var audit = service.GetAuditEvents(saved.ChangeId);
+        AssertEqual(4, audit.Count, "save audit event count");
+        AssertEqual("ChangeProposed", audit[0].EventType, "audit event 1");
+        AssertEqual("PreviewRecalculated", audit[1].EventType, "audit event 2");
+        AssertEqual("ImpactCaptured", audit[2].EventType, "audit event 3");
+        AssertEqual("ChangeSaved", audit[3].EventType, "audit event 4");
+
+        var reviewed = service.UpdateStatus(saved.ChangeId, new MasterSettingStatusUpdateRequest("Reviewed", "计划员", "测试流转"));
+        AssertEqual("Reviewed", reviewed.Status, "status should advance to reviewed");
+        AssertTrue(service.GetAuditEvents(saved.ChangeId).Any(item => item.EventType == "StatusChanged"), "status change should append audit event");
+
+        var invalidTransitionRejected = false;
+        try
+        {
+            service.UpdateStatus(saved.ChangeId, new MasterSettingStatusUpdateRequest("Effective", "计划员", "非法跳转"));
+        }
+        catch (ArgumentException)
+        {
+            invalidTransitionRejected = true;
+        }
+        AssertTrue(invalidTransitionRejected, "status transition should only follow allowed sequence");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(page.Contains("主设置治理", StringComparison.Ordinal), "page should expose master settings governance nav");
+    AssertTrue(page.Contains("id=\"master-settings-panel\"", StringComparison.Ordinal), "page should expose master settings panel");
+    AssertTrue(page.Contains("id=\"master-settings-kpis\"", StringComparison.Ordinal), "page should expose master settings KPIs");
+    AssertTrue(page.Contains("id=\"master-setting-board\"", StringComparison.Ordinal), "page should expose master setting board");
+    AssertTrue(page.Contains("id=\"master-setting-detail\"", StringComparison.Ordinal), "page should expose master setting detail");
+    AssertTrue(page.Contains("id=\"master-setting-audit-list\"", StringComparison.Ordinal), "page should expose master setting audit chain");
+    AssertTrue(page.Contains("生成主设置变更建议", StringComparison.Ordinal), "page should expose proposal generation action");
+    AssertTrue(page.Contains("当前主设置", StringComparison.Ordinal), "page should expose current master settings");
+    AssertTrue(page.Contains("DDOM 主设置", StringComparison.Ordinal), "page should expose Chinese DDOM master settings label");
+    AssertTrue(!page.Contains("Inventory Buffer", StringComparison.Ordinal), "page should not expose English inventory buffer label");
+    AssertTrue(!page.Contains("MPS 输出", StringComparison.Ordinal), "page should not expose MPS output");
+    AssertTrue(!page.Contains("生产排程", StringComparison.Ordinal), "page should not expose production scheduling");
+    AssertTrue(!page.Contains("推送 DDOM", StringComparison.Ordinal), "page should not expose DDOM push");
+
+    AssertTrue(script.Contains("/api/master-settings-workspace", StringComparison.Ordinal), "script should call master settings workspace API");
+    AssertTrue(script.Contains("/api/master-settings/proposals/from-preview", StringComparison.Ordinal), "script should call proposal API");
+    AssertTrue(script.Contains("/api/master-settings/changes", StringComparison.Ordinal), "script should call change persistence API");
+    AssertTrue(script.Contains("advanceMasterSettingStatus", StringComparison.Ordinal), "script should support governed status advance");
 }
 
 static void TestScenarioPreviewAppliesScenarioParameters()
@@ -731,6 +1148,13 @@ static void TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail()
     AssertTrue(result.SkuDetails.Any(item => item.Series.Count == 12 && item.Zone.TopOfGreen > item.Zone.TopOfYellow), "SKU detail should include zones and series");
     AssertTrue(result.SkuDetails.Any(item => item.ReplenishmentOrders.Count > 0), "SKU detail should include replenishment orders");
     AssertTrue(result.SkuDetails.Any(item => item.Traces.Count > 0), "SKU detail should include calculation trace");
+    AssertTrue(result.SkuDetails.All(item => item.Activities.Count > 0), "SKU detail should include simulation activities");
+    AssertTrue(result.SkuDetails.All(item => item.Attributes.Count > 0), "SKU detail should include SKU attributes");
+    AssertTrue(result.SkuDetails.All(item => item.BufferSizing.Count >= 7), "SKU detail should include buffer sizing lines");
+    AssertTrue(result.SkuDetails.All(item => item.Bom.Count > 0), "SKU detail should include BOM components");
+    AssertTrue(result.SkuDetails.All(item => item.OrderDetails.Count > 0), "SKU detail should include order details");
+    AssertTrue(result.SkuDetails.Any(item => item.Activities.Any(activity => activity.ActivityType == "订货周期复核")), "activities should explain order cycle review waits");
+    AssertTrue(result.SkuDetails.Any(item => item.BufferSizing.Any(line => line.Formula.Contains("ADU", StringComparison.Ordinal))), "buffer sizing should expose DDMRP formulas");
     AssertTrue(result.SkuDetails.Any(item => item.Sku == result.SelectedSku), "selected SKU should exist in detail");
     AssertTrue(result.Series.Any(item => item.Status is "Red" or "Yellow" or "Green" or "Blue"), "series should expose display statuses");
     AssertTrue(result.Series.All(item => !string.IsNullOrWhiteSpace(item.PeriodStartDate)), "series should expose real time labels");
@@ -754,6 +1178,8 @@ static void TestScenarioPreviewReturnsBufferTrendComparison()
     AssertTrue(result.Scenario.BufferTrend.WeeklyCells.Count > 0, "scenario preview should include graphical buffer heatmap cells");
     AssertTrue(scenarioDetail.Series.Any(item => item.IsPrebuild), "pre-build should appear as a buffer trend point");
     AssertTrue(scenarioDetail.ReplenishmentOrders.Any(item => item.Trigger == "PrebuildCampaign"), "pre-build order should appear in SKU detail");
+    AssertTrue(scenarioDetail.Activities.Any(item => item.ActivityType == "提前建库"), "pre-build should appear in single SKU activities");
+    AssertTrue(scenarioDetail.OrderDetails.Any(item => item.OrderType == "提前建库订单"), "pre-build should appear in single SKU order details");
     AssertEqual(
         result.Scenario.BufferTrend.Comparison.AverageInventoryValueDelta,
         result.Scenario.BufferTrend.Kpis.InventoryValueDelta,
@@ -786,6 +1212,81 @@ static void TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets()
     AssertTrue(summary.ScenarioPresets.Any(item => item.TemplateId == "TPL-CONSTRAINED"), "star electronics with supply risk should offer constrained preset");
 }
 
+static void TestScenarioOptimizationServiceUsesSolverAdapter()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var preview = new ScenarioRunPreviewService(source);
+    var solver = new CapturingOptimizationSolver();
+    var service = new ScenarioOptimizationService(source, preview, new[] { solver });
+    var result = service.Optimize(new ScenarioOptimizationRequest(
+        new ScenarioRunPreviewRequest(12, "TPL-PREBUILD-PEAK", AdoptionConstraintMode: "ServiceFirst"),
+        RecommendationCount: 3,
+        MaxActionsPerRecommendation: 2,
+        SolverName: "FakeSolver"));
+
+    AssertTrue(source.LoadCount > 0, "optimization service should load data through IScenarioWorkspaceDataSource");
+    AssertEqual(3, solver.CallCount, "solver should be called once per optimization profile");
+    AssertEqual(3, result.Recommendations.Count, "optimization should return three recommendation profiles");
+    AssertTrue(result.Recommendations.All(item => item.PreviewResult is not null), "recommendation should include recalculated preview result");
+    AssertTrue(result.Recommendations.All(item => item.PreviewRequest.Parameters is not null), "recommendation should include runnable preview request");
+    AssertTrue(result.Recommendations.Select(item => item.ProfileId).ToHashSet().SetEquals(new[] { "ServiceFirst", "CashFirst", "CapacityFirst" }), "recommendation profiles should cover service cash and capacity");
+    AssertTrue(result.CandidateImpactMatrix.Count > 0, "optimization should expose candidate action impact matrix");
+    AssertTrue(result.CandidateImpactMatrix.All(item => item.EstimatedCost >= 0m && !string.IsNullOrWhiteSpace(item.ConstraintNote)), "candidate matrix should include cost and constraints");
+    AssertEqual(result.Recommendations.Count, result.ScenarioComparisons.Count, "optimization should expose one comparison per recommendation");
+    AssertTrue(result.Recommendations.All(item => item.Comparison is not null && item.EstimatedActionCost >= 0m), "recommendation should include comparison and estimated cost");
+    AssertTrue(result.Trace.Any(item => item.Message.Contains("候选动作影响矩阵", StringComparison.Ordinal)), "optimization trace should explain impact matrix");
+    AssertTrue(!result.IsPersisted, "optimization recommendation should not be persisted");
+    AssertTrue(solver.LastProblem?.Candidates.Count > 0, "optimization problem should include candidates");
+    AssertTrue(solver.LastProblem?.CostBudget > 0m, "optimization problem should include cost budget boundary");
+}
+
+static void TestOrToolsOptimizationSolverSolvesToyProblem()
+{
+    var solver = new OrToolsOptimizationSolver();
+    var problem = new OptimizationProblem(
+        "toy-ortools-problem",
+        "ServiceFirst",
+        1,
+        10,
+        100,
+        new[]
+        {
+            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
+            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
+        });
+    var result = solver.Solve(problem);
+
+    AssertEqual("OR-Tools", result.SolverName, "OR-Tools solver name");
+    AssertTrue(result.Status is OptimizationSolverStatus.Optimal or OptimizationSolverStatus.Feasible, "OR-Tools adapter should solve toy problem");
+    AssertContains(result.SelectedCandidateIds, "high", "OR-Tools adapter should choose highest value candidate");
+}
+
+static void TestGurobiOptimizationSolverToyProblem()
+{
+    var solver = new GurobiOptimizationSolver();
+    var problem = new OptimizationProblem(
+        "toy-problem",
+        "ServiceFirst",
+        1,
+        10,
+        100,
+        new[]
+        {
+            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
+            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
+        });
+    var result = solver.Solve(problem);
+
+    if (result.Status == OptimizationSolverStatus.Unavailable)
+    {
+        AssertContains(new[] { result.Message }, "Gurobi", "unavailable result should explain Gurobi availability");
+        return;
+    }
+
+    AssertTrue(result.Status is OptimizationSolverStatus.Optimal or OptimizationSolverStatus.Feasible, "toy problem should solve when Gurobi is available");
+    AssertContains(result.SelectedCandidateIds, "high", "solver should choose highest value candidate");
+}
+
 static void AssertEqual<T>(T expected, T actual, string label)
 {
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
@@ -815,6 +1316,17 @@ static bool ContainsChinese(string value)
     return value.Any(ch => ch >= '\u4e00' && ch <= '\u9fff');
 }
 
+static void DeleteSqliteFiles(string databasePath)
+{
+    foreach (var file in new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" })
+    {
+        if (File.Exists(file))
+        {
+            File.Delete(file);
+        }
+    }
+}
+
 internal sealed record LegacyScenarioSource(ValidationData Data);
 
 internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDataAdapter<LegacyScenarioSource>
@@ -840,6 +1352,33 @@ internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDa
     {
         LoadCount++;
         return _inner.Load(request);
+    }
+}
+
+internal sealed class CapturingOptimizationSolver : IOptimizationSolver
+{
+    public string SolverName => "FakeSolver";
+
+    public int CallCount { get; private set; }
+
+    public OptimizationProblem? LastProblem { get; private set; }
+
+    public OptimizationSolution Solve(OptimizationProblem problem)
+    {
+        CallCount++;
+        LastProblem = problem;
+        var selected = problem.Candidates
+            .OrderByDescending(candidate => candidate.ObjectiveValue)
+            .Take(Math.Max(1, Math.Min(problem.MaxSelectedCandidates, problem.Candidates.Count)))
+            .Select(candidate => candidate.CandidateId)
+            .ToList();
+
+        return new OptimizationSolution(
+            OptimizationSolverStatus.Optimal,
+            "FakeSolver",
+            "测试求解器已选择候选动作。",
+            selected.Count,
+            selected);
     }
 }
 
@@ -874,6 +1413,36 @@ internal sealed class FixedScenarioWorkspaceDataSource : IScenarioWorkspaceDataS
                 new ScenarioTemplate("TPL-ORDER-POLICY", "MOQ 与订货周期调整", "测试补货策略", Array.Empty<ScenarioTemplateAction>()),
                 new ScenarioTemplate("TPL-CONSTRAINED", "受限与不受限计划对比", "测试供应约束", Array.Empty<ScenarioTemplateAction>())
             },
+            new[]
+            {
+                new DdmrpParameterProfile(
+                    sku.Sku,
+                    sku.Name,
+                    sku.Family,
+                    "测试解耦点",
+                    "测试缓冲档案",
+                    sku.Adu,
+                    sku.AduSource,
+                    sku.AduCalculationWindowDays,
+                    sku.DecoupledLeadTimeDays,
+                    sku.DltSource,
+                    sku.VariabilityFactor,
+                    sku.DemandAdjustmentFactor,
+                    sku.ZoneAdjustmentFactor,
+                    sku.MinimumOrderQuantity,
+                    sku.OrderCycleDays,
+                    sku.UnitCost,
+                    sku.WeeklyCapacityUnits,
+                    750,
+                    1250,
+                    1950,
+                    1,
+                    12,
+                    "Current",
+                    "Complete",
+                    "测试参数完整。")
+            },
+            Array.Empty<MasterSetting>(),
             Array.Empty<BusinessGuardrail>());
     }
 }

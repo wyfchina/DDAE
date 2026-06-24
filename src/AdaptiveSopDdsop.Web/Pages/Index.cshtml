@@ -14,14 +14,18 @@
             </div>
         </div>
         <nav class="nav-list">
-            <a class="nav-item is-active" href="#overview-panel"><span class="nav-index">01</span><span>总览</span></a>
-            <a class="nav-item" href="#data-readiness-panel"><span class="nav-index">02</span><span>数据准备</span></a>
-            <a class="nav-item" href="#scenario-run-panel"><span class="nav-index">03</span><span>场景运行</span></a>
-            <a class="nav-item" href="#scenario-comparison"><span class="nav-index">04</span><span>方案比较</span></a>
-            <a class="nav-item" href="#rccp-panel"><span class="nav-index">05</span><span>RCCP</span></a>
-            <a class="nav-item" href="#buffer-trend-panel"><span class="nav-index">06</span><span>缓冲趋势</span></a>
-            <a class="nav-item" href="#projected-supply-panel"><span class="nav-index">07</span><span>供应需求</span></a>
-            <a class="nav-item" href="#variance-panel"><span class="nav-index">08</span><span>异常中心</span></a>
+            <a class="nav-item is-active" href="#overview-panel" data-help-key="overview"><span class="nav-index">01</span><span>总览</span></a>
+            <a class="nav-item" href="#product-family-dashboard-panel" data-help-key="productFamilyDashboard"><span class="nav-index">02</span><span>产品族看板</span></a>
+            <a class="nav-item" href="#data-readiness-panel" data-help-key="dataReadiness"><span class="nav-index">03</span><span>数据准备</span></a>
+            <a class="nav-item" href="#variance-panel" data-help-key="exceptions"><span class="nav-index">04</span><span>异常识别</span></a>
+            <a class="nav-item" href="#scenario-run-panel" data-help-key="scenarioRun"><span class="nav-index">05</span><span>场景运行</span></a>
+            <a class="nav-item" href="#scenario-comparison" data-help-key="scenarioComparison"><span class="nav-index">06</span><span>方案比较</span></a>
+            <a class="nav-item" href="#buffer-trend-panel" data-help-key="bufferTrend"><span class="nav-index">07</span><span>缓冲 / 库存趋势</span></a>
+            <a class="nav-item" href="#rccp-panel" data-help-key="rccpConstraint"><span class="nav-index">08</span><span>RCCP 与约束</span></a>
+            <a class="nav-item" href="#projected-supply-panel" data-help-key="supplierDemand"><span class="nav-index">09</span><span>供应商需求</span></a>
+            <a class="nav-item" href="#saved-scenarios-panel" data-help-key="scenarioTrace"><span class="nav-index">10</span><span>场景留痕</span></a>
+            <a class="nav-item" href="#master-settings-panel" data-help-key="masterSettings"><span class="nav-index">11</span><span>主设置治理</span></a>
+            <a class="nav-item" href="#trace-panel" data-help-key="whiteBoxTrace"><span class="nav-index">12</span><span>白盒追踪</span></a>
         </nav>
         <div class="navigation-footer">
             <span class="service-dot" aria-hidden="true"></span>
@@ -75,7 +79,7 @@
                 <div>
                     <span class="context-label">数据状态</span>
                     <strong>正在读取场景工作台数据</strong>
-                    <p>当前阶段支持场景预览重算，但不保存、不审批、不调用优化求解器。</p>
+                    <p>当前阶段支持场景预览重算、优化推荐、场景留痕和主设置变更治理。</p>
                 </div>
             </section>
 
@@ -86,6 +90,42 @@
 
             <section id="overview-panel" class="workspace-section" hidden>
                 <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标"></div>
+            </section>
+
+            <section id="product-family-dashboard-panel" class="workspace-section" hidden>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">管理层聚合视图</span><h2>产品族看板</h2></div>
+                    <span id="product-family-case-chip" class="status-chip neutral">基准方案</span>
+                </div>
+                <div id="product-family-kpis" class="rccp-kpis" aria-label="产品族看板关键指标"></div>
+                <div class="product-family-workbench">
+                    <section class="product-family-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">产品族总览</span><h2>产品族卡片</h2></div>
+                        </div>
+                        <div id="product-family-card-grid" class="product-family-card-grid"></div>
+                    </section>
+                    <section class="product-family-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">周度风险网格</span><h2>产品族 × 周</h2></div>
+                        </div>
+                        <div id="product-family-weekly-grid" class="rccp-heatmap table-scroll" aria-label="产品族周度风险网格"></div>
+                    </section>
+                    <section id="product-family-detail-panel" class="product-family-detail">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">选中产品族详情</span><h2 id="product-family-selected-title">选中产品族详情</h2></div>
+                        </div>
+                        <div id="product-family-detail-summary" class="buffer-sku-metadata"></div>
+                        <div class="rccp-detail-grid">
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>范围</th><th>对象</th><th>周</th><th>原因</th><th>严重度</th></tr></thead><tbody id="product-family-risk-body"></tbody></table></div>
+                            <div id="product-family-action-list" class="diagnostics-list"></div>
+                        </div>
+                        <div class="rccp-detail-grid">
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>SKU</th><th>周</th><th>订单量</th><th>资源</th><th>资源负荷</th><th>触发</th></tr></thead><tbody id="product-family-rccp-body"></tbody></table></div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>供应商</th><th>物料族</th><th>SKU</th><th>周</th><th>订单量</th><th>金额</th></tr></thead><tbody id="product-family-supply-body"></tbody></table></div>
+                        </div>
+                    </section>
+                </div>
             </section>
 
             <section id="data-readiness-panel" class="workspace-section" hidden>
@@ -109,6 +149,22 @@
                             <div><span class="panel-kicker">业务栅栏</span><h2>采纳约束</h2></div>
                         </div>
                         <div class="table-scroll"><table class="data-table"><tbody id="guardrail-table-body"></tbody></table></div>
+                    </section>
+                    <section class="readiness-panel">
+                        <div class="panel-heading">
+                            <div><span class="panel-kicker">DDMRP 参数</span><h2>参数完整性</h2></div>
+                            <div class="panel-inline-actions">
+                                <button id="ddmrp-missing-only" class="button secondary compact-button" type="button" aria-pressed="false">仅看缺失</button>
+                                <button id="ddmrp-toggle-all" class="button secondary compact-button" type="button" aria-expanded="false">查看全部</button>
+                                <span id="ddmrp-completeness-chip" class="status-chip neutral">未检查</span>
+                            </div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>SKU</th><th>解耦点</th><th>缓冲档案</th><th>ADU / DAF</th><th>DLT / 变异</th><th>MOQ / 订货周期</th><th>区域调整</th><th>红 / 黄 / 绿上沿</th><th>状态</th></tr></thead>
+                                <tbody id="ddmrp-parameter-body"></tbody>
+                            </table>
+                        </div>
                     </section>
                 </div>
             </section>
@@ -150,6 +206,34 @@
                             <button id="run-preview" class="button primary" type="button">运行预览</button>
                             <span id="preview-status" class="status-chip neutral">尚未运行</span>
                         </div>
+                        <div id="optimization-panel" class="optimization-panel">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">求解器状态</span><h2>优化推荐</h2></div>
+                                <span id="optimization-status" class="status-chip neutral">尚未求解</span>
+                            </div>
+                            <p class="muted-note">求解器选择候选动作组合，系统再用白盒预览引擎重算；推荐不会直接采纳、不会提交审批。</p>
+                            <div class="preview-actions">
+                                <label class="inline-select"><span>求解器</span><select id="optimization-solver-select"><option value="Gurobi">Gurobi</option><option value="OR-Tools">OR-Tools</option></select></label>
+                                <button id="run-optimization" class="button secondary" type="button">生成优化推荐</button>
+                                <span class="muted-note">返回服务优先、库存资金优先、产能平衡优先三类方案。</span>
+                            </div>
+                            <div id="optimization-recommendation-list" class="optimization-recommendation-list"></div>
+                        </div>
+                        <div id="scenario-save-panel" class="scenario-save-panel" hidden>
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">场景留痕</span><h2>保存场景</h2></div>
+                                <span id="scenario-save-status" class="status-chip neutral">等待预览</span>
+                            </div>
+                            <div class="form-grid compact">
+                                <label><span>场景名称</span><input id="scenario-save-name" type="text" maxlength="80" placeholder="例如：星载电子提前建库方案"></label>
+                                <label><span>创建人</span><input id="scenario-save-created-by" type="text" maxlength="40" value="计划员"></label>
+                                <label class="form-wide"><span>说明</span><input id="scenario-save-description" type="text" maxlength="240" placeholder="记录会议假设、约束来源或方案目的"></label>
+                            </div>
+                            <div class="preview-actions">
+                                <button id="save-scenario" class="button secondary" type="button">保存场景</button>
+                                <span class="muted-note">保存时后端会重新运行预览，并写入输入、输出、指标和 trace。</span>
+                            </div>
+                        </div>
                     </section>
                     <section>
                         <div class="panel-heading compact-heading">
@@ -163,9 +247,31 @@
             <section id="scenario-comparison" class="scenario-comparison workspace-section" hidden>
                 <div class="panel-heading">
                     <div><span class="panel-kicker">基准方案与预览方案</span><h2>方案比较</h2></div>
-                    <span class="status-chip neutral">预览结果，未保存</span>
+                    <button id="generate-master-settings" class="button secondary" type="button">生成主设置变更建议</button>
                 </div>
                 <div id="scenario-comparison-result" class="comparison-grid"></div>
+                <section id="multi-scenario-comparison-panel" class="budget-panel">
+                    <div class="panel-heading compact-heading">
+                        <div><span class="panel-kicker">多方案比较</span><h2>优化方案 KPI 对比</h2></div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>方案</th><th>服务变化</th><th>流速变化</th><th>平均库存变化</th><th>峰值负荷变化</th><th>红区 SKU 变化</th><th>供应缺口变化</th><th>补货订单变化</th><th>动作成本</th><th>管理判断</th></tr></thead>
+                            <tbody id="multi-scenario-comparison-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+                <section id="candidate-impact-matrix-panel" class="budget-panel">
+                    <div class="panel-heading compact-heading">
+                        <div><span class="panel-kicker">候选动作库</span><h2>候选动作影响矩阵</h2></div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>候选动作</th><th>对象</th><th>服务影响</th><th>库存影响</th><th>峰值负荷影响</th><th>供应缺口影响</th><th>补货订单影响</th><th>估算成本</th><th>动作约束</th><th>可行性</th></tr></thead>
+                            <tbody id="candidate-impact-matrix-body"></tbody>
+                        </table>
+                    </div>
+                </section>
                 <section class="budget-panel">
                     <div class="panel-heading compact-heading">
                         <div><span class="panel-kicker">预算 / 去年同期</span><h2>预算与去年同期对照</h2></div>
@@ -174,13 +280,101 @@
                 </section>
             </section>
 
+            <section id="saved-scenarios-panel" class="workspace-section" hidden>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">场景记录</span><h2>已保存场景</h2></div>
+                    <button id="refresh-scenario-runs" class="button secondary" type="button">刷新记录</button>
+                </div>
+                <div class="saved-run-layout">
+                    <section class="saved-run-list">
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>场景编号</th><th>名称</th><th>创建人</th><th>状态</th><th>服务水平</th><th>峰值负荷</th><th>供应缺口</th></tr></thead>
+                                <tbody id="saved-scenario-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="readiness-panel">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">审计链</span><h2 id="saved-scenario-title">审计链</h2></div>
+                            <span id="saved-scenario-status" class="status-chip neutral">未选择</span>
+                        </div>
+                        <div id="scenario-audit-list" class="diagnostics-list"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="master-settings-panel" class="workspace-section" hidden>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">DDOM 主设置</span><h2>主设置治理</h2></div>
+                    <span id="master-setting-status" class="status-chip neutral">未加载</span>
+                </div>
+                <div id="master-settings-kpis" class="rccp-kpis" aria-label="主设置治理关键指标"></div>
+                <div class="master-settings-layout">
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">变更看板</span><h2>当前 / 待评审 / 已评审 / 已批准 / 已生效 / 已失效</h2></div>
+                            <button id="refresh-master-settings" class="button secondary" type="button">刷新治理记录</button>
+                        </div>
+                        <div id="master-setting-board" class="master-setting-board"></div>
+                    </section>
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">当前主设置</span><h2>DDOM 参数基线</h2></div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>类型</th><th>目标</th><th>当前值</th><th>建议值</th><th>触发原因</th><th>状态</th></tr></thead>
+                                <tbody id="master-current-settings-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">场景预览建议</span><h2>待保存变更建议</h2></div>
+                            <button id="save-master-setting-change" class="button primary" type="button">保存选中变更</button>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>类型</th><th>目标</th><th>当前值</th><th>建议值</th><th>风险</th><th>影响</th></tr></thead>
+                                <tbody id="master-setting-proposal-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">已保存变更</span><h2>治理记录</h2></div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>编号</th><th>类型</th><th>目标</th><th>状态</th><th>风险</th><th>生效窗口</th></tr></thead>
+                                <tbody id="master-setting-change-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">选中变更详情</span><h2 id="master-setting-detail-title">主设置变更详情</h2></div>
+                            <button id="advance-master-setting-status" class="button secondary" type="button">推进状态</button>
+                        </div>
+                        <div id="master-setting-detail" class="metadata-list"></div>
+                    </section>
+                    <section class="master-settings-block">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">审计链</span><h2>主设置变更审计链</h2></div>
+                        </div>
+                        <div id="master-setting-audit-list" class="diagnostics-list"></div>
+                    </section>
+                </div>
+            </section>
+
             <section class="workspace-section tab-workspace" hidden>
                 <div class="schedule-tabs" role="tablist" aria-label="工作区视图">
                     <button class="schedule-tab is-active" type="button" data-tab="buffer-trend-panel">缓冲趋势</button>
-                    <button class="schedule-tab" type="button" data-tab="rccp-panel">需求驱动 RCCP</button>
-                    <button class="schedule-tab" type="button" data-tab="projected-supply-panel">预计供应需求</button>
-                    <button class="schedule-tab" type="button" data-tab="variance-panel">异常分析</button>
-                    <button class="schedule-tab" type="button" data-tab="trace-panel">计算追踪</button>
+                    <button class="schedule-tab" type="button" data-tab="rccp-panel">RCCP 与约束</button>
+                    <button class="schedule-tab" type="button" data-tab="projected-supply-panel">供应商需求</button>
+                    <button class="schedule-tab" type="button" data-tab="variance-panel">异常识别</button>
+                    <button class="schedule-tab" type="button" data-tab="trace-panel">白盒追踪</button>
                 </div>
 
                 <section id="buffer-trend-panel" class="schedule-panel" data-tab-panel>
@@ -217,9 +411,41 @@
                         </section>
                         <section class="buffer-visual-panel">
                             <div class="panel-heading compact-heading">
-                                <div><span class="panel-kicker">选中 SKU 明细</span><h2>参数、订单与计算追踪</h2></div>
+                                <div><span class="panel-kicker">单 SKU 仿真工作台</span><h2>活动、属性、缓冲 sizing、BOM 与订单明细</h2></div>
                             </div>
                             <div id="buffer-sku-metadata" class="buffer-sku-metadata"></div>
+                            <div id="single-sku-workbench" class="single-sku-workbench">
+                                <section class="single-sku-card">
+                                    <div class="panel-heading compact-heading">
+                                        <div><span class="panel-kicker">活动列表</span><h2>净流动量事件解释</h2></div>
+                                    </div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>周</th><th>日期</th><th>活动</th><th>数量</th><th>影响方向</th><th>来源</th><th>触发原因</th><th>活动后净流动量</th><th>状态</th><th>关联对象</th></tr></thead><tbody id="single-sku-activity-body"></tbody></table></div>
+                                </section>
+                                <section class="single-sku-card">
+                                    <div class="panel-heading compact-heading">
+                                        <div><span class="panel-kicker">属性</span><h2>SKU 主数据与运行参数</h2></div>
+                                    </div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>分组</th><th>属性</th><th>值</th><th>业务解释</th></tr></thead><tbody id="single-sku-attribute-body"></tbody></table></div>
+                                </section>
+                                <section class="single-sku-card">
+                                    <div class="panel-heading compact-heading">
+                                        <div><span class="panel-kicker">缓冲 sizing</span><h2>红黄绿区计算</h2></div>
+                                    </div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>组成</th><th>公式</th><th>值</th><th>业务解释</th></tr></thead><tbody id="single-sku-sizing-body"></tbody></table></div>
+                                </section>
+                                <section class="single-sku-card">
+                                    <div class="panel-heading compact-heading">
+                                        <div><span class="panel-kicker">BOM</span><h2>关键组件与约束解释</h2></div>
+                                    </div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>组件编码</th><th>组件名称</th><th>层级</th><th>类型</th><th>用量</th><th>供应商</th><th>提前期</th><th>状态</th><th>约束说明</th></tr></thead><tbody id="single-sku-bom-body"></tbody></table></div>
+                                </section>
+                                <section class="single-sku-card">
+                                    <div class="panel-heading compact-heading">
+                                        <div><span class="panel-kicker">订单明细</span><h2>需求、补货与供应追溯</h2></div>
+                                    </div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>订单号</th><th>类型</th><th>周</th><th>释放周</th><th>到货周</th><th>数量</th><th>金额</th><th>状态</th><th>来源规则</th><th>供应商</th><th>资源</th><th>能力占用</th><th>供应缺口</th><th>Trace</th></tr></thead><tbody id="single-sku-order-body"></tbody></table></div>
+                                </section>
+                            </div>
                             <div class="buffer-detail-grid">
                                 <div class="table-scroll"><table class="data-table"><thead><tr><th>周期开始</th><th>周</th><th>时间相位 ADU</th><th>期初净流动量</th><th>需求</th><th>复核前 / 补货后净流动量</th><th>红 / 黄 / 绿上沿</th><th>库存金额</th><th>补货订单</th><th>状态</th></tr></thead><tbody id="buffer-trend-body"></tbody></table></div>
                                 <div class="table-scroll"><table class="data-table"><thead><tr><th>周</th><th>数量</th><th>金额</th><th>触发</th></tr></thead><tbody id="buffer-replenishment-body"></tbody></table></div>
@@ -340,5 +566,20 @@
         </main>
     </div>
 </div>
+
+<div id="workspace-focus-layer" class="focus-backdrop" hidden aria-hidden="true">
+    <div class="focus-stage" role="dialog" aria-modal="true" aria-label="专注查看模块"></div>
+</div>
+
+<aside id="workspace-detail-drawer" class="workspace-drawer" hidden aria-hidden="true" aria-label="详情抽屉">
+    <div class="drawer-header">
+        <div>
+            <span class="panel-kicker">详情</span>
+            <h2 id="workspace-drawer-title">参数详情</h2>
+        </div>
+        <button id="workspace-drawer-close" class="button secondary compact-button" type="button">关闭</button>
+    </div>
+    <div id="workspace-drawer-body" class="drawer-body"></div>
+</aside>
 
 <script src="~/js/app.js" asp-append-version="true"></script>

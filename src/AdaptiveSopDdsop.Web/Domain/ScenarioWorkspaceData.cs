@@ -99,6 +99,33 @@ public sealed record BusinessGuardrail(
     string Unit,
     string DecisionRule);
 
+public sealed record DdmrpParameterProfile(
+    string Sku,
+    string Name,
+    string Family,
+    string DecouplingPoint,
+    string BufferProfile,
+    decimal Adu,
+    string AduSource,
+    int AduCalculationWindowDays,
+    int DecoupledLeadTimeDays,
+    string DltSource,
+    decimal VariabilityFactor,
+    decimal DemandAdjustmentFactor,
+    decimal ZoneAdjustmentFactor,
+    decimal MinimumOrderQuantity,
+    int OrderCycleDays,
+    decimal UnitCost,
+    decimal WeeklyCapacityUnits,
+    decimal TopOfRed,
+    decimal TopOfYellow,
+    decimal TopOfGreen,
+    int EffectiveFromWeek,
+    int EffectiveThroughWeek,
+    string ParameterStatus,
+    string CompletenessStatus,
+    string ValidationMessage);
+
 public sealed record SkuPolicyOverride(
     string Sku,
     decimal? MinimumOrderQuantity = null,
@@ -412,6 +439,57 @@ public sealed record BufferWeeklyCell(
     decimal InventoryValue,
     string Status);
 
+public sealed record SingleSkuSimulationActivity(
+    int Week,
+    string PeriodStartDate,
+    string ActivityType,
+    decimal Quantity,
+    string Direction,
+    string Source,
+    string TriggerReason,
+    decimal ResultingNetFlow,
+    string BufferStatus,
+    string RelatedObject);
+
+public sealed record SingleSkuAttribute(
+    string Group,
+    string Name,
+    string Value,
+    string Explanation);
+
+public sealed record BufferSizingLine(
+    string Component,
+    string Formula,
+    decimal Value,
+    string Explanation);
+
+public sealed record SingleSkuBomComponent(
+    string ComponentSku,
+    string ComponentName,
+    int Level,
+    string ComponentType,
+    decimal QuantityPer,
+    string Supplier,
+    int LeadTimeDays,
+    string BufferStatus,
+    string ConstraintNote);
+
+public sealed record SingleSkuOrderDetail(
+    string OrderId,
+    string OrderType,
+    int Week,
+    int ReleaseWeek,
+    int DueWeek,
+    decimal Quantity,
+    decimal Value,
+    string Status,
+    string SourceRule,
+    string Supplier,
+    string Resource,
+    decimal CapacityLoad,
+    decimal SupplyGap,
+    string Trace);
+
 public sealed record BufferSkuDetail(
     string Sku,
     string Name,
@@ -424,7 +502,12 @@ public sealed record BufferSkuDetail(
     BufferZoneBand Zone,
     IReadOnlyList<BufferTrendSeriesPoint> Series,
     IReadOnlyList<ProjectedReplenishmentOrder> ReplenishmentOrders,
-    IReadOnlyList<PlanningTrace> Traces);
+    IReadOnlyList<PlanningTrace> Traces,
+    IReadOnlyList<SingleSkuSimulationActivity> Activities,
+    IReadOnlyList<SingleSkuAttribute> Attributes,
+    IReadOnlyList<BufferSizingLine> BufferSizing,
+    IReadOnlyList<SingleSkuBomComponent> Bom,
+    IReadOnlyList<SingleSkuOrderDetail> OrderDetails);
 
 public sealed record BufferTrendWorkspaceResult(
     string CaseId,
@@ -439,11 +522,90 @@ public sealed record BufferTrendWorkspaceResult(
     IReadOnlyList<BufferSkuDetail> SkuDetails,
     string SelectedSku);
 
+public sealed record ProductFamilyDashboardResult(
+    string CaseId,
+    string Name,
+    int HorizonWeeks,
+    IReadOnlyList<ProductFamilySummary> Summaries,
+    IReadOnlyList<ProductFamilyWeeklyCell> WeeklyCells,
+    IReadOnlyList<ProductFamilyDetail> Details,
+    ProductFamilyDashboardComparison Comparison,
+    string SelectedFamily);
+
+public sealed record ProductFamilySummary(
+    string Family,
+    string Name,
+    int SkuCount,
+    decimal TargetServiceLevel,
+    decimal TargetFlowIndex,
+    decimal ServiceLevelPercent,
+    decimal FlowIndex,
+    decimal AverageInventoryValue,
+    decimal PeakInventoryValue,
+    int RedSkuCount,
+    int RedWeekCount,
+    int YellowWeekCount,
+    int ReplenishmentOrderCount,
+    decimal ReplenishmentValue,
+    decimal SupplyGap,
+    decimal CapacityGap,
+    decimal PeakLoadPercent,
+    decimal BudgetInventoryVariance,
+    string Status,
+    string RecommendedAction);
+
+public sealed record ProductFamilyWeeklyCell(
+    string Family,
+    int Week,
+    decimal Demand,
+    decimal ReplenishmentQuantity,
+    decimal InventoryValue,
+    int RedSkuCount,
+    int YellowSkuCount,
+    decimal SupplyGap,
+    decimal CapacityGap,
+    decimal PeakLoadPercent,
+    decimal BudgetInventoryVariance,
+    string Status);
+
+public sealed record ProductFamilyRiskItem(
+    string Scope,
+    string Target,
+    int Week,
+    string Reason,
+    string Severity);
+
+public sealed record ProductFamilyActionRecommendation(
+    string Family,
+    string ActionType,
+    string Message,
+    string Severity);
+
+public sealed record ProductFamilyDetail(
+    string Family,
+    string Name,
+    IReadOnlyList<ProductFamilyWeeklyCell> WeeklyCells,
+    IReadOnlyList<ProductFamilyRiskItem> RiskItems,
+    IReadOnlyList<ProductFamilyActionRecommendation> Recommendations,
+    IReadOnlyList<BufferFamilySummary> BufferSummaries,
+    IReadOnlyList<RccpSkuContribution> RccpContributions,
+    IReadOnlyList<SupplierSkuRequirement> SupplierRequirements);
+
+public sealed record ProductFamilyDashboardComparison(
+    decimal ServiceLevelDelta,
+    decimal FlowIndexDelta,
+    decimal AverageInventoryValueDelta,
+    decimal SupplyGapDelta,
+    decimal CapacityGapDelta,
+    int RedWeekDelta,
+    decimal BudgetInventoryVarianceDelta);
+
 public sealed record ScenarioRunPreviewCase(
     string CaseId,
     string Name,
     DemandDrivenPlanResult Plan,
     ScenarioPreviewMetrics Metrics,
+    ProductFamilyDashboardResult ProductFamilyDashboard,
     BufferTrendWorkspaceResult BufferTrend,
     RccpWorkspaceResult Rccp,
     ConstraintWorkspaceResult Constraints,
@@ -476,6 +638,264 @@ public sealed record ScenarioRunPreviewResult(
     IReadOnlyList<ScenarioAuditTrace> Trace,
     bool IsPersisted);
 
+public enum OptimizationSolverStatus
+{
+    Optimal,
+    Feasible,
+    Infeasible,
+    Unavailable,
+    Error
+}
+
+public sealed record OptimizationCandidate(
+    string CandidateId,
+    string ActionType,
+    string Target,
+    string ConflictKey,
+    decimal ObjectiveValue,
+    decimal InventoryDelta,
+    decimal EstimatedCost,
+    OptimizationCandidateImpact Impact,
+    string ConstraintNote,
+    string FeasibilityStatus,
+    ScenarioRunParameterSet Parameters,
+    string Explanation);
+
+public sealed record OptimizationProblem(
+    string ProblemId,
+    string ProfileId,
+    int MaxSelectedCandidates,
+    decimal InventoryBudget,
+    decimal CostBudget,
+    IReadOnlyList<OptimizationCandidate> Candidates);
+
+public sealed record OptimizationSolution(
+    OptimizationSolverStatus Status,
+    string SolverName,
+    string Message,
+    decimal ObjectiveValue,
+    IReadOnlyList<string> SelectedCandidateIds);
+
+public interface IOptimizationSolver
+{
+    string SolverName { get; }
+
+    OptimizationSolution Solve(OptimizationProblem problem);
+}
+
+public sealed record ScenarioOptimizationRequest(
+    ScenarioRunPreviewRequest BaseRequest,
+    int RecommendationCount = 3,
+    int MaxActionsPerRecommendation = 3,
+    string? TargetMode = null,
+    string? SolverName = null);
+
+public sealed record ScenarioOptimizationAction(
+    string CandidateId,
+    string ActionType,
+    string Target,
+    decimal EstimatedCost,
+    OptimizationCandidateImpact Impact,
+    string Explanation);
+
+public sealed record OptimizationCandidateImpact(
+    string CandidateId,
+    string ActionType,
+    string Target,
+    decimal ServiceImpactPercent,
+    decimal InventoryImpactValue,
+    decimal PeakLoadImpactPercent,
+    decimal SupplyGapImpact,
+    int ReplenishmentOrderImpact,
+    decimal EstimatedCost,
+    string CostBasis,
+    string ConstraintNote,
+    string FeasibilityStatus);
+
+public sealed record ScenarioOptimizationComparison(
+    string ProfileId,
+    string ProfileName,
+    decimal ServiceLevelDelta,
+    decimal FlowIndexDelta,
+    decimal AverageInventoryValueDelta,
+    decimal PeakLoadPercentDelta,
+    int RedSkuCountDelta,
+    decimal SupplyGapDelta,
+    int ReplenishmentOrderCountDelta,
+    decimal EstimatedActionCost,
+    string ManagementDecision);
+
+public sealed record ScenarioOptimizationRecommendation(
+    string ProfileId,
+    string ProfileName,
+    string Summary,
+    OptimizationSolverStatus SolverStatus,
+    string SolverMessage,
+    decimal ObjectiveValue,
+    ScenarioRunPreviewRequest PreviewRequest,
+    ScenarioRunPreviewResult PreviewResult,
+    ScenarioOptimizationComparison Comparison,
+    decimal EstimatedActionCost,
+    IReadOnlyList<ScenarioOptimizationAction> Actions,
+    IReadOnlyList<ScenarioAuditTrace> Trace);
+
+public sealed record ScenarioOptimizationResponse(
+    OptimizationSolverStatus SolverStatus,
+    string SolverName,
+    string Message,
+    IReadOnlyList<OptimizationCandidateImpact> CandidateImpactMatrix,
+    IReadOnlyList<ScenarioOptimizationComparison> ScenarioComparisons,
+    IReadOnlyList<ScenarioOptimizationRecommendation> Recommendations,
+    IReadOnlyList<ScenarioAuditTrace> Trace,
+    bool IsPersisted);
+
+public sealed record ScenarioRunSaveRequest(
+    string Name,
+    string? Description,
+    string? CreatedBy,
+    ScenarioRunPreviewRequest PreviewRequest);
+
+public sealed record ScenarioRunSummary(
+    string RunId,
+    string RunNumber,
+    string Name,
+    string? Description,
+    string CreatedBy,
+    string Status,
+    string ApprovalStatus,
+    string CreatedAtUtc,
+    int HorizonWeeks,
+    string? TemplateId,
+    string? AdoptionConstraintMode,
+    decimal ServiceLevelPercent,
+    decimal FlowIndex,
+    decimal AverageInventoryValue,
+    decimal PeakLoadPercent,
+    decimal SupplyGap,
+    int RedSkuCount,
+    int ReplenishmentOrderCount);
+
+public sealed record ScenarioRunDetail(
+    ScenarioRunSummary Summary,
+    ScenarioRunPreviewRequest Request,
+    ScenarioRunPreviewResult Result);
+
+public sealed record ScenarioRunAuditEvent(
+    string EventId,
+    string RunId,
+    int Sequence,
+    string EventType,
+    string Stage,
+    string Severity,
+    string Message,
+    string? PayloadJson,
+    string CreatedAtUtc);
+
+public sealed record ScenarioRunSaveResponse(
+    string RunId,
+    string RunNumber,
+    string Status,
+    string ApprovalStatus,
+    bool IsPersisted,
+    ScenarioRunSummary Summary);
+
+public sealed record MasterSettingStatusCount(
+    string Status,
+    int Count);
+
+public sealed record MasterSettingTypeCount(
+    string SettingType,
+    int Count);
+
+public sealed record MasterSettingChangeImpact(
+    decimal ServiceImpact,
+    decimal CashImpact,
+    string RiskLevel,
+    string Reason);
+
+public sealed record MasterSettingChangeRequest(
+    string? SourceScenarioRunId,
+    string? SourceTemplateId,
+    string SettingType,
+    string Target,
+    string CurrentValue,
+    string ProposedValue,
+    string Trigger,
+    string EffectiveWindow,
+    string Status,
+    decimal ServiceImpact,
+    decimal CashImpact,
+    string RiskLevel,
+    IReadOnlyList<string> Rationale);
+
+public sealed record MasterSettingChangeSummary(
+    string ChangeId,
+    string ChangeNumber,
+    string? SourceScenarioRunId,
+    string? SourceTemplateId,
+    string SettingType,
+    string Target,
+    string CurrentValue,
+    string ProposedValue,
+    string Trigger,
+    string EffectiveWindow,
+    string Status,
+    decimal ServiceImpact,
+    decimal CashImpact,
+    string RiskLevel,
+    string CreatedBy,
+    string CreatedAtUtc);
+
+public sealed record MasterSettingChangeDetail(
+    MasterSettingChangeSummary Summary,
+    MasterSettingChangeRequest Proposal,
+    MasterSettingChangeImpact Impact);
+
+public sealed record MasterSettingChangeAuditEvent(
+    string EventId,
+    string ChangeId,
+    int Sequence,
+    string EventType,
+    string Stage,
+    string Severity,
+    string Message,
+    string? PayloadJson,
+    string CreatedAtUtc);
+
+public sealed record MasterSettingChangeSaveRequest(
+    string? CreatedBy,
+    MasterSettingChangeRequest Change);
+
+public sealed record MasterSettingChangeSaveResponse(
+    string ChangeId,
+    string ChangeNumber,
+    string Status,
+    bool IsPersisted,
+    MasterSettingChangeSummary Summary);
+
+public sealed record MasterSettingStatusUpdateRequest(
+    string Status,
+    string? UpdatedBy,
+    string? Note);
+
+public sealed record MasterSettingProposalResponse(
+    ScenarioRunPreviewRequest Request,
+    IReadOnlyList<MasterSettingChangeRequest> Proposals,
+    IReadOnlyList<ScenarioAuditTrace> Trace);
+
+public sealed record MasterSettingsWorkspaceResult(
+    int TotalSettings,
+    int PendingReviewCount,
+    int ApprovedCount,
+    int EffectiveCount,
+    int HighRiskCount,
+    decimal ServiceImpact,
+    decimal CashImpact,
+    IReadOnlyList<MasterSetting> CurrentSettings,
+    IReadOnlyList<MasterSettingStatusCount> StatusCounts,
+    IReadOnlyList<MasterSettingTypeCount> TypeCounts,
+    IReadOnlyList<MasterSettingChangeSummary> RecentChanges);
+
 public sealed record ScenarioWorkspaceDataSet(
     ScenarioWorkspaceDataRequest Request,
     IReadOnlyList<ProductFamily> Families,
@@ -490,6 +910,8 @@ public sealed record ScenarioWorkspaceDataSet(
     IReadOnlyList<ResourceCalendarEntry> ResourceCalendar,
     IReadOnlyList<SupplierCapacityWindow> SupplierCapacityWindows,
     IReadOnlyList<ScenarioTemplate> ScenarioTemplates,
+    IReadOnlyList<DdmrpParameterProfile> DdmrpParameters,
+    IReadOnlyList<MasterSetting> MasterSettings,
     IReadOnlyList<BusinessGuardrail> Guardrails);
 
 public interface IScenarioWorkspaceDataSource

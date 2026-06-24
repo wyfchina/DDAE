@@ -55,7 +55,92 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             BuildResourceCalendar(resources, horizonWeeks),
             BuildSupplierCapacityWindows(sources, horizonWeeks),
             BuildScenarioTemplates(scopedSkus, resources),
+            BuildDdmrpParameters(scopedSkus),
+            _data.MasterSettings
+                .Where(item => scopedSkus.Any(sku => item.SettingId == $"MS-{sku.Sku}" || item.Target == sku.Name)
+                    || item.SettingId.StartsWith("MS-DP", StringComparison.Ordinal)
+                    || item.SettingType is "Time Buffer" or "Capacity Buffer")
+                .ToList(),
             BuildGuardrails());
+    }
+
+    private static IReadOnlyList<DdmrpParameterProfile> BuildDdmrpParameters(IReadOnlyList<SkuBufferSetting> skus)
+    {
+        return skus
+            .Select(sku =>
+            {
+                var zones = DdmrpCalculator.CalculateZones(sku);
+                var missing = new List<string>();
+                if (string.IsNullOrWhiteSpace(sku.DecouplingPoint))
+                {
+                    missing.Add("解耦点");
+                }
+
+                if (string.IsNullOrWhiteSpace(sku.BufferProfile))
+                {
+                    missing.Add("缓冲配置档案");
+                }
+
+                if (sku.Adu <= 0)
+                {
+                    missing.Add("ADU");
+                }
+
+                if (sku.DecoupledLeadTimeDays <= 0)
+                {
+                    missing.Add("DLT");
+                }
+
+                if (sku.VariabilityFactor <= 0)
+                {
+                    missing.Add("变异因子");
+                }
+
+                if (sku.OrderCycleDays <= 0)
+                {
+                    missing.Add("订货周期");
+                }
+
+                if (sku.MinimumOrderQuantity < 0)
+                {
+                    missing.Add("MOQ");
+                }
+
+                var completenessStatus = missing.Count == 0 ? "Complete" : "Incomplete";
+                var validationMessage = missing.Count == 0
+                    ? "DDMRP 参数完整，可用于缓冲 sizing、补货投影、RCCP 和主设置治理。"
+                    : $"缺少 {string.Join("、", missing)}，不得进入正式主设置下传。";
+
+                return new DdmrpParameterProfile(
+                    sku.Sku,
+                    sku.Name,
+                    sku.Family,
+                    sku.DecouplingPoint,
+                    sku.BufferProfile,
+                    sku.Adu,
+                    sku.AduSource,
+                    sku.AduCalculationWindowDays,
+                    sku.DecoupledLeadTimeDays,
+                    sku.DltSource,
+                    sku.VariabilityFactor,
+                    sku.DemandAdjustmentFactor,
+                    sku.ZoneAdjustmentFactor,
+                    sku.MinimumOrderQuantity,
+                    sku.OrderCycleDays,
+                    sku.UnitCost,
+                    sku.WeeklyCapacityUnits,
+                    zones.TopOfRed,
+                    zones.TopOfYellow,
+                    zones.TopOfGreen,
+                    sku.EffectiveFromWeek,
+                    sku.EffectiveThroughWeek,
+                    sku.ParameterStatus,
+                    completenessStatus,
+                    validationMessage);
+            })
+            .OrderBy(item => item.Family)
+            .ThenBy(item => item.Sku)
+            .ToList();
     }
 
     private IReadOnlyList<SkuBufferSetting> FilterSkus(ScenarioWorkspaceDataRequest request)
@@ -222,11 +307,11 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
     {
         return new List<BusinessGuardrail>
         {
-            new("服务水平损失", 1m, 3m, "百分点", "红色时不得由 DDS&OP 直接采纳，必须升级到 Integrated Reconciliation。"),
+            new("服务水平损失", 1m, 3m, "百分点", "红色时不得由 DDS&OP 直接采纳，必须升级到集成协调评审。"),
             new("营运资金增幅", 5m, 12m, "%", "超过预算红线时需要财务确认现金占用。"),
             new("资源负载率", 85m, 100m, "%", "超过 100% 时必须提出产能、外协或需求取舍动作。"),
             new("供应缺口", 5m, 15m, "%", "红色供应缺口需要供应商协同或客户分配规则。"),
-            new("红区穿透周数", 1m, 3m, "周", "连续红区需要重审 DDOM Master Settings。")
+            new("红区穿透周数", 1m, 3m, "周", "连续红区需要重审 DDOM 主设置。")
         };
     }
 }

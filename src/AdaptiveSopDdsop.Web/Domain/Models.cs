@@ -10,7 +10,17 @@ public sealed record SkuBufferSetting(
     int OrderCycleDays,
     decimal MinimumOrderQuantity,
     decimal UnitCost,
-    decimal WeeklyCapacityUnits);
+    decimal WeeklyCapacityUnits,
+    string DecouplingPoint = "",
+    string BufferProfile = "标准库存缓冲",
+    string AduSource = "计划 ADU",
+    int AduCalculationWindowDays = 90,
+    string DltSource = "供应链主数据",
+    decimal DemandAdjustmentFactor = 1.00m,
+    decimal ZoneAdjustmentFactor = 1.00m,
+    int EffectiveFromWeek = 1,
+    int EffectiveThroughWeek = 52,
+    string ParameterStatus = "Current");
 
 public sealed record InventoryPosition(
     string Sku,
