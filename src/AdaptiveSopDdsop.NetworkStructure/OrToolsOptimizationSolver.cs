@@ -1,4 +1,4 @@
-namespace AdaptiveSopDdsop.Web.Domain;
+namespace AdaptiveSopDdsop.NetworkStructure;
 
 public sealed class OrToolsOptimizationSolver : IOptimizationSolver
 {
@@ -36,7 +36,7 @@ public sealed class OrToolsOptimizationSolver : IOptimizationSolver
         return new OptimizationSolution(
             OptimizationSolverStatus.Optimal,
             SolverName,
-            "OR-Tools 已生成推荐动作组合。",
+            "OR-Tools 已生成候选动作组合。",
             decimal.Round(best.ObjectiveValue, 3),
             best.Candidates.Select(candidate => candidate.CandidateId).ToList());
     }

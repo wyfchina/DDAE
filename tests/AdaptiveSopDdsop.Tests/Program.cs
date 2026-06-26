@@ -1,5 +1,7 @@
+using AdaptiveSopDdsop.NetworkStructure;
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
+using AdaptiveSopDdsop.Web.NetworkStructureIntegration;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -26,9 +28,21 @@ var tests = new (string Name, Action Run)[]
     ("Supplier collaboration explains yellow and red status reasons", TestSupplierCollaborationExplainsStatusReasons),
     ("Product family dashboard summarizes management view", TestProductFamilyDashboardSummarizesManagementView),
     ("Scenario preview returns product family dashboard comparison", TestScenarioPreviewReturnsProductFamilyDashboardComparison),
+    ("Network structure scoring creates white box control point candidates", TestNetworkStructureScoringCreatesWhiteBoxCandidates),
+    ("Scenario Run Workspace exposes network structure scoring UI", TestScenarioRunWorkspaceExposesNetworkScoringUi),
+    ("Network metrics service calculates traceable Phase 4 metrics", TestNetworkMetricsServiceCalculatesTraceableMetrics),
+    ("Network graph service expands upstream and downstream impact scope", TestNetworkGraphServiceExpandsImpactScope),
+    ("Network graph service reports master data validation issues", TestNetworkGraphServiceReportsValidationIssues),
+    ("Scenario Run Workspace exposes network graph UI", TestScenarioRunWorkspaceExposesNetworkGraphUi),
+    ("Network scenario validation outputs candidate impact deltas", TestNetworkScenarioValidationOutputsCandidateImpactDeltas),
+    ("Scenario Run Workspace exposes network scenario validation UI", TestScenarioRunWorkspaceExposesNetworkScenarioValidationUi),
     ("Scenario Run Workspace script fetches workspace data", TestScenarioRunWorkspaceScriptFetchesWorkspaceData),
     ("Scenario Run Workspace script delegates business calculations to services", TestScenarioRunWorkspaceScriptDelegatesBusinessCalculationsToServices),
     ("Scenario workspace seed data covers baseline scenario use cases", TestScenarioWorkspaceSeedDataCoversUseCases),
+    ("Network structure adapter exposes network structure V2 data model", TestNetworkStructureAdapterExposesNetworkStructureV2DataModel),
+    ("Network structure product exposes independent data source boundary", TestNetworkStructureProductExposesIndependentDataSourceBoundary),
+    ("Network structure product owns pure network data contracts", TestNetworkStructureProductOwnsPureNetworkDataContracts),
+    ("Network structure product exposes standalone host boundary", TestNetworkStructureProductExposesStandaloneHostBoundary),
     ("Scenario workspace exposes complete DDMRP parameter profiles", TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles),
     ("Scenario workspace adapter can map alternate source structures", TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
@@ -46,7 +60,7 @@ var tests = new (string Name, Action Run)[]
     ("Buffer trend workspace summarizes KPIs heatmap and SKU detail", TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail),
     ("Scenario preview returns graphical buffer trend comparison", TestScenarioPreviewReturnsBufferTrendComparison),
     ("Exception workspace detects variance signals and scenario presets", TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets),
-    ("Scenario optimization service uses solver adapter and returns recommendations", TestScenarioOptimizationServiceUsesSolverAdapter),
+    ("Candidate action combination service uses solver adapter and returns white box combinations", TestCandidateActionCombinationServiceUsesSolverAdapter),
     ("Gurobi optimization solver solves toy problem or reports unavailable", TestGurobiOptimizationSolverToyProblem),
     ("OR-Tools optimization solver solves toy problem", TestOrToolsOptimizationSolverSolvesToyProblem),
 };
@@ -169,7 +183,21 @@ static void TestConsolidatedRequirementsDataCoverage()
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
 {
     var pagePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml");
-    var page = File.ReadAllText(Path.GetFullPath(pagePath));
+    var indexPage = File.ReadAllText(Path.GetFullPath(pagePath));
+    var networkPartialPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "Shared", "_NetworkStructureWorkspace.cshtml");
+    var networkPartial = File.ReadAllText(Path.GetFullPath(networkPartialPath));
+    var layoutPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "Pages", "Shared", "_Layout.cshtml");
+    var layoutPage = File.ReadAllText(Path.GetFullPath(layoutPath));
+    var networkLayoutPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "Shared", "_NetworkStructureLayout.cshtml");
+    var networkLayoutPage = File.ReadAllText(Path.GetFullPath(networkLayoutPath));
+    var standalonePagePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "NetworkStructure.cshtml");
+    var standalonePage = File.ReadAllText(Path.GetFullPath(standalonePagePath));
+    var page = indexPage;
+    var networkProductPage = standalonePage + networkPartial;
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var indexModel = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml.cs"));
+    var webProject = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "AdaptiveSopDdsop.Web.csproj"));
+    var appsettings = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "appsettings.json"));
 
     AssertTrue(page.Contains("id=\"scenario-workspace-app\"", StringComparison.Ordinal), "homepage should expose Scenario Run Workspace shell");
     AssertTrue(page.Contains("id=\"product-family-dashboard-panel\"", StringComparison.Ordinal), "homepage should expose product family dashboard panel");
@@ -213,29 +241,195 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(!page.Contains("拖拽排序", StringComparison.Ordinal), "page should not expose drag sorting in first UX version");
     AssertTrue(!page.Contains("自由布局", StringComparison.Ordinal), "page should not expose free layout in first UX version");
     AssertTrue(page.Contains("流速优先", StringComparison.Ordinal), "adoption constraints should include a flow-first mode");
-    AssertTrue(page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "scenario run should expose optimization panel");
-    AssertTrue(page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "scenario run should expose solver selector");
-    AssertTrue(page.Contains("<option value=\"Gurobi\">Gurobi</option>", StringComparison.Ordinal), "solver selector should include Gurobi");
-    AssertTrue(page.Contains("<option value=\"OR-Tools\">OR-Tools</option>", StringComparison.Ordinal), "solver selector should include OR-Tools");
-    AssertTrue(page.Contains("id=\"run-optimization\"", StringComparison.Ordinal), "scenario run should expose optimization button");
-    AssertTrue(page.Contains("id=\"optimization-status\"", StringComparison.Ordinal), "scenario run should expose Gurobi status");
-    AssertTrue(page.Contains("id=\"optimization-recommendation-list\"", StringComparison.Ordinal), "scenario run should expose optimization recommendation list");
+    AssertTrue(indexPage.Contains("href=\"@Model.NetworkStructureProductUrl\"", StringComparison.Ordinal), "homepage should link to the configured independent network structure product");
+    AssertTrue(indexModel.Contains("NetworkStructureProductUrl", StringComparison.Ordinal), "homepage model should expose configured network product URL");
+    AssertTrue(appsettings.Contains("\"ProductUrl\": \"http://127.0.0.1:5296/network-structure\"", StringComparison.Ordinal), "DDS&OP configuration should point to the standalone network product by default");
+    AssertTrue(!webProject.Contains("AdaptiveSopDdsop.NetworkStructure.Web.csproj", StringComparison.Ordinal), "DDS&OP web should not reference the network structure UI package");
+    AssertTrue(indexPage.Contains("id=\"network-structure-entry-card\"", StringComparison.Ordinal), "homepage should expose network structure as an overview entry card");
+    AssertTrue(indexPage.Contains("网络结构评分已从 DDS&OP 主流程拆出", StringComparison.Ordinal), "homepage should explain network scoring is separated from DDS&OP flow");
+    AssertTrue(!indexPage.Contains("href=\"#network-structure-scoring-panel\"", StringComparison.Ordinal), "homepage navigation should not treat network structure scoring as a DDS&OP flow step");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "NetworkStructure.cshtml")), "DDS&OP web project should not physically own the network structure page");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Shared", "_NetworkStructureLayout.cshtml")), "DDS&OP web project should not physically own the network structure layout");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Shared", "_NetworkStructureWorkspace.cshtml")), "DDS&OP web project should not physically own the network structure partial");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "network-structure-workspace.css")), "DDS&OP web project should not physically own the network structure stylesheet");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "network-structure-shell.js")), "DDS&OP web project should not physically own the network structure shell script");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "network-structure-workspace.js")), "DDS&OP web project should not physically own the network structure workspace script");
+    AssertTrue(File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "AdaptiveSopDdsop.NetworkStructure.Web.csproj")), "network structure web package should exist as a separate project");
+    AssertTrue(!indexPage.Contains("<partial name=\"_NetworkStructureWorkspace\" />", StringComparison.Ordinal), "homepage should not mount the full network structure product workspace");
+    AssertTrue(!indexPage.Contains("~/css/network-structure-workspace.css", StringComparison.Ordinal), "homepage should not load network structure product stylesheet");
+    AssertTrue(!indexPage.Contains("~/js/network-structure-workspace.js", StringComparison.Ordinal), "homepage should not load network structure product script");
+    AssertTrue(layoutPage.Contains("RenderSectionAsync(\"Styles\"", StringComparison.Ordinal), "layout should expose page-level style section");
+    AssertTrue(!layoutPage.Contains("~/css/network-structure-workspace.css", StringComparison.Ordinal), "global layout should not load network structure product stylesheet by default");
+    AssertTrue(networkPartial.Contains("NetworkStructureMode", StringComparison.Ordinal), "network partial should support standalone display mode");
+    AssertTrue(networkPartial.Contains("network-kpi-strip", StringComparison.Ordinal), "network partial should use product-specific KPI strip semantics");
+    AssertTrue(networkPartial.Contains("network-summary-grid", StringComparison.Ordinal), "network partial should use product-specific summary grid semantics");
+    AssertTrue(networkPartial.Contains("network-filter-bar", StringComparison.Ordinal), "network partial should use product-specific filter bar semantics");
+    AssertTrue(networkPartial.Contains("network-detail-grid", StringComparison.Ordinal), "network partial should use product-specific detail grid semantics");
+    AssertTrue(networkPartial.Contains("network-detail-summary", StringComparison.Ordinal), "network partial should use product-specific detail summary semantics");
+    AssertTrue(networkPartial.Contains("network-actions", StringComparison.Ordinal), "network partial should use product-specific action row semantics");
+    AssertTrue(!networkPartial.Contains("rccp-kpis", StringComparison.Ordinal), "network partial should not borrow DDS&OP RCCP KPI classes");
+    AssertTrue(!networkPartial.Contains("rccp-detail-grid", StringComparison.Ordinal), "network partial should not borrow DDS&OP RCCP detail classes");
+    AssertTrue(!networkPartial.Contains("product-family-card-grid", StringComparison.Ordinal), "network partial should not borrow DDS&OP product family classes");
+    AssertTrue(!networkPartial.Contains("result-context-bar", StringComparison.Ordinal), "network partial should not borrow DDS&OP result context classes");
+    AssertTrue(!networkPartial.Contains("preview-actions", StringComparison.Ordinal), "network partial should not borrow DDS&OP preview action classes");
+    AssertTrue(!networkPartial.Contains("buffer-sku-metadata", StringComparison.Ordinal), "network partial should not borrow DDS&OP buffer detail classes");
+    AssertTrue(standalonePage.Contains("@page \"/network-structure\"", StringComparison.Ordinal), "network structure product should expose an independent route");
+    AssertTrue(standalonePage.Contains("Layout = \"_NetworkStructureLayout\"", StringComparison.Ordinal), "standalone network page should use a product-specific layout");
+    AssertTrue(standalonePage.Contains("@await Html.PartialAsync(\"_NetworkStructureWorkspace\")", StringComparison.Ordinal), "standalone network page should render the workspace partial through Razor, not an unavailable tag helper");
+    AssertTrue(!standalonePage.Contains("<partial name=\"_NetworkStructureWorkspace\"", StringComparison.Ordinal), "standalone network page should not rely on partial tag helper without RCL view imports");
+    AssertTrue(standalonePage.Contains("id=\"network-structure-app\"", StringComparison.Ordinal), "standalone network page should expose independent product shell");
+    AssertTrue(standalonePage.Contains("返回业务平台", StringComparison.Ordinal), "standalone network page should use a neutral return label");
+    AssertTrue(!standalonePage.Contains("返回 DDS&OP", StringComparison.Ordinal), "standalone network page should not present itself as a DDS&OP child page");
+    AssertTrue(standalonePage.Contains("网络结构评分工作台", StringComparison.Ordinal), "standalone network page should use product-specific Chinese title");
+    AssertTrue(networkLayoutPage.Contains("~/_content/AdaptiveSopDdsop.NetworkStructure.Web/css/network-structure-workspace.css", StringComparison.Ordinal), "standalone network layout should load network structure product stylesheet from the network Web package");
+    AssertTrue(!networkLayoutPage.Contains("~/css/site.css", StringComparison.Ordinal), "standalone network layout should not load DDS&OP site stylesheet");
+    AssertTrue(networkLayoutPage.Contains("network-structure-product-body", StringComparison.Ordinal), "standalone network layout should expose product-specific body class");
+    AssertTrue(standalonePage.Contains("~/_content/AdaptiveSopDdsop.NetworkStructure.Web/js/network-structure-shell.js", StringComparison.Ordinal), "standalone network page should load lightweight network shell script from the network Web package");
+    AssertTrue(standalonePage.Contains("~/_content/AdaptiveSopDdsop.NetworkStructure.Web/js/network-structure-workspace.js", StringComparison.Ordinal), "standalone network page should load network workspace module from the network Web package");
+    AssertTrue(!standalonePage.Contains("~/js/app.js", StringComparison.Ordinal), "standalone network page should not load the external scenario workspace shell script");
+    AssertTrue(standalonePage.Contains("id=\"network-workspace-focus-layer\"", StringComparison.Ordinal), "standalone network page should own its focused panel layer");
+    AssertTrue(!indexPage.Contains("id=\"candidate-action-combination-panel\"", StringComparison.Ordinal), "homepage should not inline network structure product details");
+    AssertTrue(!page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "scenario run should not expose old optimization panel");
+    AssertTrue(!page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "scenario run should not expose old solver selector");
+    AssertTrue(networkProductPage.Contains("id=\"candidate-action-combination-panel\"", StringComparison.Ordinal), "network scoring should expose candidate action combination panel");
+    AssertTrue(networkProductPage.Contains("id=\"candidate-combination-solver-select\"", StringComparison.Ordinal), "candidate combination selector should expose solver selector");
+    AssertTrue(networkProductPage.Contains("<option value=\"Gurobi\">Gurobi</option>", StringComparison.Ordinal), "solver selector should include Gurobi");
+    AssertTrue(networkProductPage.Contains("<option value=\"OR-Tools\">OR-Tools</option>", StringComparison.Ordinal), "solver selector should include OR-Tools");
+    AssertTrue(networkProductPage.Contains("id=\"select-candidate-combinations\"", StringComparison.Ordinal), "network scoring should expose candidate combination button");
+    AssertTrue(networkProductPage.Contains("id=\"candidate-combination-status\"", StringComparison.Ordinal), "network scoring should expose solver status");
+    AssertTrue(networkProductPage.Contains("id=\"candidate-combination-list\"", StringComparison.Ordinal), "network scoring should expose candidate combination list");
+    AssertTrue(networkProductPage.Contains("id=\"network-capability-panel\"", StringComparison.Ordinal), "network product should expose product capability boundary panel");
+    AssertTrue(networkProductPage.Contains("id=\"network-capability-list\"", StringComparison.Ordinal), "network product should expose independent capability list");
+    AssertTrue(networkProductPage.Contains("id=\"network-external-dependency-list\"", StringComparison.Ordinal), "network product should expose external dependency list");
+    AssertTrue(networkProductPage.Contains("id=\"network-boundary-list\"", StringComparison.Ordinal), "network product should expose boundary statements");
+    AssertTrue(networkProductPage.Contains("产品能力边界", StringComparison.Ordinal), "network product should show product capability boundary label");
+    AssertTrue(networkProductPage.Contains("外部白盒依赖", StringComparison.Ordinal), "network product should show external white-box dependency label");
+    AssertTrue(networkProductPage.Contains("id=\"network-metrics-body\"", StringComparison.Ordinal), "network scoring should expose Phase 4 network metrics table");
+    AssertTrue(networkProductPage.Contains("id=\"network-metric-evidence-list\"", StringComparison.Ordinal), "network metrics should expose evidence chain");
+    AssertTrue(networkProductPage.Contains("id=\"network-graph-map\"", StringComparison.Ordinal), "network scoring should expose controlled material relationship graph");
+    AssertTrue(networkProductPage.Contains("id=\"network-graph-direction-select\"", StringComparison.Ordinal), "network graph should expose direction filter");
+    AssertTrue(networkProductPage.Contains("id=\"network-graph-depth-select\"", StringComparison.Ordinal), "network graph should expose depth filter");
+    AssertTrue(networkProductPage.Contains("id=\"network-graph-risk-only\"", StringComparison.Ordinal), "network graph should expose risk-only filter");
+    AssertTrue(networkProductPage.Contains(">资源路线<", StringComparison.Ordinal), "network graph should use Chinese routing label");
+    AssertTrue(!networkProductPage.Contains(">Routing<", StringComparison.Ordinal), "network graph should not expose English routing label");
+    AssertTrue(!networkProductPage.Contains("lead time profile", StringComparison.OrdinalIgnoreCase), "network metrics copy should not expose English lead time profile label");
     AssertTrue(page.Contains("id=\"multi-scenario-comparison-body\"", StringComparison.Ordinal), "scenario comparison should expose multi-scenario comparison body");
     AssertTrue(page.Contains("id=\"candidate-impact-matrix-body\"", StringComparison.Ordinal), "scenario comparison should expose candidate impact matrix body");
     AssertTrue(page.Contains("多方案比较", StringComparison.Ordinal), "scenario comparison should show multi-scenario comparison label");
     AssertTrue(page.Contains("候选动作影响矩阵", StringComparison.Ordinal), "scenario comparison should show candidate impact matrix label");
-    AssertTrue(page.Contains("优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization label");
-    AssertTrue(page.Contains("生成优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization action");
-    AssertTrue(page.Contains("求解器状态", StringComparison.Ordinal), "scenario run should show generic solver status label");
-    AssertTrue(page.Contains("带入场景", StringComparison.Ordinal), "scenario run should allow applying recommendations to scenario configuration");
-    AssertTrue(!page.Contains("自动采纳", StringComparison.Ordinal), "scenario run should not expose automatic adoption action");
-    AssertTrue(!page.Contains("自动审批", StringComparison.Ordinal), "scenario run should not expose automatic approval action");
-    AssertTrue(!page.Contains("自动保存", StringComparison.Ordinal), "scenario run should not expose automatic save action");
+    AssertTrue(networkProductPage.Contains("候选动作组合选择", StringComparison.Ordinal), "network product should show candidate combination selection label");
+    AssertTrue(networkProductPage.Contains("选择候选组合", StringComparison.Ordinal), "network product should show candidate combination selection action");
+    AssertTrue(networkProductPage.Contains("组合选择器", StringComparison.Ordinal), "network product should show solver as a combination selector");
+    AssertTrue(!page.Contains("优化推荐", StringComparison.Ordinal), "scenario run should not expose the old solver recommendation label");
+    AssertTrue(!page.Contains("生成优化推荐", StringComparison.Ordinal), "scenario run should not expose the old solver recommendation action");
+    AssertTrue(networkProductPage.Contains("不自动采纳、不保存、不审批", StringComparison.Ordinal), "candidate combinations should not be directly applied");
+    AssertTrue(!page.Contains(">自动采纳<", StringComparison.Ordinal), "scenario run should not expose automatic adoption action");
+    AssertTrue(!page.Contains(">自动审批<", StringComparison.Ordinal), "scenario run should not expose automatic approval action");
+    AssertTrue(!page.Contains(">自动保存<", StringComparison.Ordinal), "scenario run should not expose automatic save action");
 
     var scriptPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js");
-    var script = File.ReadAllText(Path.GetFullPath(scriptPath));
+    var appScript = File.ReadAllText(Path.GetFullPath(scriptPath));
+    var networkScriptPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-workspace.js");
+    var networkScript = File.ReadAllText(Path.GetFullPath(networkScriptPath));
+    var networkShellPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-shell.js");
+    var networkShell = File.ReadAllText(Path.GetFullPath(networkShellPath));
+    var script = appScript;
+    AssertTrue(networkScript.Contains("ItemWithoutRouting: \"成品或半成品缺少资源路线\"", StringComparison.Ordinal), "network script should translate item-without-routing validation code");
+    AssertTrue(networkScript.Contains("BufferWithoutExecutableLocation: \"解耦点缺少可执行库存位置\"", StringComparison.Ordinal), "network script should translate buffer executable-location validation code");
+    AssertTrue(networkScript.Contains("SupplierSource: \"供应来源\"", StringComparison.Ordinal), "network script should translate supplier-source evidence type");
+    AssertTrue(networkScript.Contains("LeadTimeProfile: \"提前期档案\"", StringComparison.Ordinal), "network script should translate lead-time profile evidence type");
+    AssertTrue(networkScript.Contains("BufferSetting: \"缓冲设置\"", StringComparison.Ordinal), "network script should translate buffer-setting evidence type");
+    AssertTrue(networkScript.Contains("function solverStatusName", StringComparison.Ordinal), "network script should translate solver statuses before display");
+    AssertTrue(networkScript.Contains("/api/network-structure-capabilities", StringComparison.Ordinal), "network module should fetch product capability boundary API");
+    AssertTrue(networkScript.Contains("function renderNetworkCapabilities", StringComparison.Ordinal), "network module should render product capability boundary");
+    AssertTrue(networkScript.Contains("renderCapabilities: renderNetworkCapabilities", StringComparison.Ordinal), "network module should export capability rendering through its public API");
+    AssertTrue(networkScript.Contains("businessText(item.summary)", StringComparison.Ordinal), "network script should translate network metric summary text before display");
+    AssertTrue(networkScript.Contains("businessText(item.validationSummary)", StringComparison.Ordinal), "network script should translate scenario validation summary before display");
+    AssertTrue(networkScript.Contains("businessText(action.actionType)", StringComparison.Ordinal), "network script should translate candidate action type before display");
+    AssertTrue(!appScript.Contains("NetworkStructureProductWorkspace", StringComparison.Ordinal), "main app shell should not initialize or render the network structure product module");
+    AssertTrue(!appScript.Contains("window.NetworkStructureProductHost", StringComparison.Ordinal), "scenario workspace shell should not register a network product host adapter");
+    AssertTrue(networkShell.Contains("window.NetworkStructureProductHost", StringComparison.Ordinal), "standalone network shell should expose the neutral host adapter contract");
+    AssertTrue(!appScript.Contains("function renderNetworkStructureScoring", StringComparison.Ordinal), "main app shell should not own network structure render functions");
+    AssertTrue(!appScript.Contains("NetworkStructureProductWorkspace?.renderScoring", StringComparison.Ordinal), "main app shell should not render network scoring through the module API");
+    AssertTrue(!appScript.Contains("NetworkStructureProductWorkspace?.loadData", StringComparison.Ordinal), "main app shell should not load network product data");
+    AssertTrue(!appScript.Contains("renderNetworkStructureScoring(state.networkScoring)", StringComparison.Ordinal), "main app shell should not call network internals directly");
+    AssertTrue(!appScript.Contains("loadNetworkGraph(state.selectedNetworkItem", StringComparison.Ordinal), "main app shell should not call network graph internals directly");
+    AssertTrue(networkShell.Contains("NetworkStructureProductWorkspace?.renderScoring", StringComparison.Ordinal), "standalone network shell should render network scoring through the same module API");
+    AssertTrue(networkShell.Contains("NetworkStructureProductWorkspace?.renderCapabilities", StringComparison.Ordinal), "standalone network shell should render product capabilities through the same module API");
+    AssertTrue(networkShell.Contains("NetworkStructureProductWorkspace?.loadData", StringComparison.Ordinal), "standalone network shell should load network product data through the same module API");
+    AssertTrue(networkShell.Contains("includeNetworkData: true", StringComparison.Ordinal), "standalone network shell should ask the network module to load its narrow data packet");
+    AssertTrue(!networkShell.Contains("renderNetworkStructureScoring(state.networkScoring)", StringComparison.Ordinal), "standalone network shell should not call network internals directly");
+    AssertTrue(!networkShell.Contains("loadNetworkGraph(state.selectedNetworkItem", StringComparison.Ordinal), "standalone network shell should not call network graph internals directly");
+    AssertTrue(networkScript.Contains("function renderNetworkStructureScoring", StringComparison.Ordinal), "network structure script should own network structure render functions");
+    AssertTrue(networkScript.Contains("renderScoring: renderNetworkStructureScoring", StringComparison.Ordinal), "network structure module should export scoring rendering through its public API");
+    AssertTrue(networkScript.Contains("loadGraph: loadNetworkGraph", StringComparison.Ordinal), "network structure module should export graph loading through its public API");
+    AssertTrue(networkScript.Contains("loadData: loadNetworkStructureWorkspaceData", StringComparison.Ordinal), "network structure module should export network data loading through its public API");
+    AssertTrue(networkScript.Contains("initializeNetworkCollapsiblePanels", StringComparison.Ordinal), "network structure module should own standalone collapsible panel behavior");
+    AssertTrue(networkScript.Contains("openNetworkFocusedPanel", StringComparison.Ordinal), "network structure module should own standalone focused panel behavior");
+    AssertTrue(networkScript.Contains("data-network-collapse-panel", StringComparison.Ordinal), "network structure module should use product-specific collapse attributes");
+    AssertTrue(networkScript.Contains("data-network-focus-panel", StringComparison.Ordinal), "network structure module should use product-specific focus attributes");
+    AssertTrue(networkScript.Contains("panel.dataset.collapsePanel !== undefined", StringComparison.Ordinal), "network structure module should avoid double-enhancing panels already managed by DDS&OP");
+    AssertTrue(networkScript.Contains("function networkHost", StringComparison.Ordinal), "network structure script should access shell helpers through its host adapter");
+    AssertTrue(networkScript.Contains("networkHost().state", StringComparison.Ordinal), "network structure script should read state through the host adapter");
+    AssertTrue(!networkScript.Contains("state.", StringComparison.Ordinal), "network structure script should not directly depend on DDS&OP lexical state");
+    AssertTrue(!networkScript.Contains("byId(", StringComparison.Ordinal), "network structure script should not directly depend on DDS&OP byId helper");
+    AssertTrue(!networkScript.Contains("valueOr(", StringComparison.Ordinal), "network structure script should not directly depend on DDS&OP valueOr helper");
+    AssertTrue(!networkScript.Contains("showWorkspaceError(error)", StringComparison.Ordinal), "network structure script should not directly call the external workspace error helper");
+    AssertTrue(networkScript.Contains("networkShowWorkspaceError(error)", StringComparison.Ordinal), "network structure script should route errors through the host adapter");
+    AssertTrue(networkScript.Contains("networkRenderMultiScenarioComparison(result)", StringComparison.Ordinal), "network structure script should route scenario comparison rendering through the host adapter");
+    AssertTrue(networkScript.Contains("window.NetworkStructureProductWorkspace", StringComparison.Ordinal), "network structure script should expose a product-neutral module initializer");
+    AssertTrue(!networkScript.Contains("DdaeNetworkStructure", StringComparison.Ordinal), "network structure script should not expose product-family-specific branded globals");
+    AssertTrue(!networkShell.Contains("DdaeNetworkStructure", StringComparison.Ordinal), "network structure shell should not expose product-family-specific branded globals");
+    AssertTrue(networkShell.Contains("function loadNetworkStructureProduct", StringComparison.Ordinal), "standalone network shell should load network product data without the external scenario workspace app");
+    AssertTrue(!appScript.Contains("/api/network-structure-scoring", StringComparison.Ordinal), "main app shell should not own network scoring API addresses");
+    AssertTrue(!appScript.Contains("/api/network-metrics", StringComparison.Ordinal), "main app shell should not own network metrics API addresses");
+    AssertTrue(!appScript.Contains("/api/network-scenario-validation", StringComparison.Ordinal), "main app shell should not own network scenario validation API addresses");
+    AssertTrue(!networkShell.Contains("/api/network-structure-data", StringComparison.Ordinal), "standalone network shell should not own network data API addresses");
+    AssertTrue(!networkShell.Contains("/api/network-structure-scoring", StringComparison.Ordinal), "standalone network shell should not own network scoring API addresses");
+    AssertTrue(!networkShell.Contains("/api/network-metrics", StringComparison.Ordinal), "standalone network shell should not own network metrics API addresses");
+    AssertTrue(!networkShell.Contains("/api/network-scenario-validation", StringComparison.Ordinal), "standalone network shell should not own network scenario validation API addresses");
+    AssertTrue(networkScript.Contains("/api/network-structure-data?", StringComparison.Ordinal), "network module should fetch pure network structure data when standalone mode asks for it");
+    AssertTrue(networkScript.Contains("/api/network-structure-capabilities", StringComparison.Ordinal), "network module should fetch product capability boundaries");
+    AssertTrue(!networkShell.Contains("/api/scenario-workspace-data", StringComparison.Ordinal), "standalone network shell should not fetch full scenario workspace data");
+    AssertTrue(networkScript.Contains("/api/network-structure-scoring?", StringComparison.Ordinal), "network module should fetch network scoring");
+    AssertTrue(networkScript.Contains("/api/network-metrics?", StringComparison.Ordinal), "network module should fetch network metrics");
+    AssertTrue(networkScript.Contains("/api/network-scenario-validation?", StringComparison.Ordinal), "network module should fetch network scenario validation");
+    AssertTrue(!networkShell.Contains("/api/product-family-dashboard", StringComparison.Ordinal), "standalone network shell should not fetch external product family dashboard");
+    AssertTrue(!networkShell.Contains("/api/rccp-workspace", StringComparison.Ordinal), "standalone network shell should not fetch external RCCP workspace");
     var cssPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css");
-    var css = File.ReadAllText(Path.GetFullPath(cssPath));
+    var shellCss = File.ReadAllText(Path.GetFullPath(cssPath));
+    var networkCssPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "css", "network-structure-workspace.css");
+    var networkCss = File.ReadAllText(Path.GetFullPath(networkCssPath));
+    var css = shellCss + networkCss;
+    AssertTrue(!shellCss.Contains(".network-graph-map", StringComparison.Ordinal), "main shell stylesheet should not own network graph styles");
+    AssertTrue(!shellCss.Contains(".candidate-combination-list", StringComparison.Ordinal), "main shell stylesheet should not own candidate combination styles");
+    AssertTrue(!shellCss.Contains(".network-product-shell", StringComparison.Ordinal), "main shell stylesheet should not own standalone network product shell styles");
+    AssertTrue(networkCss.Contains(".network-graph-map", StringComparison.Ordinal), "network stylesheet should own network graph styles");
+    AssertTrue(networkCss.Contains(".candidate-combination-list", StringComparison.Ordinal), "network stylesheet should own candidate combination styles");
+    AssertTrue(networkCss.Contains(".network-product-shell", StringComparison.Ordinal), "network stylesheet should own standalone network product shell styles");
+    AssertTrue(networkCss.Contains(".network-structure-product-body", StringComparison.Ordinal), "network stylesheet should own standalone body styles");
+    AssertTrue(networkCss.Contains(".button", StringComparison.Ordinal), "network stylesheet should own standalone button styles");
+    AssertTrue(networkCss.Contains(".status-chip", StringComparison.Ordinal), "network stylesheet should own standalone status chip styles");
+    AssertTrue(networkCss.Contains(".data-table", StringComparison.Ordinal), "network stylesheet should own standalone table styles");
+    AssertTrue(networkCss.Contains(".panel-heading", StringComparison.Ordinal), "network stylesheet should own standalone panel heading styles");
+    AssertTrue(networkCss.Contains(".network-focus-backdrop", StringComparison.Ordinal), "network stylesheet should own standalone focused panel backdrop");
+    AssertTrue(networkCss.Contains(".network-collapse-toggle", StringComparison.Ordinal), "network stylesheet should own standalone collapse heading styles");
+    AssertTrue(networkCss.Contains(".network-panel-action-button", StringComparison.Ordinal), "network stylesheet should own standalone focus action styles");
+    AssertTrue(networkCss.Contains(".network-kpi-strip", StringComparison.Ordinal), "network stylesheet should own network KPI strip styles");
+    AssertTrue(networkCss.Contains(".network-summary-grid", StringComparison.Ordinal), "network stylesheet should own network summary grid styles");
+    AssertTrue(networkCss.Contains(".network-capability-card", StringComparison.Ordinal), "network stylesheet should own product capability card styles");
+    AssertTrue(networkCss.Contains(".network-boundary-list", StringComparison.Ordinal), "network stylesheet should own product boundary list styles");
+    AssertTrue(networkCss.Contains(".network-filter-bar", StringComparison.Ordinal), "network stylesheet should own network filter bar styles");
+    AssertTrue(networkCss.Contains(".network-detail-grid", StringComparison.Ordinal), "network stylesheet should own network detail grid styles");
+    AssertTrue(networkCss.Contains(".network-detail-summary", StringComparison.Ordinal), "network stylesheet should own network detail summary styles");
+    AssertTrue(networkCss.Contains(".network-actions", StringComparison.Ordinal), "network stylesheet should own network action row styles");
+    AssertTrue(!networkCss.Contains(".rccp-kpis", StringComparison.Ordinal), "network stylesheet should not define DDS&OP RCCP KPI classes");
+    AssertTrue(!networkCss.Contains(".rccp-detail-grid", StringComparison.Ordinal), "network stylesheet should not define DDS&OP RCCP detail classes");
+    AssertTrue(!networkCss.Contains(".product-family-card-grid", StringComparison.Ordinal), "network stylesheet should not define DDS&OP product family classes");
+    AssertTrue(!networkCss.Contains(".result-context-bar", StringComparison.Ordinal), "network stylesheet should not define DDS&OP result context classes");
+    AssertTrue(!networkCss.Contains(".preview-actions", StringComparison.Ordinal), "network stylesheet should not define DDS&OP preview action classes");
+    AssertTrue(!networkCss.Contains(".buffer-sku-metadata", StringComparison.Ordinal), "network stylesheet should not define DDS&OP buffer detail classes");
+    AssertTrue(networkCss.Contains("#candidate-action-combination-panel.is-focused-panel", StringComparison.Ordinal), "network stylesheet should expand candidate combinations by id in focused view");
     AssertTrue(script.Contains("const previewFieldHelp", StringComparison.Ordinal), "script should define preview field help dictionary");
     AssertTrue(script.Contains("const navigationHelp", StringComparison.Ordinal), "script should define navigation help dictionary");
     AssertTrue(script.Contains("renderDdmrpParameterCompleteness", StringComparison.Ordinal), "script should render DDMRP parameter completeness");
@@ -258,11 +452,23 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("state.data?.guardrails", StringComparison.Ordinal), "guardrail drawer should read from state data");
     AssertTrue(script.Contains("renderMultiScenarioComparison", StringComparison.Ordinal), "script should render multi-scenario comparison");
     AssertTrue(script.Contains("candidateImpactMatrix", StringComparison.Ordinal), "script should consume candidate impact matrix");
-    AssertTrue(script.Contains("scenarioComparisons", StringComparison.Ordinal), "script should consume scenario comparisons");
-    AssertTrue(script.Contains("solverName", StringComparison.Ordinal), "script should send selected solver to optimization API");
-    AssertTrue(script.Contains("管理取舍", StringComparison.Ordinal), "script should expose management trade-off labels");
-    AssertTrue(css.Contains("overflow-x: auto", StringComparison.Ordinal) && css.Contains("scroll-snap-type: x proximity", StringComparison.Ordinal), "optimization recommendations should expand horizontally");
-    AssertTrue(css.Contains(".is-focused-panel .optimization-recommendation-list", StringComparison.Ordinal) && css.Contains("repeat(3, minmax(320px, 1fr))", StringComparison.Ordinal), "focused optimization recommendations should expand across the right side");
+    AssertTrue(script.Contains("combinationComparisons", StringComparison.Ordinal), "script should consume combination comparisons");
+    AssertTrue(!appScript.Contains("solverName", StringComparison.Ordinal), "DDS&OP main script should not own candidate-combination solver controls");
+    AssertTrue(networkScript.Contains("solverName", StringComparison.Ordinal), "network module should send selected solver to candidate action combination API");
+    AssertTrue(networkScript.Contains("renderNetworkGraphMap", StringComparison.Ordinal), "network module should render controlled local material graph");
+    AssertTrue(networkScript.Contains("data-network-graph-node", StringComparison.Ordinal), "network module should link graph nodes to selected material");
+    AssertTrue(networkScript.Contains("networkGraphDirection", StringComparison.Ordinal), "network module should support graph direction filtering");
+    AssertTrue(networkScript.Contains("networkGraphRiskOnly", StringComparison.Ordinal), "network module should support risk-only graph filtering");
+    AssertTrue(networkScript.Contains("itemTypeName", StringComparison.Ordinal), "network module should translate network item types");
+    AssertTrue(networkScript.Contains("evidenceTypeName", StringComparison.Ordinal), "network module should translate network evidence types");
+    AssertTrue(networkScript.Contains("validationRuleName", StringComparison.Ordinal), "network module should translate network validation rule codes");
+    AssertTrue(networkScript.Contains("businessText", StringComparison.Ordinal), "network module should translate backend evidence text for UI display");
+    AssertTrue(networkScript.Contains("正在选择候选动作组合", StringComparison.Ordinal), "network module should show candidate combination selection progress");
+    AssertTrue(!networkScript.Contains("正在生成优化推荐", StringComparison.Ordinal), "network module should not show old solver recommendation progress");
+    AssertTrue(!networkScript.Contains("没有优化推荐", StringComparison.Ordinal), "network module should not show old solver recommendation empty state");
+    AssertTrue(networkScript.Contains("管理取舍", StringComparison.Ordinal), "network module should expose management trade-off labels");
+    AssertTrue(css.Contains("overflow-x: auto", StringComparison.Ordinal) && css.Contains("scroll-snap-type: x proximity", StringComparison.Ordinal), "candidate combinations should expand horizontally");
+    AssertTrue(css.Contains(".is-focused-panel .candidate-combination-list", StringComparison.Ordinal) && css.Contains("repeat(3, minmax(320px, 1fr))", StringComparison.Ordinal), "focused candidate combinations should expand across the right side");
     AssertTrue(css.Contains("width: calc(100vw - 48px)", StringComparison.Ordinal), "focused panel should use the available viewport width");
     AssertTrue(!script.Contains("cloneNode", StringComparison.Ordinal), "focused panel should move existing DOM rather than clone stable nodes");
     AssertTrue(script.Contains("initializeCollapsiblePanels", StringComparison.Ordinal), "script should initialize collapsible workspace panels");
@@ -298,8 +504,14 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("adoption-rule-list", StringComparison.Ordinal), "script should render adoption rule details");
     AssertTrue(script.Contains("服务红线", StringComparison.Ordinal), "script should explain service guardrail violations");
     AssertTrue(script.Contains("供应硬约束", StringComparison.Ordinal), "script should explain supply guardrail violations");
-    AssertTrue(script.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "script should call optimization API");
-    AssertTrue(script.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "script should bring optimization recommendation into scenario controls");
+    AssertTrue(!appScript.Contains("/api/network-metrics?", StringComparison.Ordinal), "DDS&OP main script should not call network metrics API");
+    AssertTrue(networkScript.Contains("/api/network-metrics?", StringComparison.Ordinal), "network module should call network metrics API");
+    AssertTrue(!appScript.Contains("/api/candidate-action-combinations/select", StringComparison.Ordinal), "DDS&OP main script should not call candidate action combination API");
+    AssertTrue(networkScript.Contains("/api/candidate-action-combinations/select", StringComparison.Ordinal), "network module should call candidate action combination API");
+    AssertTrue(!appScript.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "DDS&OP main script should not call old scenario optimization API");
+    AssertTrue(!networkScript.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "network module should not call old scenario optimization API");
+    AssertTrue(!appScript.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "DDS&OP main script should not bring solver results directly into scenario controls");
+    AssertTrue(!networkScript.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "network module should not bring solver results directly into scenario controls");
 }
 
 static void TestAsopGuardrailBlocksExcessiveScenario()
@@ -652,13 +864,244 @@ static void TestScenarioPreviewReturnsProductFamilyDashboardComparison()
     AssertTrue(result.Scenario.ProductFamilyDashboard.Details.Any(item => item.RiskItems.Any()), "scenario family dashboard should expose family risks");
 }
 
+static void TestNetworkStructureScoringCreatesWhiteBoxCandidates()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new NetworkStructureScoringService(source, new NetworkMetricsService(source));
+
+    var result = service.GetBaseline(12);
+    var settingTypes = result.Candidates.Select(item => item.RecommendedSettingType).ToHashSet(StringComparer.Ordinal);
+
+    AssertTrue(source.LoadCount >= 1, "network structure scoring should read through INetworkStructureDataSource");
+    AssertEqual("NetworkScore-V2", result.ModelVersion, "network scoring model version");
+    AssertTrue(result.Candidates.Count >= result.HorizonWeeks, "network scoring should return a broad candidate set");
+    AssertTrue(settingTypes.Contains("库存缓冲"), "network scoring should include inventory buffer candidates");
+    AssertTrue(settingTypes.Contains("时间缓冲"), "network scoring should include time buffer candidates");
+    AssertTrue(settingTypes.Contains("能力缓冲"), "network scoring should include capacity buffer candidates");
+    AssertTrue(settingTypes.Contains("解耦点"), "network scoring should include decoupling point candidates");
+    AssertTrue(result.Candidates.Any(item => item.CandidateId.StartsWith("NET-", StringComparison.Ordinal) && item.TargetType == "物料节点"), "V2 scoring should include material graph candidates");
+    AssertTrue(result.Candidates.Any(item => item.TargetType == "SKU" && item.Evidence.Any(evidence => evidence.Contains("工艺路线", StringComparison.Ordinal))), "SKU candidates should explain routing evidence in Chinese business terms");
+    AssertTrue(result.Candidates.Any(item => item.Evidence.Any(evidence => evidence.Contains("BOM 行", StringComparison.Ordinal))), "V2 scoring should include traceable BOM line evidence in Chinese business terms");
+    AssertTrue(result.Candidates.Any(item => item.QuantityImpactScore > 0m), "V2 scoring should include quantity impact score from Phase 4 metrics");
+    AssertTrue(result.Candidates.All(item => !string.IsNullOrWhiteSpace(item.Rationale)), "candidates should include white-box explanation");
+    AssertTrue(result.Candidates.All(item => !string.IsNullOrWhiteSpace(item.NotAdoptingRisk)), "candidates should include non-adoption risk");
+    AssertTrue(result.Candidates.Any(item => item.SupplyRiskScore > 0), "network scoring should include supply risk score");
+    AssertTrue(result.Candidates.Any(item => item.ResourceConstraintScore > 0), "network scoring should include resource constraint score");
+    AssertTrue(result.FactorWeights.Any(item => item.Factor == "下游覆盖度"), "network scoring should expose downstream coverage factor weight");
+    AssertTrue(result.Recommendations.Count > 0, "network scoring should return management recommendations");
+}
+
+static void TestNetworkMetricsServiceCalculatesTraceableMetrics()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new NetworkMetricsService(source);
+
+    var result = service.GetBaseline(12);
+    var fpga = result.ItemMetrics.FirstOrDefault(item => item.ItemCode == "PART-FPGA-SPACE");
+
+    AssertEqual(1, source.LoadCount, "network metrics should read through INetworkStructureDataSource");
+    AssertEqual("NetworkMetrics-V1", result.ModelVersion, "network metrics model version");
+    AssertTrue(result.ItemMetrics.Count > 0, "network metrics should return item metrics");
+    AssertTrue(fpga is not null, "network metrics should include imported space FPGA");
+    AssertTrue(fpga!.DownstreamCoverageScore > 0m, "downstream coverage should be scored");
+    AssertTrue(fpga.QuantityImpactScore > 0m, "quantity impact should be scored");
+    AssertTrue(fpga.CumulativeLeadTimeScore > 0m, "cumulative lead time should be scored");
+    AssertTrue(fpga.SupplyRiskScore > 0m, "supply risk should be scored");
+    AssertTrue(fpga.ResourceConstraintScore > 0m, "resource constraint should be scored");
+    AssertTrue(fpga.InventoryCostScore > 0m, "inventory cost should be scored");
+    AssertTrue(fpga.DownstreamCoverage.Evidence.Any(item => item.EvidenceType == "BomLine" && item.EvidenceKey.Contains("|", StringComparison.Ordinal)), "downstream coverage should trace to BOM lines");
+    AssertTrue(fpga.QuantityImpact.Evidence.Any(item => item.EvidenceType == "BomLine" && item.EvidenceKey.Contains("BOM-", StringComparison.Ordinal)), "quantity impact should trace to BOM lines");
+    AssertTrue(fpga.CumulativeLeadTime.Evidence.Any(item => item.EvidenceType is "SupplierSource" or "LeadTimeProfile" or "BufferSetting"), "lead time should trace to supplier, lead time profile, or buffer setting");
+    AssertTrue(fpga.SupplyRisk.Evidence.Any(item => item.EvidenceType == "SupplierSource" && item.EvidenceKey.Contains("PART-FPGA-SPACE", StringComparison.Ordinal)), "supply risk should trace to supplier source");
+    AssertTrue(result.ItemMetrics.Any(item => item.ResourceConstraint.Evidence.Any(evidence => evidence.EvidenceType == "RoutingLine" && evidence.EvidenceKey.Split('|').Length == 4)), "resource constraint should trace to routing line keys");
+    AssertTrue(result.ItemMetrics.Any(item => item.InventoryCost.Evidence.Any(evidence => evidence.EvidenceType is "BufferSetting" or "InventoryLocation")), "inventory cost should trace to buffer setting or inventory location");
+}
+
+static void TestScenarioRunWorkspaceExposesNetworkScoringUi()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var indexPage = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var networkPartial = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "Shared", "_NetworkStructureWorkspace.cshtml"));
+    var standalonePage = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "NetworkStructure.cshtml"));
+    var networkProductPage = standalonePage + networkPartial;
+    var appScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var networkScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-workspace.js"));
+    var indexModel = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml.cs"));
+    var script = networkScript;
+
+    AssertTrue(indexPage.Contains("href=\"@Model.NetworkStructureProductUrl\"", StringComparison.Ordinal), "homepage should link to the configured independent network structure workspace");
+    AssertTrue(indexModel.Contains("NetworkStructure:ProductUrl", StringComparison.Ordinal), "homepage model should read network product URL from configuration");
+    AssertTrue(!indexPage.Contains("<partial name=\"_NetworkStructureWorkspace\" />", StringComparison.Ordinal), "homepage should not mount network structure workspace");
+    AssertTrue(!indexPage.Contains("id=\"network-score-candidate-body\"", StringComparison.Ordinal), "homepage should not inline network structure workspace details");
+    AssertTrue(networkProductPage.Contains("id=\"network-structure-scoring-panel\"", StringComparison.Ordinal), "network product should expose network structure scoring panel");
+    AssertTrue(networkProductPage.Contains("id=\"network-scoring-kpis\"", StringComparison.Ordinal), "network product should expose network scoring KPIs");
+    AssertTrue(networkProductPage.Contains("id=\"network-score-candidate-body\"", StringComparison.Ordinal), "network product should expose network scoring candidate table");
+    AssertTrue(networkProductPage.Contains("控制点 / 缓冲点候选", StringComparison.Ordinal), "network product should expose Chinese control point candidate label");
+    AssertTrue(indexPage.Contains("id=\"network-structure-entry-card\"", StringComparison.Ordinal), "homepage should expose network scoring as an overview entry card");
+    AssertTrue(!indexPage.Contains("href=\"#network-structure-scoring-panel\"", StringComparison.Ordinal), "homepage navigation should not expose network scoring as an in-flow section");
+    AssertTrue(!appScript.Contains("NetworkStructureProductWorkspace?.initialize()", StringComparison.Ordinal), "main app shell should not initialize network structure workspace");
+    AssertTrue(!appScript.Contains("DdaeNetworkStructureWorkspace", StringComparison.Ordinal), "main app shell should not reference old product-family-specific network globals");
+    AssertTrue(!appScript.Contains("function renderNetworkStructureScoring", StringComparison.Ordinal), "main app shell should not own network structure scoring renderer");
+    AssertTrue(networkScript.Contains("function renderNetworkStructureScoring", StringComparison.Ordinal), "network structure script should own scoring renderer");
+    AssertTrue(networkScript.Contains("/api/network-structure-scoring?", StringComparison.Ordinal), "network module should fetch network structure scoring data");
+    AssertTrue(script.Contains("renderNetworkStructureScoring", StringComparison.Ordinal), "script should render network structure scoring");
+    AssertTrue(script.Contains("data-network-candidate", StringComparison.Ordinal), "script should switch selected network scoring candidate");
+    AssertTrue(script.Contains("不采纳风险", StringComparison.Ordinal), "script should render non-adoption risk for network candidates");
+    AssertTrue(script.Contains("candidate.notAdoptingRisk", StringComparison.Ordinal), "script should consume non-adoption risk from scoring API");
+    AssertTrue(networkProductPage.Contains("网络指标计算", StringComparison.Ordinal), "network product should expose Phase 4 network metrics label");
+    AssertTrue(networkProductPage.Contains("下游覆盖度", StringComparison.Ordinal), "network product should expose downstream coverage label");
+    AssertTrue(networkProductPage.Contains("数量影响度", StringComparison.Ordinal), "network product should expose quantity impact label");
+    AssertTrue(networkProductPage.Contains("累计提前期", StringComparison.Ordinal), "network product should expose cumulative lead time label");
+    AssertTrue(networkProductPage.Contains("供应风险", StringComparison.Ordinal), "network product should expose supply risk label");
+    AssertTrue(networkProductPage.Contains("资源约束", StringComparison.Ordinal), "network product should expose resource constraint label");
+    AssertTrue(networkProductPage.Contains("库存代价", StringComparison.Ordinal), "network product should expose inventory cost label");
+    AssertTrue(networkProductPage.Contains("证据链", StringComparison.Ordinal), "network product should expose evidence chain label");
+    AssertTrue(networkScript.Contains("/api/network-metrics?", StringComparison.Ordinal), "network module should fetch network metrics");
+    AssertTrue(script.Contains("renderNetworkMetrics", StringComparison.Ordinal), "script should render network metrics");
+    AssertTrue(script.Contains("data-network-metric-item", StringComparison.Ordinal), "script should switch selected network metric item");
+}
+
+static void TestNetworkGraphServiceExpandsImpactScope()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new NetworkGraphService(source);
+
+    var fpga = service.GetGraph("PART-FPGA-SPACE", 6);
+    var platform = service.GetGraph("SAT-BUS-001", 6);
+    var limited = service.GetGraph("SAT-BUS-001", 1);
+    var cumulative = new NetworkGraphService(new NetworkGraphFixtureDataSource(BuildCumulativeNetworkData()))
+        .GetGraph("FG-A", 6);
+
+    AssertEqual(3, source.LoadCount, "network graph should read through INetworkStructureDataSource");
+    AssertEqual("PART-FPGA-SPACE", fpga.SelectedItemCode, "selected network graph item");
+    AssertTrue(fpga.Downstream.Paths.Any(item => item.ItemCodes.Contains("SUB-AVIONICS-COMPUTE") && item.ItemCodes.Contains("SAT-BUS-001")), "FPGA downstream should reach satellite platform finished goods");
+    AssertTrue(fpga.Downstream.Paths.Any(item => item.ItemCodes.Contains("SUB-PAYLOAD-EO-FOCAL")), "FPGA downstream should reach payload subassemblies");
+    AssertTrue(platform.Upstream.Paths.Any(item => item.ItemCodes.Contains("SUB-SAT-BUS-CORE") && item.ItemCodes.Contains("PART-FPGA-SPACE")), "platform upstream should reach avionics compute and FPGA");
+    AssertTrue(platform.Upstream.Paths.Any(item => item.ItemCodes.Contains("SUB-HARNESS-TESTED") && item.ItemCodes.Contains("PART-CONNECTOR")), "platform upstream should reach harness and connector chain");
+    AssertTrue(limited.Upstream.Paths.All(item => item.Depth <= 1), "max depth should limit traversal");
+
+    var leaf = cumulative.Upstream.Paths.Single(item => item.LeafItemCode == "PART-C");
+    AssertTrue(Math.Abs(leaf.CumulativeQuantity - 7.92m) < 0.001m, "cumulative quantity should multiply quantity and scrap across levels");
+}
+
+static void TestNetworkGraphServiceReportsValidationIssues()
+{
+    var source = new NetworkGraphFixtureDataSource(BuildInvalidNetworkData());
+    var service = new NetworkGraphService(source);
+
+    var result = service.GetGraph("FG-A", 6);
+    var rules = result.ValidationReport.Issues.Select(item => item.RuleCode).ToHashSet(StringComparer.Ordinal);
+
+    AssertEqual(1, source.LoadCount, "validation graph should read through data source");
+    AssertTrue(result.ValidationReport.RedCount >= 3, "invalid network should produce red validation issues");
+    AssertTrue(rules.Contains("MissingBomComponent"), "validation should report missing BOM component");
+    AssertTrue(rules.Contains("MissingBomParent"), "validation should report missing BOM parent");
+    AssertTrue(rules.Contains("MissingBufferItem"), "validation should report missing buffer item");
+    AssertTrue(rules.Contains("BomCycle"), "validation should report BOM cycles");
+    AssertTrue(rules.Contains("PurchasedPartWithoutSupplier"), "validation should report purchased part without supplier");
+    AssertTrue(rules.Contains("ItemWithoutRouting"), "validation should report item without routing");
+    AssertTrue(rules.Contains("BufferWithoutExecutableLocation"), "validation should report decoupling point without executable inventory location");
+    AssertTrue(rules.Contains("MissingAlternateItem"), "validation should report missing alternate item");
+    AssertTrue(rules.Contains("BomLineWithoutHeader"), "validation should report BOM line without header");
+    AssertTrue(result.Upstream.Paths.Count > 0, "invalid network traversal should still return bounded paths");
+}
+
+static void TestScenarioRunWorkspaceExposesNetworkGraphUi()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "NetworkStructure.cshtml"))
+        + File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "Shared", "_NetworkStructureWorkspace.cshtml"));
+    var appScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var networkScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-workspace.js"));
+
+    AssertTrue(page.Contains("物料网络展开", StringComparison.Ordinal), "network product should expose material network expansion label");
+    AssertTrue(page.Contains("上游影响", StringComparison.Ordinal), "network product should expose upstream impact label");
+    AssertTrue(page.Contains("下游影响", StringComparison.Ordinal), "network product should expose downstream impact label");
+    AssertTrue(page.Contains("校验报告", StringComparison.Ordinal), "network product should expose validation report label");
+    AssertTrue(page.Contains("物料关系图", StringComparison.Ordinal), "network product should expose material relationship graph label");
+    AssertTrue(page.Contains("只看风险节点", StringComparison.Ordinal), "network product should expose risk-only graph filter");
+    AssertTrue(page.Contains("id=\"network-graph-item-select\"", StringComparison.Ordinal), "network product should expose network graph item selector");
+    AssertTrue(page.Contains("id=\"network-graph-map\"", StringComparison.Ordinal), "network product should expose network graph map container");
+    AssertTrue(!appScript.Contains("function renderNetworkGraph", StringComparison.Ordinal), "main app shell should not own network graph renderer");
+    AssertTrue(networkScript.Contains("function renderNetworkGraph", StringComparison.Ordinal), "network structure script should own network graph renderer");
+    AssertTrue(!appScript.Contains("/api/network-graph", StringComparison.Ordinal), "main app shell should not call network graph API");
+    AssertTrue(networkScript.Contains("/api/network-graph", StringComparison.Ordinal), "network module should call network graph API");
+    AssertTrue(networkScript.Contains("renderNetworkGraph", StringComparison.Ordinal), "network module should render network graph");
+    AssertTrue(networkScript.Contains("renderNetworkGraphMap", StringComparison.Ordinal), "network module should render local material relationship graph");
+    AssertTrue(networkScript.Contains("network-graph-item-select", StringComparison.Ordinal), "network module should refresh graph from item selector");
+    AssertTrue(networkScript.Contains("validationRuleName(issue.ruleCode)", StringComparison.Ordinal), "network module should translate validation rule codes before display");
+    AssertTrue(networkScript.Contains("evidenceTypeName(item.evidenceType)", StringComparison.Ordinal), "network module should translate metric evidence type before display");
+}
+
+static void TestNetworkScenarioValidationOutputsCandidateImpactDeltas()
+{
+    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
+    var scoring = new NetworkStructureScoringService(source, new NetworkMetricsService(source));
+    var preview = new ScenarioRunPreviewService(source);
+    var whiteBoxGateway = new LocalDdsopWhiteBoxScenarioGateway(preview);
+    var requestBuilder = new NetworkCandidateRecalculationRequestBuilder();
+    var service = new NetworkScenarioValidationService(source, source, scoring, requestBuilder, whiteBoxGateway);
+
+    var result = service.Validate(12);
+
+    AssertTrue(source.LoadCount > 0, "network scenario validation should read through IScenarioWorkspaceDataSource");
+    AssertEqual("NetworkScenarioValidation-V1", result.ModelVersion, "network scenario validation model version");
+    AssertTrue(result.Validations.Count > 0, "network scenario validation should return candidate validations");
+    AssertTrue(result.Validations.All(item => !string.IsNullOrWhiteSpace(item.CandidateId)), "validation item should keep candidate id");
+    AssertTrue(result.Validations.All(item => !string.IsNullOrWhiteSpace(item.ValidationSummary)), "validation item should include summary");
+    AssertTrue(result.Validations.All(item => item.Evidence.Any(evidence => evidence.Contains("库存金额变化", StringComparison.Ordinal))), "validation evidence should include inventory value delta");
+    AssertTrue(result.Validations.All(item => item.Evidence.Any(evidence => evidence.Contains("红区周变化", StringComparison.Ordinal))), "validation evidence should include red week delta");
+    AssertTrue(result.Validations.All(item => item.Evidence.Any(evidence => evidence.Contains("补货订单变化", StringComparison.Ordinal))), "validation evidence should include replenishment order delta");
+    AssertTrue(result.Validations.All(item => item.Evidence.Any(evidence => evidence.Contains("RCCP 峰值变化", StringComparison.Ordinal))), "validation evidence should include RCCP delta");
+    AssertTrue(result.Validations.All(item => item.Evidence.Any(evidence => evidence.Contains("供应缺口变化", StringComparison.Ordinal))), "validation evidence should include supply gap delta");
+    AssertTrue(result.Validations.Any(item =>
+        item.AverageInventoryValueDelta != 0m
+        || item.RedWeekDelta != 0
+        || item.ReplenishmentOrderCountDelta != 0
+        || item.RccpPeakLoadDelta != 0m
+        || item.SupplyGapDelta != 0m), "at least one validation should change a scenario KPI");
+}
+
+static void TestScenarioRunWorkspaceExposesNetworkScenarioValidationUi()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "NetworkStructure.cshtml"))
+        + File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "Pages", "Shared", "_NetworkStructureWorkspace.cshtml"));
+    var appScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var networkScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-workspace.js"));
+
+    AssertTrue(page.Contains("场景验证", StringComparison.Ordinal), "network product should expose network scenario validation label");
+    AssertTrue(page.Contains("id=\"network-scenario-validation-body\"", StringComparison.Ordinal), "network product should expose network scenario validation table");
+    AssertTrue(page.Contains("库存金额变化", StringComparison.Ordinal), "network product should expose inventory value delta label");
+    AssertTrue(page.Contains("红区周变化", StringComparison.Ordinal), "network product should expose red week delta label");
+    AssertTrue(page.Contains("补货订单变化", StringComparison.Ordinal), "network product should expose replenishment order delta label");
+    AssertTrue(page.Contains("RCCP 峰值变化", StringComparison.Ordinal), "network product should expose RCCP delta label");
+    AssertTrue(page.Contains("供应缺口变化", StringComparison.Ordinal), "network product should expose supply gap delta label");
+    AssertTrue(!appScript.Contains("function renderNetworkScenarioValidation", StringComparison.Ordinal), "main app shell should not own network scenario validation renderer");
+    AssertTrue(networkScript.Contains("function renderNetworkScenarioValidation", StringComparison.Ordinal), "network structure script should own scenario validation renderer");
+    AssertTrue(networkScript.Contains("/api/network-scenario-validation?", StringComparison.Ordinal), "network module should call network scenario validation API");
+    AssertTrue(networkScript.Contains("renderNetworkScenarioValidation", StringComparison.Ordinal), "network module should render network scenario validation");
+}
+
 static void TestScenarioRunWorkspaceScriptFetchesWorkspaceData()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var appScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var networkScript = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Web", "wwwroot", "js", "network-structure-workspace.js"));
+    var script = appScript + networkScript;
 
     AssertTrue(script.Contains("/api/scenario-workspace-data?horizonWeeks=12", StringComparison.Ordinal), "script should fetch scenario workspace data");
     AssertTrue(script.Contains("/api/product-family-dashboard?horizonWeeks=12", StringComparison.Ordinal), "script should fetch product family dashboard data");
+    AssertTrue(!appScript.Contains("/api/network-structure-scoring", StringComparison.Ordinal), "DDS&OP script should not fetch network structure scoring data");
+    AssertTrue(!appScript.Contains("/api/network-graph", StringComparison.Ordinal), "DDS&OP script should not fetch material network graph data");
+    AssertTrue(!appScript.Contains("/api/network-scenario-validation", StringComparison.Ordinal), "DDS&OP script should not fetch network scenario validation data");
+    AssertTrue(networkScript.Contains("/api/network-structure-scoring?", StringComparison.Ordinal), "network module should fetch network structure scoring data");
+    AssertTrue(networkScript.Contains("/api/network-graph", StringComparison.Ordinal), "network module should fetch material network graph data");
+    AssertTrue(networkScript.Contains("/api/network-scenario-validation?", StringComparison.Ordinal), "network module should fetch network scenario validation data");
+    AssertTrue(!appScript.Contains("NetworkStructureProductWorkspace?.initialize()", StringComparison.Ordinal), "main app shell should not initialize the network structure script");
+    AssertTrue(!appScript.Contains("DdaeNetworkStructureWorkspace", StringComparison.Ordinal), "main app shell should not reference old product-family-specific network globals");
+    AssertTrue(!appScript.Contains("function loadNetworkGraph", StringComparison.Ordinal), "main app shell should not own network graph loading");
+    AssertTrue(networkScript.Contains("function loadNetworkGraph", StringComparison.Ordinal), "network structure script should own network graph loading");
     AssertTrue(script.Contains("/api/rccp-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch product RCCP workspace data");
     AssertTrue(script.Contains("/api/constraint-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch constrained versus unconstrained workspace data");
     AssertTrue(script.Contains("/api/buffer-trend-workspace?horizonWeeks=12", StringComparison.Ordinal), "script should fetch graphical buffer trend workspace data");
@@ -739,6 +1182,372 @@ static void TestScenarioWorkspaceSeedDataCoversUseCases()
     AssertTrue(actionTypes.Contains("MoqOverride"), "scenario templates should cover MOQ overrides");
     AssertTrue(actionTypes.Contains("OrderCycleOverride"), "scenario templates should cover order cycle overrides");
     AssertTrue(actionTypes.Contains("SupplierCapacityLimit"), "scenario templates should cover constrained supply cases");
+}
+
+static void TestNetworkStructureAdapterExposesNetworkStructureV2DataModel()
+{
+    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+
+    var data = new NetworkStructureDataSourceAdapter(source)
+        .LoadNetworkStructure(new NetworkStructureDataRequest(12, new DateOnly(2026, 6, 1)));
+    var network = data.NetworkData;
+
+    AssertTrue(network.Items.Any(item => item.ItemType == "FinishedGood"), "network data should include finished goods");
+    AssertTrue(network.Items.Any(item => item.ItemType == "Subassembly"), "network data should include subassemblies");
+    AssertTrue(network.Items.Any(item => item.ItemType == "PurchasedPart"), "network data should include purchased parts");
+    AssertTrue(network.Items.Any(item => item.ItemType == "RawMaterial"), "network data should include raw materials");
+    AssertTrue(network.BomHeaders.Any(item => item.ReleaseStatus == "Released" && item.EffectiveFrom <= data.Request.AnchorDate), "BOM headers should express released effective versions");
+    AssertTrue(network.BomLines.Any(item => item.ParentItemCode == "AV-FPGA-203" && item.ComponentItemCode == "PART-FPGA-SPACE"), "BOM lines should express parent and component items");
+    AssertTrue(network.BomLines.Any(item => !string.IsNullOrWhiteSpace(item.AlternateGroup)), "BOM lines should reference alternate groups");
+    var bomPairs = network.BomLines
+        .Select(item => (item.ParentItemCode, item.ComponentItemCode))
+        .ToHashSet();
+    AssertTrue(
+        bomPairs.Contains(("SAT-BUS-001", "SUB-SAT-BUS-CORE"))
+            && bomPairs.Contains(("SUB-SAT-BUS-CORE", "SUB-AVIONICS-BAY"))
+            && bomPairs.Contains(("SUB-AVIONICS-BAY", "SUB-AVIONICS-COMPUTE"))
+            && bomPairs.Contains(("SUB-AVIONICS-COMPUTE", "PART-FPGA-SPACE")),
+        "network seed should expose a 4-level satellite platform to FPGA chain");
+    AssertTrue(
+        bomPairs.Contains(("CBL-HAR-402", "SUB-HARNESS-TESTED"))
+            && bomPairs.Contains(("SUB-HARNESS-TESTED", "SUB-HARNESS-LOOM"))
+            && bomPairs.Contains(("SUB-HARNESS-LOOM", "PART-CABLE"))
+            && bomPairs.Contains(("SUB-HARNESS-LOOM", "PART-CONNECTOR")),
+        "network seed should expose a multi-level harness chain");
+    AssertTrue(
+        network.BomLines
+            .Where(item => item.ComponentItemCode == "PART-FPGA-SPACE")
+            .Select(item => item.QuantityPer)
+            .Distinct()
+            .Count() >= 3,
+        "reused FPGA material should have different quantities across product families");
+    AssertTrue(
+        network.AlternateItems.Any(item => item.AlternateGroup == "ALT-FPGA" && item.AlternateItemCode == "PART-FPGA-DOMESTIC-ALT" && item.QualificationStatus == "EngineeringReview")
+            && network.AlternateItems.Any(item => item.AlternateGroup == "ALT-FPGA" && item.AlternateItemCode == "PART-FPGA-HI-REL-ALT" && item.QualificationStatus == "Qualified"),
+        "FPGA alternates should model realistic domestic and high-reliability substitutes");
+    AssertTrue(network.AlternateItems.Any(item => item.Priority > 1 && !string.IsNullOrWhiteSpace(item.QualificationStatus)), "alternate items should express priority and qualification");
+    AssertTrue(network.RoutingLines.Any(item => item.ModelCode == "AV-FPGA-203" && item.ResourceCode == "RES-TVAC"), "routing lines should express model-specific routing");
+    AssertTrue(network.RoutingLines.Select(item => item.RoutingVersion).Distinct(StringComparer.Ordinal).Count() >= 2, "routing lines should support multiple routing versions");
+    AssertTrue(
+        network.RoutingLines
+            .Where(item => item.ItemCode == "SUB-AVIONICS-COMPUTE")
+            .Select(item => item.ModelCode)
+            .Distinct(StringComparer.Ordinal)
+            .Count() >= 2,
+        "same subassembly should support model-specific routing differences");
+    AssertTrue(network.SupplierSources.GroupBy(item => item.ItemCode).Any(group => group.Count() > 1), "supplier sources should allow multiple suppliers for one item");
+    AssertEqual(
+        100m,
+        network.SupplierSources.Where(item => item.ItemCode == "PART-FPGA-SPACE").Sum(item => item.AllocationPercent),
+        "FPGA supplier allocation percent");
+    AssertTrue(network.SupplierSources.Any(item => item.Priority == 1 && item.LeadTimeDays > 0 && item.LeadTimeVariabilityFactor > 1m && item.CapacityPerWeek > 0), "supplier sources should expose lead time, variability, and capacity");
+    AssertTrue(network.InventoryLocations.Any(item => item.ItemCode == "SUB-AVIONICS-BAY" && item.LocationType == "WipSupermarket" && item.IsShared), "inventory locations should express executable WIP buffer positions");
+    AssertTrue(network.InventoryLocations.Any(item => item.QualityStatus == "PendingRelease"), "inventory locations should express quality status");
+    AssertTrue(network.InventoryLocations.Any(item => item.LocationType == "LineSide"), "inventory locations should include line-side execution positions");
+    AssertTrue(network.InventoryLocations.Any(item => item.LocationCode == "WH-MATERIAL-CONTROL" && item.ShelfLifeDays is > 0), "inventory locations should include controlled material storage");
+    AssertTrue(network.BufferSettings.Any(item => item.ItemCode == "PART-FPGA-SPACE" && item.IsDecouplingPoint && item.TimeBufferDays > 0), "buffer settings should express material decoupling point and time buffer");
+    AssertTrue(network.BufferSettings.All(item => item.OrderCycleDays > 0 && item.MinimumOrderQuantity >= 0), "buffer settings should keep executable MOQ and order cycle");
+    var itemCodes = network.Items.Select(item => item.ItemCode).ToHashSet(StringComparer.Ordinal);
+    AssertTrue(network.BufferSettings.All(item => itemCodes.Contains(item.ItemCode)), "buffer settings should point only to material item nodes");
+    AssertTrue(network.LeadTimeProfiles.Any(item => item.SourceType == "Supplier" && item.StandardLeadTimeDays > 0 && item.AppliesBeforeItemCode.Length > 0), "lead time profiles should support time buffer scoring");
+    AssertTrue(network.LeadTimeProfiles.Any(item => item.SourceType == "TimeBuffer" && item.ItemCode == "SUB-PAYLOAD-EO-FOCAL"), "lead time profiles should include material time buffers before control points");
+}
+
+static void TestNetworkStructureProductExposesIndependentDataSourceBoundary()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var model = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ScenarioWorkspaceData.cs"));
+    var integrationRoot = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "NetworkStructureIntegration");
+    var integrationContracts = File.ReadAllText(Path.Combine(integrationRoot, "NetworkStructureIntegrationContracts.cs"));
+    var globalUsingsPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "GlobalUsings.cs");
+    var seedSource = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedScenarioWorkspaceDataSource.cs"));
+    var adapter = File.ReadAllText(Path.Combine(integrationRoot, "NetworkStructureDataSourceAdapter.cs"));
+    var graphService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkGraphService.cs"));
+    var graphModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkGraphModels.cs"));
+    var graphAdapter = File.ReadAllText(Path.Combine(integrationRoot, "DdsopNetworkGraphDataSource.cs"));
+    var metricsService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkMetricsService.cs"));
+    var metricsModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkMetricsModels.cs"));
+    var metricsAdapter = File.ReadAllText(Path.Combine(integrationRoot, "DdsopNetworkMetricsDataSource.cs"));
+    var scoringService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkStructureScoringService.cs"));
+    var scoringModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkScoringModels.cs"));
+    var scoringAdapter = File.ReadAllText(Path.Combine(integrationRoot, "DdsopNetworkScoringDataSource.cs"));
+    var optimizationModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkOptimizationModels.cs"));
+    var combinationService = File.ReadAllText(Path.Combine(integrationRoot, "CandidateActionCombinationService.cs"));
+    var validationService = File.ReadAllText(Path.Combine(integrationRoot, "NetworkScenarioValidationService.cs"));
+    var recalculationBuilder = File.ReadAllText(Path.Combine(integrationRoot, "NetworkCandidateRecalculationRequestBuilder.cs"));
+    var whiteBoxGateway = File.ReadAllText(Path.Combine(integrationRoot, "LocalDdsopWhiteBoxScenarioGateway.cs"));
+    var httpWhiteBoxGateway = File.ReadAllText(Path.Combine(integrationRoot, "HttpDdsopWhiteBoxScenarioGateway.cs"));
+    var integrationModule = File.ReadAllText(Path.Combine(integrationRoot, "NetworkStructureIntegrationModule.cs"));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var appsettings = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "appsettings.json"));
+    var boundary = File.ReadAllText(Path.Combine(root, "docs", "network-structure-scoring-product-boundary.md"));
+
+    AssertTrue(!model.Contains("public sealed record NetworkStructureDataSet", StringComparison.Ordinal), "scenario workspace data model should not own network structure integration package");
+    AssertTrue(Directory.Exists(integrationRoot), "DDS&OP network integration files should live in a dedicated integration boundary folder");
+    AssertTrue(integrationContracts.Contains("namespace AdaptiveSopDdsop.Web.NetworkStructureIntegration", StringComparison.Ordinal), "network integration contracts should use a dedicated integration namespace");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkStructureIntegrationContracts.cs")), "DDS&OP domain folder should not own network integration contracts");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkStructureDataSourceAdapter.cs")), "DDS&OP domain folder should not own network data source adapter");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "CandidateActionCombinationService.cs")), "DDS&OP domain folder should not own candidate combination integration service");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkScenarioValidationService.cs")), "DDS&OP domain folder should not own network validation integration service");
+    AssertTrue(!model.Contains("using AdaptiveSopDdsop.NetworkStructure", StringComparison.Ordinal), "scenario workspace data model should not reference network structure product namespace");
+    AssertTrue(!model.Contains("NetworkDataSet NetworkData", StringComparison.Ordinal), "scenario workspace data model should not carry network data snapshots");
+    AssertTrue(!File.Exists(globalUsingsPath), "DDS&OP web project should not expose network structure namespace through global using");
+    AssertTrue(!model.Contains("public interface INetworkStructureDataSource", StringComparison.Ordinal), "scenario workspace data model should not own network structure data source interface");
+    AssertTrue(!model.Contains("public sealed record NetworkScenarioValidationItem", StringComparison.Ordinal), "scenario workspace data model should not own network scenario validation contract");
+    AssertTrue(!model.Contains("public sealed record CandidateActionCombinationRequest", StringComparison.Ordinal), "scenario workspace data model should not own candidate action combination contract");
+    AssertTrue(!model.Contains("public sealed record OptimizationCandidateImpact", StringComparison.Ordinal), "scenario workspace data model should not own candidate impact matrix contract");
+    AssertTrue(integrationContracts.Contains("public sealed record NetworkStructureDataSet", StringComparison.Ordinal), "network structure integration layer should define a DDS&OP-to-network data package");
+    AssertTrue(integrationContracts.Contains("using AdaptiveSopDdsop.NetworkStructure", StringComparison.Ordinal), "network integration contract should explicitly reference network structure product types");
+    AssertTrue(integrationContracts.Contains("public sealed record NetworkStructureDataRequest", StringComparison.Ordinal), "network structure integration layer should define its own request model");
+    AssertTrue(integrationContracts.Contains("public sealed record NetworkStructureRuntimeSignals", StringComparison.Ordinal), "network structure integration layer should define runtime signal input");
+    AssertTrue(integrationContracts.Contains("public interface INetworkStructureDataSource", StringComparison.Ordinal), "network structure integration layer should define a narrow data source interface");
+    AssertTrue(integrationContracts.Contains("public interface IDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "network structure integration layer should define a DDS&OP white-box gateway contract");
+    AssertTrue(integrationContracts.Contains("Recalculate(ScenarioRunPreviewRequest request)", StringComparison.Ordinal), "white-box gateway should expose an explicit recalculation operation");
+    AssertTrue(integrationContracts.Contains("public sealed record DdsopWhiteBoxGatewayOptions", StringComparison.Ordinal), "network structure integration layer should define white-box gateway options");
+    AssertTrue(integrationContracts.Contains("public sealed record NetworkScenarioValidationItem", StringComparison.Ordinal), "network structure integration layer should own network scenario validation contract");
+    AssertTrue(!integrationContracts.Contains("public sealed record CandidateActionCombinationRequest", StringComparison.Ordinal), "DDS&OP integration layer should not own the pure candidate action combination request contract");
+    AssertTrue(!integrationContracts.Contains("ScenarioWorkspaceDataRequest", StringComparison.Ordinal), "network structure data source contract should not expose DDS&OP scenario request model");
+    AssertTrue(integrationContracts.Contains("outside ScenarioWorkspaceDataSet", StringComparison.Ordinal), "network integration contract should document why it is separate from scenario workspace data");
+    AssertTrue(!seedSource.Contains("INetworkStructureDataSource", StringComparison.Ordinal), "seed workspace source should not directly implement the network structure product interface");
+    AssertTrue(!seedSource.Contains("LoadNetworkStructure", StringComparison.Ordinal), "seed source should not expose network structure load method directly");
+    AssertTrue(adapter.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "adapter should wrap DDS&OP workspace data source instead of requiring seed source to implement network interface");
+    AssertTrue(adapter.Contains("using AdaptiveSopDdsop.NetworkStructure", StringComparison.Ordinal), "adapter should explicitly reference network structure namespace only where needed");
+    AssertTrue(adapter.Contains("LoadNetworkStructure", StringComparison.Ordinal), "adapter should expose network structure load method");
+    AssertTrue(adapter.Contains("FromScenarioWorkspace", StringComparison.Ordinal), "adapter should map DDS&OP workspace data into network structure product data");
+    AssertTrue(graphService.Contains("INetworkGraphDataSource", StringComparison.Ordinal), "network graph core service should depend on graph-specific network data source");
+    AssertTrue(graphModels.Contains("public interface INetworkGraphDataSource", StringComparison.Ordinal), "network graph data source contract should live in network structure product");
+    AssertTrue(graphAdapter.Contains("DdsopNetworkGraphDataSource", StringComparison.Ordinal), "DDS&OP should provide a network graph data adapter");
+    AssertTrue(metricsService.Contains("INetworkMetricsDataSource", StringComparison.Ordinal), "network metrics core service should depend on metrics-specific network data source");
+    AssertTrue(metricsModels.Contains("public interface INetworkMetricsDataSource", StringComparison.Ordinal), "network metrics data source contract should live in network structure product");
+    AssertTrue(metricsAdapter.Contains("DdsopNetworkMetricsDataSource", StringComparison.Ordinal), "DDS&OP should provide a network metrics data adapter");
+    AssertTrue(scoringService.Contains("INetworkScoringDataSource", StringComparison.Ordinal), "network scoring core service should depend on scoring-specific network data source");
+    AssertTrue(scoringModels.Contains("public interface INetworkScoringDataSource", StringComparison.Ordinal), "network scoring data source contract should live in network structure product");
+    AssertTrue(scoringAdapter.Contains("DdsopNetworkScoringDataSource", StringComparison.Ordinal), "DDS&OP should provide a network scoring data adapter");
+    AssertTrue(!graphService.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "network graph core service should not depend on DDS&OP workspace data source");
+    AssertTrue(!graphService.Contains("ScenarioWorkspaceDataRequest", StringComparison.Ordinal), "network graph core service should not depend on DDS&OP request model");
+    AssertTrue(!metricsService.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "network metrics core service should not depend on DDS&OP workspace data source");
+    AssertTrue(!metricsService.Contains("DemandDrivenPlanningEngine", StringComparison.Ordinal), "network metrics core service should not call DDS&OP planning engine");
+    AssertTrue(!metricsService.Contains("ScenarioWorkspaceDataRequest", StringComparison.Ordinal), "network metrics core service should not depend on DDS&OP request model");
+    AssertTrue(!scoringService.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "network scoring core service should not depend on DDS&OP workspace data source");
+    AssertTrue(!scoringService.Contains("DemandDrivenPlanningEngine", StringComparison.Ordinal), "network scoring core service should not call DDS&OP planning engine");
+    AssertTrue(!scoringService.Contains("ScenarioWorkspaceDataRequest", StringComparison.Ordinal), "network scoring core service should not depend on DDS&OP request model");
+    AssertTrue(optimizationModels.Contains("public sealed class CandidateActionCombinationSelector", StringComparison.Ordinal), "network structure product should own pure candidate action combination selection");
+    AssertTrue(optimizationModels.Contains("public sealed record CandidateActionCombinationRequest", StringComparison.Ordinal), "network structure product should own the pure candidate action combination request contract");
+    AssertTrue(optimizationModels.Contains("public sealed record OptimizationCandidateImpact", StringComparison.Ordinal), "network structure product should own candidate impact matrix contract");
+    AssertTrue(optimizationModels.Contains("CandidateActionSelectionProfile", StringComparison.Ordinal), "network optimization model should expose selection profiles");
+    AssertTrue(optimizationModels.Contains("CandidateActionSelectionResult", StringComparison.Ordinal), "network optimization model should expose selection results");
+    AssertTrue(!optimizationModels.Contains("ScenarioRunPreview", StringComparison.Ordinal), "network optimization selector should not depend on DDS&OP scenario preview");
+    AssertTrue(combinationService.Contains("CandidateActionCombinationSelector", StringComparison.Ordinal), "DDS&OP combination service should delegate pure solver selection to network structure selector");
+    AssertTrue(combinationService.Contains("IDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "DDS&OP combination service should use DDS&OP white-box gateway");
+    AssertTrue(!combinationService.Contains("IOptimizationSolver", StringComparison.Ordinal), "DDS&OP combination service should not directly depend on solver adapters");
+    AssertTrue(!combinationService.Contains("ScenarioRunPreviewService", StringComparison.Ordinal), "DDS&OP combination service should not directly depend on concrete preview service");
+    AssertTrue(whiteBoxGateway.Contains("ScenarioRunPreviewService", StringComparison.Ordinal), "local white-box gateway should be the only integration adapter that calls concrete preview service");
+    AssertTrue(whiteBoxGateway.Contains("public sealed class LocalDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "local white-box gateway should have an explicit implementation class");
+    AssertTrue(httpWhiteBoxGateway.Contains("public sealed class HttpDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "HTTP white-box gateway should exist for cross-process integration");
+    AssertTrue(httpWhiteBoxGateway.Contains("HttpClient", StringComparison.Ordinal), "HTTP white-box gateway should call DDS&OP through HttpClient");
+    AssertTrue(httpWhiteBoxGateway.Contains("PreviewEndpoint", StringComparison.Ordinal), "HTTP white-box gateway should use configured preview endpoint");
+    AssertTrue(httpWhiteBoxGateway.Contains("DDS&OP 白盒重算网关", StringComparison.Ordinal), "HTTP white-box gateway should expose Chinese operational errors");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkStructureScoringService.cs")), "DDS&OP web domain should not still own network scoring service");
+    AssertTrue(validationService.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "network scenario validation should remain in DDS&OP integration layer");
+    AssertTrue(validationService.Contains("IDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "network scenario validation should use DDS&OP white-box gateway");
+    AssertTrue(!validationService.Contains("ScenarioRunPreviewService", StringComparison.Ordinal), "network scenario validation should not directly depend on concrete preview service");
+    AssertTrue(validationService.Contains("NetworkCandidateRecalculationRequestBuilder", StringComparison.Ordinal), "network scenario validation should delegate candidate-to-preview request construction");
+    AssertTrue(!validationService.Contains("BuildPreviewRequest", StringComparison.Ordinal), "network scenario validation should not own preview request construction details");
+    AssertTrue(!validationService.Contains("TraverseParents", StringComparison.Ordinal), "network scenario validation should not own network traversal helper logic");
+    AssertTrue(recalculationBuilder.Contains("ScenarioRunPreviewRequest", StringComparison.Ordinal), "candidate recalculation builder should produce DDS&OP preview requests");
+    AssertTrue(recalculationBuilder.Contains("NetworkStructureCandidate", StringComparison.Ordinal), "candidate recalculation builder should consume network structure candidates");
+    AssertTrue(recalculationBuilder.Contains("TraverseParents", StringComparison.Ordinal), "candidate recalculation builder should own downstream candidate resolution traversal");
+    AssertTrue(integrationModule.Contains("AddNetworkStructureIntegration", StringComparison.Ordinal), "network integration module should own network structure service registration");
+    AssertTrue(integrationModule.Contains("MapNetworkStructureEndpoints", StringComparison.Ordinal), "network integration module should own network structure endpoint mapping");
+    AssertTrue(integrationModule.Contains("INetworkStructureDataSource", StringComparison.Ordinal), "network integration module should register independent network structure data source");
+    AssertTrue(integrationModule.Contains("NetworkStructureDataSourceAdapter", StringComparison.Ordinal), "network integration module should register an explicit DDS&OP-to-network adapter");
+    AssertTrue(integrationModule.Contains("NetworkCandidateRecalculationRequestBuilder", StringComparison.Ordinal), "network integration module should register candidate recalculation request builder");
+    AssertTrue(integrationModule.Contains("IDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "network integration module should register white-box gateway interface");
+    AssertTrue(integrationModule.Contains("LocalDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "network integration module should register local DDS&OP white-box gateway implementation");
+    AssertTrue(integrationModule.Contains("HttpDdsopWhiteBoxScenarioGateway", StringComparison.Ordinal), "network integration module should support HTTP white-box gateway implementation");
+    AssertTrue(integrationModule.Contains("NetworkStructure:WhiteBoxGateway", StringComparison.Ordinal), "network integration module should read white-box gateway configuration");
+    AssertTrue(integrationModule.Contains("Mode", StringComparison.Ordinal), "network integration module should switch gateway mode from configuration");
+    AssertTrue(integrationModule.Contains("BaseUrl is required", StringComparison.Ordinal), "HTTP white-box gateway should require a base URL");
+    AssertTrue(program.Contains("AddNetworkStructureIntegration(builder.Configuration)", StringComparison.Ordinal), "Program should pass configuration into network structure integration module");
+    AssertTrue(appsettings.Contains("\"WhiteBoxGateway\"", StringComparison.Ordinal), "appsettings should expose white-box gateway configuration");
+    AssertTrue(appsettings.Contains("\"Mode\": \"Local\"", StringComparison.Ordinal), "default white-box gateway mode should remain local");
+    AssertTrue(appsettings.Contains("\"PreviewEndpoint\": \"/api/scenario-runs/preview\"", StringComparison.Ordinal), "appsettings should expose preview endpoint for HTTP gateway");
+    AssertTrue(!integrationModule.Contains("(INetworkStructureDataSource)", StringComparison.Ordinal), "network integration module should not cast DDS&OP data source into network product interface");
+    AssertTrue(integrationModule.Contains("/api/network-structure-capabilities", StringComparison.Ordinal), "network integration module should expose product capability API");
+    AssertTrue(integrationModule.Contains("NetworkStructureProductCapabilityCatalog.CreateStandaloneHost()", StringComparison.Ordinal), "network integration module should reuse network product capability catalog");
+    AssertTrue(integrationModule.Contains("/api/network-structure-data", StringComparison.Ordinal), "network integration module should expose independent network structure data API");
+    AssertTrue(integrationModule.Contains("/api/candidate-action-combinations/select", StringComparison.Ordinal), "network integration module should expose candidate action combination API");
+    AssertTrue(program.Contains("AddNetworkStructureIntegration", StringComparison.Ordinal), "Program should mount network structure integration module");
+    AssertTrue(program.Contains("MapNetworkStructureEndpoints", StringComparison.Ordinal), "Program should map network structure endpoint module");
+    AssertTrue(!program.Contains("/api/network-structure-data", StringComparison.Ordinal), "Program should not directly map network structure data API");
+    AssertTrue(boundary.Contains("网络结构评分产品拆分边界", StringComparison.Ordinal), "boundary document should describe product split");
+    AssertTrue(boundary.Contains("NetworkStructure.Core", StringComparison.Ordinal), "boundary document should describe target core package");
+    AssertTrue(boundary.Contains("Ddsop.Integration.NetworkStructure", StringComparison.Ordinal), "boundary document should separate DDS&OP integration layer");
+
+    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+    INetworkStructureDataSource networkSource = new NetworkStructureDataSourceAdapter(source);
+    var request = new NetworkStructureDataRequest(12, new DateOnly(2026, 6, 1));
+    var networkData = networkSource.LoadNetworkStructure(request);
+    var workspace = source.Load(new ScenarioWorkspaceDataRequest(request.HorizonWeeks, request.AnchorDate));
+    var mapped = NetworkStructureDataSourceAdapter.FromScenarioWorkspace(workspace);
+
+    AssertEqual(request.HorizonWeeks, networkData.Request.HorizonWeeks, "network structure request horizon");
+    AssertTrue(networkData.NetworkData.Items.Count > 0, "network structure data should include item network");
+    AssertTrue(networkData.RuntimeSignals.Skus.Count > 0, "network structure runtime signals should include SKU demand signals");
+    AssertTrue(networkData.RuntimeSignals.ResourceRoutings.Count > 0, "network structure runtime signals should include resource route signals");
+    AssertTrue(networkData.RuntimeSignals.SupplierCapacityWindows.Count > 0, "network structure runtime signals should include supplier capacity signals");
+    AssertTrue(!workspace.GetType().GetProperties().Any(property => property.Name == "NetworkData"), "scenario workspace dataset should not expose network data property");
+    AssertEqual(networkData.NetworkData.Items.Count, mapped.NetworkData.Items.Count, "adapter should build stable network item count from DDS&OP runtime signals");
+    AssertEqual(workspace.Skus.Count, mapped.RuntimeSignals.Skus.Count, "adapter should preserve SKU runtime signal count");
+}
+
+static void TestNetworkStructureProductOwnsPureNetworkDataContracts()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var solution = File.ReadAllText(Path.Combine(root, "AdaptiveSopDdsop.sln"));
+    var webProject = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "AdaptiveSopDdsop.Web.csproj"));
+    var testsProject = File.ReadAllText(Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "AdaptiveSopDdsop.Tests.csproj"));
+    var webModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "Models.cs"));
+    var coreProject = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "AdaptiveSopDdsop.NetworkStructure.csproj"));
+    var coreModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkDataSet.cs"));
+    var graphModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkGraphModels.cs"));
+    var graphService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkGraphService.cs"));
+    var metricsModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkMetricsModels.cs"));
+    var metricsService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkMetricsService.cs"));
+    var scoringModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkScoringModels.cs"));
+    var scoringService = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkStructureScoringService.cs"));
+    var seedFactory = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "SatelliteManufacturingNetworkSeedData.cs"));
+    var seedData = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedData.cs"));
+    var adapter = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "NetworkStructureIntegration", "NetworkStructureDataSourceAdapter.cs"));
+    var optimizationModels = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "NetworkOptimizationModels.cs"));
+    var gurobiSolver = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "GurobiOptimizationSolver.cs"));
+    var orToolsSolver = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure", "OrToolsOptimizationSolver.cs"));
+    var webGlobalUsingsPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "GlobalUsings.cs");
+    var networkCoreText = string.Join(
+        Environment.NewLine,
+        Directory.GetFiles(Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure"), "*.cs")
+            .Select(File.ReadAllText));
+
+    AssertTrue(solution.Contains("AdaptiveSopDdsop.NetworkStructure", StringComparison.Ordinal), "solution should include independent network structure project");
+    AssertTrue(coreProject.Contains("<TargetFramework>net9.0</TargetFramework>", StringComparison.Ordinal), "network structure project should target net9");
+    AssertTrue(webProject.Contains("AdaptiveSopDdsop.NetworkStructure.csproj", StringComparison.Ordinal), "DDS&OP web should reference network structure core project");
+    AssertTrue(!webProject.Contains("AdaptiveSopDdsop.NetworkStructure.Web.csproj", StringComparison.Ordinal), "DDS&OP web should not physically host the network structure web package");
+    AssertTrue(testsProject.Contains("AdaptiveSopDdsop.NetworkStructure.csproj", StringComparison.Ordinal), "tests should reference network structure core project directly");
+    AssertTrue(!File.Exists(webGlobalUsingsPath), "DDS&OP web should not import network structure contracts through global using");
+    AssertTrue(coreModels.Contains("namespace AdaptiveSopDdsop.NetworkStructure", StringComparison.Ordinal), "network data contracts should live outside web domain namespace");
+    AssertTrue(coreModels.Contains("public sealed record NetworkItemMaster", StringComparison.Ordinal), "network structure product should own item master contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkBomHeader", StringComparison.Ordinal), "network structure product should own BOM header contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkBomLine", StringComparison.Ordinal), "network structure product should own BOM line contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkRoutingLine", StringComparison.Ordinal), "network structure product should own routing contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkSupplierSource", StringComparison.Ordinal), "network structure product should own supplier source contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkDataSet", StringComparison.Ordinal), "network structure product should own network dataset contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkStructureProductDataRequest", StringComparison.Ordinal), "network structure product should own pure product data request contract");
+    AssertTrue(coreModels.Contains("public sealed record NetworkStructureProductDataSet", StringComparison.Ordinal), "network structure product should own pure product data response contract");
+    AssertTrue(coreModels.Contains("public interface INetworkStructureProductDataSource", StringComparison.Ordinal), "network structure product should own pure product data source contract");
+    AssertTrue(graphModels.Contains("public sealed record NetworkGraphWorkspaceResult", StringComparison.Ordinal), "network structure product should own graph result contract");
+    AssertTrue(graphService.Contains("public sealed class NetworkGraphService", StringComparison.Ordinal), "network structure product should own graph construction service");
+    AssertTrue(metricsModels.Contains("public sealed record NetworkMetricsWorkspaceResult", StringComparison.Ordinal), "network structure product should own metrics result contract");
+    AssertTrue(metricsService.Contains("public sealed class NetworkMetricsService", StringComparison.Ordinal), "network structure product should own metrics service");
+    AssertTrue(scoringModels.Contains("public sealed record NetworkStructureScoringResult", StringComparison.Ordinal), "network structure product should own scoring result contract");
+    AssertTrue(scoringService.Contains("public sealed class NetworkStructureScoringService", StringComparison.Ordinal), "network structure product should own scoring service");
+    AssertTrue(networkCoreText.Contains("public sealed record NetworkStructureProductCapabilities", StringComparison.Ordinal), "network structure product should own capability response contract");
+    AssertTrue(networkCoreText.Contains("public sealed record NetworkStructureCapability", StringComparison.Ordinal), "network structure product should own capability item contract");
+    AssertTrue(networkCoreText.Contains("public sealed record NetworkStructureExternalDependency", StringComparison.Ordinal), "network structure product should own external dependency contract");
+    AssertTrue(networkCoreText.Contains("public static class NetworkStructureProductCapabilityCatalog", StringComparison.Ordinal), "network structure product should own capability catalog");
+    AssertTrue(networkCoreText.Contains("外部白盒场景回算引擎", StringComparison.Ordinal), "network structure product should identify external white-box dependency in the capability catalog");
+    AssertTrue(networkCoreText.Contains("本 Host 不生成执行计划", StringComparison.Ordinal), "network structure product should state planning boundary in the capability catalog");
+    AssertTrue(seedFactory.Contains("public sealed record NetworkFinishedGoodSeedInput", StringComparison.Ordinal), "network structure product should own seed input contract for demo finished goods");
+    AssertTrue(seedFactory.Contains("public static class SatelliteManufacturingNetworkSeedData", StringComparison.Ordinal), "network structure product should own satellite manufacturing network seed factory");
+    AssertTrue(seedFactory.Contains("SUB-AVIONICS-COMPUTE", StringComparison.Ordinal), "network seed factory should own satellite subassembly network shape");
+    AssertTrue(seedFactory.Contains("PART-FPGA-SPACE", StringComparison.Ordinal), "network seed factory should own critical purchased part network shape");
+    AssertTrue(seedFactory.Contains("new List<NetworkBomLine>", StringComparison.Ordinal), "network seed factory should own BOM line construction");
+    AssertTrue(seedFactory.Contains("BOM-SUB-AVIONICS-COMPUTE-A", StringComparison.Ordinal), "network seed factory should own multi-level BOM line relationships");
+    AssertTrue(!seedFactory.Contains("SkuBufferSetting", StringComparison.Ordinal), "network seed factory should not depend on DDS&OP SKU buffer type");
+    AssertTrue(!seedFactory.Contains("AdaptiveSopDdsop.Web", StringComparison.Ordinal), "network seed factory should not depend on DDS&OP web namespace");
+    AssertTrue(!seedData.Contains("SatelliteManufacturingNetworkSeedData.Build", StringComparison.Ordinal), "DDS&OP seed should not construct network seed snapshots");
+    AssertTrue(!seedData.Contains("NetworkFinishedGoodSeedInput", StringComparison.Ordinal), "DDS&OP seed should not depend on network finished-good seed input contract");
+    AssertTrue(adapter.Contains("SatelliteManufacturingNetworkSeedData.Build", StringComparison.Ordinal), "DDS&OP-to-network adapter should delegate network seed construction to network structure product");
+    AssertTrue(adapter.Contains("NetworkFinishedGoodSeedInput", StringComparison.Ordinal), "DDS&OP-to-network adapter should pass only finished-good seed input to network structure product");
+    AssertTrue(!seedData.Contains("new NetworkItemMaster", StringComparison.Ordinal), "DDS&OP seed should not own network item construction");
+    AssertTrue(!seedData.Contains("new NetworkBomHeader", StringComparison.Ordinal), "DDS&OP seed should not own network BOM header construction");
+    AssertTrue(!seedData.Contains("new NetworkBomLine", StringComparison.Ordinal), "DDS&OP seed should not own network BOM line construction");
+    AssertTrue(!seedData.Contains("PART-FPGA-SPACE", StringComparison.Ordinal), "DDS&OP seed should not own satellite network demo item codes");
+    AssertTrue(optimizationModels.Contains("public interface IOptimizationSolver", StringComparison.Ordinal), "network structure product should own solver adapter contract");
+    AssertTrue(gurobiSolver.Contains("public sealed class GurobiOptimizationSolver", StringComparison.Ordinal), "network structure product should own Gurobi solver adapter");
+    AssertTrue(orToolsSolver.Contains("public sealed class OrToolsOptimizationSolver", StringComparison.Ordinal), "network structure product should own OR-Tools solver adapter");
+    AssertTrue(coreProject.Contains("Gurobi.Optimizer", StringComparison.Ordinal), "network structure project should own Gurobi dependency");
+    AssertTrue(!webProject.Contains("Gurobi.Optimizer", StringComparison.Ordinal), "DDS&OP web project should not directly reference Gurobi");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkGraphService.cs")), "DDS&OP web domain should not still own network graph service");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkMetricsService.cs")), "DDS&OP web domain should not still own network metrics service");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "NetworkStructureScoringService.cs")), "DDS&OP web domain should not still own network scoring service");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "GurobiOptimizationSolver.cs")), "DDS&OP web domain should not still own Gurobi solver adapter");
+    AssertTrue(!File.Exists(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "OrToolsOptimizationSolver.cs")), "DDS&OP web domain should not still own OR-Tools solver adapter");
+    AssertTrue(!webModels.Contains("public sealed record NetworkItemMaster", StringComparison.Ordinal), "web domain should not still own item master contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkGraphWorkspaceResult", StringComparison.Ordinal), "web domain should not still own graph result contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkMetricsWorkspaceResult", StringComparison.Ordinal), "web domain should not still own metrics result contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkStructureScoringResult", StringComparison.Ordinal), "web domain should not still own scoring result contract");
+    AssertTrue(!webModels.Contains("public interface IOptimizationSolver", StringComparison.Ordinal), "web domain should not still own solver adapter contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkBomLine", StringComparison.Ordinal), "web domain should not still own BOM line contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkDataSet", StringComparison.Ordinal), "web domain should not still own network dataset contract");
+    AssertTrue(!webModels.Contains("public sealed record NetworkStructureProductDataSet", StringComparison.Ordinal), "web domain should not own pure network product data response contract");
+    AssertTrue(!webModels.Contains("public interface INetworkStructureProductDataSource", StringComparison.Ordinal), "web domain should not own pure network product data source contract");
+    AssertTrue(!networkCoreText.Contains("DDS&OP", StringComparison.Ordinal), "network structure core should use neutral product language instead of hard-coding DDS&OP");
+}
+
+static void TestNetworkStructureProductExposesStandaloneHostBoundary()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var solution = File.ReadAllText(Path.Combine(root, "AdaptiveSopDdsop.sln"));
+    var hostProjectPath = Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Host", "AdaptiveSopDdsop.NetworkStructure.Host.csproj");
+    var hostProgramPath = Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Host", "Program.cs");
+    var standaloneDataSourcePath = Path.Combine(root, "src", "AdaptiveSopDdsop.NetworkStructure.Host", "StandaloneNetworkStructureDataSource.cs");
+    var hostProject = File.ReadAllText(hostProjectPath);
+    var hostProgram = File.ReadAllText(hostProgramPath);
+    var standaloneDataSource = File.ReadAllText(standaloneDataSourcePath);
+
+    AssertTrue(File.Exists(hostProjectPath), "network structure standalone host project should exist");
+    AssertTrue(solution.Contains("AdaptiveSopDdsop.NetworkStructure.Host", StringComparison.Ordinal), "solution should include network structure standalone host");
+    AssertTrue(hostProject.Contains("Microsoft.NET.Sdk.Web", StringComparison.Ordinal), "standalone host should be an ASP.NET web host");
+    AssertTrue(hostProject.Contains("AdaptiveSopDdsop.NetworkStructure.csproj", StringComparison.Ordinal), "standalone host should reference network structure core");
+    AssertTrue(hostProject.Contains("AdaptiveSopDdsop.NetworkStructure.Web.csproj", StringComparison.Ordinal), "standalone host should reference network structure web package");
+    AssertTrue(!hostProject.Contains("AdaptiveSopDdsop.Web.csproj", StringComparison.Ordinal), "standalone host should not reference DDS&OP web project");
+    AssertTrue(hostProgram.Contains("UseStaticWebAssets", StringComparison.Ordinal), "standalone host should enable Razor class library static web assets");
+    AssertTrue(hostProgram.Contains("AddRazorPages", StringComparison.Ordinal), "standalone host should serve network Razor pages");
+    AssertTrue(hostProgram.Contains("MapRazorPages", StringComparison.Ordinal), "standalone host should map network Razor pages");
+    AssertTrue(hostProgram.Contains("Results.Redirect(\"/network-structure\")", StringComparison.Ordinal), "standalone host root should enter the network structure workspace");
+    AssertTrue(hostProgram.Contains("StandaloneNetworkStructureDataSource", StringComparison.Ordinal), "standalone host should use its own network data source");
+    AssertTrue(hostProgram.Contains("INetworkStructureProductDataSource", StringComparison.Ordinal), "standalone host should register pure network product data source");
+    AssertTrue(hostProgram.Contains("NetworkStructureProductDataRequest", StringComparison.Ordinal), "standalone host should load network data through product data request contract");
+    AssertTrue(hostProgram.Contains("/api/network-structure-capabilities", StringComparison.Ordinal), "standalone host should expose product capability API");
+    AssertTrue(hostProgram.Contains("NetworkStructureProductCapabilityCatalog.CreateStandaloneHost()", StringComparison.Ordinal), "standalone host should return the core product capability catalog");
+    AssertTrue(hostProgram.Contains("NetworkGraphService", StringComparison.Ordinal), "standalone host should register graph service");
+    AssertTrue(hostProgram.Contains("NetworkMetricsService", StringComparison.Ordinal), "standalone host should register metrics service");
+    AssertTrue(hostProgram.Contains("NetworkStructureScoringService", StringComparison.Ordinal), "standalone host should register scoring service");
+    AssertTrue(hostProgram.Contains("/api/network-structure-data", StringComparison.Ordinal), "standalone host should expose pure network data API");
+    AssertTrue(hostProgram.Contains("/api/network-structure-scoring", StringComparison.Ordinal), "standalone host should expose network scoring API");
+    AssertTrue(hostProgram.Contains("/api/network-metrics", StringComparison.Ordinal), "standalone host should expose network metrics API");
+    AssertTrue(hostProgram.Contains("/api/network-graph", StringComparison.Ordinal), "standalone host should expose network graph API");
+    AssertTrue(hostProgram.Contains("/api/network-scenario-validation", StringComparison.Ordinal), "standalone host should explicitly expose external validation boundary response");
+    AssertTrue(hostProgram.Contains("/api/candidate-action-combinations/select", StringComparison.Ordinal), "standalone host should explicitly expose candidate-combination boundary response");
+    AssertTrue(hostProgram.Contains("不执行外部白盒场景重算", StringComparison.Ordinal), "standalone host should state that external white-box recalculation is outside its boundary");
+    AssertTrue(hostProgram.Contains("必须回到外部白盒引擎重算", StringComparison.Ordinal), "standalone host should state candidate combinations must return to an external white-box engine");
+    AssertTrue(!hostProgram.Contains("DDS&OP", StringComparison.Ordinal), "standalone host program should use neutral external-system boundary language");
+    AssertTrue(!hostProgram.Contains("NoDdsopPreview", StringComparison.Ordinal), "standalone host program should not expose Ddsop-specific model names");
+    AssertTrue(!hostProgram.Contains("AdaptiveSopDdsop.Web", StringComparison.Ordinal), "standalone host program should not import DDS&OP web namespace");
+    AssertTrue(!hostProgram.Contains("ScenarioRunPreviewService", StringComparison.Ordinal), "standalone host should not directly run DDS&OP scenario preview");
+    AssertTrue(!hostProgram.Contains("IScenarioWorkspaceDataSource", StringComparison.Ordinal), "standalone host should not depend on DDS&OP workspace data source");
+    AssertTrue(!hostProgram.Contains("SeedData.Create", StringComparison.Ordinal), "standalone host should not use DDS&OP seed data");
+    AssertTrue(!hostProgram.Contains("DemandDrivenPlanningEngine", StringComparison.Ordinal), "standalone host should not call DDS&OP planning engine");
+    AssertTrue(!hostProgram.Contains("AddNetworkStructureIntegration", StringComparison.Ordinal), "standalone host should not mount DDS&OP integration module");
+    AssertTrue(!hostProgram.Contains("MapNetworkStructureEndpoints", StringComparison.Ordinal), "standalone host should not mount DDS&OP integration endpoints");
+    AssertTrue(standaloneDataSource.Contains("INetworkGraphDataSource", StringComparison.Ordinal), "standalone data source should implement graph data source contract");
+    AssertTrue(standaloneDataSource.Contains("INetworkStructureProductDataSource", StringComparison.Ordinal), "standalone data source should implement product data source contract");
+    AssertTrue(standaloneDataSource.Contains("NetworkStructureProductDataSet LoadNetworkStructure", StringComparison.Ordinal), "standalone data source should expose pure network product data load method");
+    AssertTrue(standaloneDataSource.Contains("INetworkMetricsDataSource", StringComparison.Ordinal), "standalone data source should implement metrics data source contract");
+    AssertTrue(standaloneDataSource.Contains("INetworkScoringDataSource", StringComparison.Ordinal), "standalone data source should implement scoring data source contract");
+    AssertTrue(standaloneDataSource.Contains("SatelliteManufacturingNetworkSeedData.Build", StringComparison.Ordinal), "standalone data source should use network product seed factory");
+    AssertTrue(!standaloneDataSource.Contains("AdaptiveSopDdsop.Web", StringComparison.Ordinal), "standalone data source should not import DDS&OP web namespace");
+    AssertTrue(!standaloneDataSource.Contains("ScenarioWorkspaceDataSet", StringComparison.Ordinal), "standalone data source should not return DDS&OP workspace data");
 }
 
 static void TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles()
@@ -1212,32 +2021,39 @@ static void TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets()
     AssertTrue(summary.ScenarioPresets.Any(item => item.TemplateId == "TPL-CONSTRAINED"), "star electronics with supply risk should offer constrained preset");
 }
 
-static void TestScenarioOptimizationServiceUsesSolverAdapter()
+static void TestCandidateActionCombinationServiceUsesSolverAdapter()
 {
     var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
     var preview = new ScenarioRunPreviewService(source);
+    var whiteBoxGateway = new LocalDdsopWhiteBoxScenarioGateway(preview);
+    var scoring = new NetworkStructureScoringService(source, new NetworkMetricsService(source));
+    var requestBuilder = new NetworkCandidateRecalculationRequestBuilder();
+    var validation = new NetworkScenarioValidationService(source, source, scoring, requestBuilder, whiteBoxGateway);
     var solver = new CapturingOptimizationSolver();
-    var service = new ScenarioOptimizationService(source, preview, new[] { solver });
-    var result = service.Optimize(new ScenarioOptimizationRequest(
-        new ScenarioRunPreviewRequest(12, "TPL-PREBUILD-PEAK", AdoptionConstraintMode: "ServiceFirst"),
-        RecommendationCount: 3,
-        MaxActionsPerRecommendation: 2,
+    var selector = new CandidateActionCombinationSelector(new[] { solver });
+    var service = new CandidateActionCombinationService(validation, whiteBoxGateway, selector);
+
+    var result = service.Select(new CandidateActionCombinationRequest(
+        12,
         SolverName: "FakeSolver"));
 
-    AssertTrue(source.LoadCount > 0, "optimization service should load data through IScenarioWorkspaceDataSource");
-    AssertEqual(3, solver.CallCount, "solver should be called once per optimization profile");
-    AssertEqual(3, result.Recommendations.Count, "optimization should return three recommendation profiles");
-    AssertTrue(result.Recommendations.All(item => item.PreviewResult is not null), "recommendation should include recalculated preview result");
-    AssertTrue(result.Recommendations.All(item => item.PreviewRequest.Parameters is not null), "recommendation should include runnable preview request");
-    AssertTrue(result.Recommendations.Select(item => item.ProfileId).ToHashSet().SetEquals(new[] { "ServiceFirst", "CashFirst", "CapacityFirst" }), "recommendation profiles should cover service cash and capacity");
-    AssertTrue(result.CandidateImpactMatrix.Count > 0, "optimization should expose candidate action impact matrix");
+    AssertTrue(source.LoadCount > 0, "candidate combination service should load data through IScenarioWorkspaceDataSource");
+    AssertEqual(3, solver.CallCount, "solver should be called once per combination profile");
+    AssertEqual(3, result.Combinations.Count, "combination selection should return three management profiles");
+    AssertTrue(result.Combinations.All(item => item.WhiteBoxPreviewResult is not null), "candidate combination should include recalculated preview result");
+    AssertTrue(result.Combinations.All(item => item.WhiteBoxRecalculationRequest.Parameters is not null), "candidate combination should include runnable white-box recalculation request");
+    AssertTrue(result.Combinations.Select(item => item.ProfileId).ToHashSet().SetEquals(new[] { "ServiceFirst", "CashFirst", "CapacityFirst" }), "candidate combination profiles should cover service cash and capacity");
+    AssertTrue(result.CandidateImpactMatrix.Count > 0, "combination selection should expose candidate action impact matrix");
     AssertTrue(result.CandidateImpactMatrix.All(item => item.EstimatedCost >= 0m && !string.IsNullOrWhiteSpace(item.ConstraintNote)), "candidate matrix should include cost and constraints");
-    AssertEqual(result.Recommendations.Count, result.ScenarioComparisons.Count, "optimization should expose one comparison per recommendation");
-    AssertTrue(result.Recommendations.All(item => item.Comparison is not null && item.EstimatedActionCost >= 0m), "recommendation should include comparison and estimated cost");
-    AssertTrue(result.Trace.Any(item => item.Message.Contains("候选动作影响矩阵", StringComparison.Ordinal)), "optimization trace should explain impact matrix");
-    AssertTrue(!result.IsPersisted, "optimization recommendation should not be persisted");
-    AssertTrue(solver.LastProblem?.Candidates.Count > 0, "optimization problem should include candidates");
-    AssertTrue(solver.LastProblem?.CostBudget > 0m, "optimization problem should include cost budget boundary");
+    AssertEqual(result.Combinations.Count, result.CombinationComparisons.Count, "combination selection should expose one comparison per candidate combination");
+    AssertTrue(result.Combinations.All(item => item.Comparison is not null && item.EstimatedActionCost >= 0m), "candidate combination should include comparison and estimated cost");
+    AssertTrue(result.Combinations.All(item => item.Trace.Any(trace => trace.Message.Contains("白盒", StringComparison.Ordinal))), "combination trace should state white-box recalculation");
+    AssertTrue(result.Trace.Any(item => item.Message.Contains("求解器只选择候选动作组合", StringComparison.Ordinal)), "trace should state that solver only selects action combinations");
+    AssertTrue(result.Message.Contains("候选动作组合", StringComparison.Ordinal), "service should not return old solver recommendation wording");
+    AssertTrue(!result.Message.Contains("优化推荐", StringComparison.Ordinal), "service should not return old solver recommendation wording");
+    AssertTrue(!result.IsPersisted, "candidate combination should not be persisted");
+    AssertTrue(solver.LastProblem?.Candidates.Count > 0, "solver problem should include candidates");
+    AssertTrue(solver.LastProblem?.CostBudget > 0m, "solver problem should include cost budget boundary");
 }
 
 static void TestOrToolsOptimizationSolverSolvesToyProblem()
@@ -1251,8 +2067,8 @@ static void TestOrToolsOptimizationSolverSolvesToyProblem()
         100,
         new[]
         {
-            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
-            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
+            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, "测试约束", "可进入方案评审", "低收益动作"),
+            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, "测试约束", "可进入方案评审", "高收益动作")
         });
     var result = solver.Solve(problem);
 
@@ -1272,8 +2088,8 @@ static void TestGurobiOptimizationSolverToyProblem()
         100,
         new[]
         {
-            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
-            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
+            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, "测试约束", "可进入方案评审", "低收益动作"),
+            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, "测试约束", "可进入方案评审", "高收益动作")
         });
     var result = solver.Solve(problem);
 
@@ -1327,6 +2143,164 @@ static void DeleteSqliteFiles(string databasePath)
     }
 }
 
+static NetworkDataSet BuildCumulativeNetworkData()
+{
+    var effectiveFrom = new DateOnly(2026, 6, 1);
+    return new NetworkDataSet(
+        new[]
+        {
+            new NetworkItemMaster("FG-A", "成品 A", "FinishedGood", "测试族", "Active", 100m, "EA"),
+            new NetworkItemMaster("SUB-B", "半成品 B", "Subassembly", "测试族", "Active", 40m, "EA"),
+            new NetworkItemMaster("PART-C", "采购件 C", "PurchasedPart", "测试族", "Active", 10m, "EA"),
+        },
+        new[]
+        {
+            new NetworkBomHeader("BOM-FG-A", "FG-A", "A", effectiveFrom, null, "Released"),
+            new NetworkBomHeader("BOM-SUB-B", "SUB-B", "A", effectiveFrom, null, "Released"),
+        },
+        new[]
+        {
+            new NetworkBomLine("BOM-FG-A", "FG-A", "SUB-B", 2m, 0.10m, ""),
+            new NetworkBomLine("BOM-SUB-B", "SUB-B", "PART-C", 3m, 0.20m, ""),
+        },
+        Array.Empty<NetworkAlternateItem>(),
+        new[]
+        {
+            new NetworkRoutingLine("FG-A", "FG-A", "测试族", "R1", "总装", "RES-AIT", 0.10m, effectiveFrom, null),
+            new NetworkRoutingLine("SUB-B", "FG-A", "测试族", "R1", "半成品装配", "RES-AIT", 0.05m, effectiveFrom, null),
+        },
+        new[] { new NetworkSupplierSource("PART-C", "SUP-C", "供应商 C", 1, 100m, 14, 1.10m, 100m, 10m, "Qualified") },
+        new[] { new NetworkInventoryLocation("SUB-B", "WH-WIP", "半成品库", "WipSupermarket", "Qualified", "测试", 365, true) },
+        new[] { new NetworkBufferSetting("SUB-B", true, "测试缓冲", 7, 10m, 3, effectiveFrom, null, "Current") },
+        new[] { new NetworkLeadTimeProfile("PART-C", "Supplier", 14, 1.10m, "PART-C") });
+}
+
+static NetworkDataSet BuildInvalidNetworkData()
+{
+    var effectiveFrom = new DateOnly(2026, 6, 1);
+    return new NetworkDataSet(
+        new[]
+        {
+            new NetworkItemMaster("FG-A", "成品 A", "FinishedGood", "测试族", "Active", 100m, "EA"),
+            new NetworkItemMaster("SUB-B", "半成品 B", "Subassembly", "测试族", "Active", 40m, "EA"),
+            new NetworkItemMaster("PART-C", "采购件 C", "PurchasedPart", "测试族", "Active", 10m, "EA"),
+            new NetworkItemMaster("PART-D", "无供应采购件 D", "PurchasedPart", "测试族", "Active", 12m, "EA"),
+            new NetworkItemMaster("SUB-E", "无库存解耦点 E", "Subassembly", "测试族", "Active", 22m, "EA"),
+        },
+        new[]
+        {
+            new NetworkBomHeader("BOM-FG-A", "FG-A", "A", effectiveFrom, null, "Released"),
+            new NetworkBomHeader("BOM-SUB-B", "SUB-B", "A", effectiveFrom, null, "Released"),
+            new NetworkBomHeader("BOM-PART-C", "PART-C", "A", effectiveFrom, null, "Released"),
+            new NetworkBomHeader("BOM-MISSING-PARENT", "MISSING-PARENT", "A", effectiveFrom, null, "Released"),
+        },
+        new[]
+        {
+            new NetworkBomLine("BOM-FG-A", "FG-A", "SUB-B", 2m, 0.10m, ""),
+            new NetworkBomLine("BOM-SUB-B", "SUB-B", "PART-C", 3m, 0.20m, ""),
+            new NetworkBomLine("BOM-PART-C", "PART-C", "FG-A", 1m, 0m, ""),
+            new NetworkBomLine("BOM-FG-A", "FG-A", "MISSING-COMPONENT", 1m, 0m, ""),
+            new NetworkBomLine("BOM-ORPHAN", "FG-A", "PART-D", 1m, 0m, ""),
+        },
+        new[] { new NetworkAlternateItem("ALT-C", "PART-C", "ALT-MISSING", 2, 1m, "EngineeringReview") },
+        new[] { new NetworkRoutingLine("FG-A", "FG-A", "测试族", "R1", "总装", "RES-AIT", 0.10m, effectiveFrom, null) },
+        new[] { new NetworkSupplierSource("PART-C", "SUP-C", "供应商 C", 1, 100m, 14, 1.10m, 100m, 10m, "Qualified") },
+        Array.Empty<NetworkInventoryLocation>(),
+        new[]
+        {
+            new NetworkBufferSetting("SUB-E", true, "无库存位置缓冲", 7, 10m, 3, effectiveFrom, null, "Current"),
+            new NetworkBufferSetting("MISSING-BUFFER", true, "缺失物料缓冲", 7, 10m, 3, effectiveFrom, null, "Current"),
+        },
+        new[] { new NetworkLeadTimeProfile("PART-C", "Supplier", 14, 1.10m, "PART-C") });
+}
+
+internal sealed class NetworkGraphFixtureDataSource : IScenarioWorkspaceDataSource, INetworkStructureDataSource, INetworkGraphDataSource, INetworkMetricsDataSource, INetworkScoringDataSource
+{
+    private readonly NetworkDataSet _networkData;
+
+    public NetworkGraphFixtureDataSource(NetworkDataSet networkData)
+    {
+        _networkData = networkData;
+    }
+
+    public int LoadCount { get; private set; }
+
+    public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
+    {
+        LoadCount++;
+        return new ScenarioWorkspaceDataSet(
+            request,
+            Array.Empty<ProductFamily>(),
+            Array.Empty<SkuBufferSetting>(),
+            Array.Empty<InventoryPosition>(),
+            Array.Empty<WeeklyDemand>(),
+            Array.Empty<CapacityResource>(),
+            Array.Empty<ResourceRouting>(),
+            Array.Empty<SupplierItemSource>(),
+            Array.Empty<HistoricalDemandActual>(),
+            Array.Empty<BudgetBenchmark>(),
+            Array.Empty<ResourceCalendarEntry>(),
+            Array.Empty<SupplierCapacityWindow>(),
+            Array.Empty<ScenarioTemplate>(),
+            Array.Empty<DdmrpParameterProfile>(),
+            Array.Empty<MasterSetting>(),
+            Array.Empty<BusinessGuardrail>());
+    }
+
+    public NetworkStructureDataSet LoadNetworkStructure(NetworkStructureDataRequest request)
+    {
+        return new NetworkStructureDataSet(
+            request,
+            _networkData,
+            new NetworkStructureRuntimeSignals(
+                Array.Empty<ProductFamily>(),
+                Array.Empty<SkuBufferSetting>(),
+                Array.Empty<WeeklyDemand>(),
+                Array.Empty<CapacityResource>(),
+                Array.Empty<ResourceRouting>(),
+                Array.Empty<SupplierItemSource>(),
+                Array.Empty<SupplierCapacityWindow>(),
+                Array.Empty<InventoryPosition>()));
+    }
+
+    public NetworkGraphDataSet LoadNetworkGraph(DateOnly anchorDate)
+    {
+        LoadCount++;
+        return new NetworkGraphDataSet(_networkData, anchorDate);
+    }
+
+    public NetworkMetricsDataSet LoadNetworkMetrics(int horizonWeeks, DateOnly anchorDate)
+    {
+        LoadCount++;
+        return new NetworkMetricsDataSet(
+            Math.Clamp(horizonWeeks <= 0 ? 12 : horizonWeeks, 1, 52),
+            anchorDate,
+            _networkData,
+            Array.Empty<NetworkMetricSkuSignal>(),
+            Array.Empty<NetworkMetricResourceLoadSignal>(),
+            Array.Empty<NetworkMetricSupplierCapacitySignal>());
+    }
+
+    public NetworkScoringDataSet LoadNetworkScoring(int horizonWeeks, DateOnly anchorDate)
+    {
+        LoadCount++;
+        return new NetworkScoringDataSet(
+            Math.Clamp(horizonWeeks <= 0 ? 12 : horizonWeeks, 1, 52),
+            anchorDate,
+            _networkData,
+            Array.Empty<NetworkScoringFamilySignal>(),
+            Array.Empty<NetworkScoringSkuSignal>(),
+            Array.Empty<NetworkScoringDemandSignal>(),
+            Array.Empty<NetworkScoringResourceSignal>(),
+            Array.Empty<NetworkScoringRoutingSignal>(),
+            Array.Empty<NetworkScoringSupplierItemSignal>(),
+            Array.Empty<NetworkScoringBufferProjectionSignal>(),
+            Array.Empty<NetworkScoringResourceLoadSignal>(),
+            Array.Empty<NetworkScoringSupplyRequirementSignal>(),
+            Array.Empty<NetworkScoringSupplierCapacitySignal>());
+    }
+}
+
 internal sealed record LegacyScenarioSource(ValidationData Data);
 
 internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDataAdapter<LegacyScenarioSource>
@@ -1337,7 +2311,7 @@ internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDat
     }
 }
 
-internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
+internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource, INetworkStructureDataSource, INetworkGraphDataSource, INetworkMetricsDataSource, INetworkScoringDataSource
 {
     private readonly SeedScenarioWorkspaceDataSource _inner;
 
@@ -1352,6 +2326,32 @@ internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDa
     {
         LoadCount++;
         return _inner.Load(request);
+    }
+
+    public NetworkStructureDataSet LoadNetworkStructure(NetworkStructureDataRequest request)
+    {
+        return NetworkStructureDataSourceAdapter.FromScenarioWorkspace(
+            Load(new ScenarioWorkspaceDataRequest(
+                request.HorizonWeeks,
+                request.AnchorDate,
+                request.SkuFilter,
+                request.FamilyFilter)));
+    }
+
+    public NetworkGraphDataSet LoadNetworkGraph(DateOnly anchorDate)
+    {
+        var data = LoadNetworkStructure(new NetworkStructureDataRequest(12, anchorDate));
+        return new NetworkGraphDataSet(data.NetworkData, data.Request.AnchorDate);
+    }
+
+    public NetworkMetricsDataSet LoadNetworkMetrics(int horizonWeeks, DateOnly anchorDate)
+    {
+        return new DdsopNetworkMetricsDataSource(this).LoadNetworkMetrics(horizonWeeks, anchorDate);
+    }
+
+    public NetworkScoringDataSet LoadNetworkScoring(int horizonWeeks, DateOnly anchorDate)
+    {
+        return new DdsopNetworkScoringDataSource(this).LoadNetworkScoring(horizonWeeks, anchorDate);
     }
 }
 

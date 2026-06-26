@@ -1,6 +1,6 @@
 using Gurobi;
 
-namespace AdaptiveSopDdsop.Web.Domain;
+namespace AdaptiveSopDdsop.NetworkStructure;
 
 public sealed class GurobiOptimizationSolver : IOptimizationSolver
 {
@@ -12,7 +12,7 @@ public sealed class GurobiOptimizationSolver : IOptimizationSolver
         {
             return new OptimizationSolution(
                 OptimizationSolverStatus.Infeasible,
-                "Gurobi",
+                SolverName,
                 "没有可供优化的候选动作。",
                 0m,
                 Array.Empty<string>());
@@ -96,15 +96,15 @@ public sealed class GurobiOptimizationSolver : IOptimizationSolver
 
                 return new OptimizationSolution(
                     status,
-                    "Gurobi",
-                    selected.Count == 0 ? "Gurobi 已求解，但未选择正收益候选动作。" : "Gurobi 已生成推荐动作组合。",
+                    SolverName,
+                    selected.Count == 0 ? "Gurobi 已求解，但未选择正收益候选动作。" : "Gurobi 已生成候选动作组合。",
                     decimal.Round(objectiveValue, 3),
                     selected);
             }
 
             return new OptimizationSolution(
                 OptimizationSolverStatus.Infeasible,
-                "Gurobi",
+                SolverName,
                 $"Gurobi 未找到可行解，状态码 {model.Status}。",
                 0m,
                 Array.Empty<string>());
@@ -113,7 +113,7 @@ public sealed class GurobiOptimizationSolver : IOptimizationSolver
         {
             return new OptimizationSolution(
                 OptimizationSolverStatus.Unavailable,
-                "Gurobi",
+                SolverName,
                 $"Gurobi 不可用：{ex.Message}",
                 0m,
                 Array.Empty<string>());
@@ -122,7 +122,7 @@ public sealed class GurobiOptimizationSolver : IOptimizationSolver
         {
             return new OptimizationSolution(
                 OptimizationSolverStatus.Error,
-                "Gurobi",
+                SolverName,
                 $"优化求解失败：{ex.Message}",
                 0m,
                 Array.Empty<string>());

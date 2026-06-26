@@ -1,0 +1,45 @@
+@page "/network-structure"
+@{
+    Layout = "_NetworkStructureLayout";
+    ViewData["Title"] = "网络结构评分";
+    ViewData["NetworkStructureMode"] = "Standalone";
+}
+
+<div id="network-structure-app" class="network-product-shell">
+    <header class="network-product-topbar">
+        <div>
+            <span class="panel-kicker">独立产品入口</span>
+            <h1>网络结构评分工作台</h1>
+            <p>基于已发布 BOM 快照、供应来源、资源路线、库存位置和缓冲设置，展开物料网络、计算指标并输出可追溯候选。</p>
+        </div>
+        <div class="network-product-actions">
+            <a class="button secondary" href="/">返回业务平台</a>
+            <button id="refresh-network-structure" class="button secondary" type="button">刷新网络评分</button>
+            <span id="network-product-status" class="status-chip neutral">正在加载</span>
+        </div>
+    </header>
+
+    <main id="network-product-workspace" class="network-product-workspace" tabindex="-1">
+        <section id="workspace-loading" class="readiness-banner is-loading" aria-live="polite">
+            <div>
+                <span class="context-label">网络数据状态</span>
+                <strong>正在读取网络结构评分数据</strong>
+                <p>独立入口只加载网络主数据、物料图、网络指标、评分候选和候选动作组合选择，不加载外部场景运行工作台。</p>
+            </div>
+        </section>
+
+        <div id="workspace-error" class="persistent-error" role="alert" hidden>
+            <strong>无法读取网络结构评分数据</strong>
+            <span id="workspace-error-message">请检查本地服务后刷新。</span>
+        </div>
+
+        @await Html.PartialAsync("_NetworkStructureWorkspace")
+    </main>
+
+    <div id="network-workspace-focus-layer" class="network-focus-backdrop" hidden aria-hidden="true">
+        <div class="network-focus-stage" role="dialog" aria-modal="true" aria-label="网络结构评分专注查看"></div>
+    </div>
+</div>
+
+<script src="~/_content/AdaptiveSopDdsop.NetworkStructure.Web/js/network-structure-shell.js" asp-append-version="true"></script>
+<script src="~/_content/AdaptiveSopDdsop.NetworkStructure.Web/js/network-structure-workspace.js" asp-append-version="true"></script>

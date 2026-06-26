@@ -262,7 +262,6 @@ public static class SeedData
             new("供应链计划组", "DDOM Master Settings 管理", 2, 4, "Yellow", "完成 DDI/DDS&OP 方法培训"),
             new("研发工程组", "空间级器件替代设计", 5, 5, "Green", "维持当前能力"),
         };
-
         return new ValidationData(
             families,
             skus,

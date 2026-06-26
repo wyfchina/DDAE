@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\AdaptiveSopDdsop.NetworkStructure\AdaptiveSopDdsop.NetworkStructure.csproj" />
     <ProjectReference Include="..\..\src\AdaptiveSopDdsop.Web\AdaptiveSopDdsop.Web.csproj" />
   </ItemGroup>
 

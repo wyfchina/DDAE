@@ -9,7 +9,7 @@ const state = {
   exceptions: null,
   bufferTrend: null,
   baselineBufferTrend: null,
-  optimization: null,
+  candidateCombinations: null,
   masterSettings: null,
   masterSettingProposals: [],
   currentMasterSettingDetail: null,
@@ -60,6 +60,7 @@ const previewControls = {
 const navigationHelp = {
   overview: "查看全局 KPI 与当前运行状态，判断本次场景工作台是否可用于会议评审。",
   productFamilyDashboard: "按产品族聚合查看服务、流速、库存、RCCP、供应缺口和预算偏差，避免默认陷入 SKU 明细。",
+  networkScoring: "打开独立网络结构评分产品，基于已发布 BOM、供应来源、资源路线、库存位置和缓冲设置发现候选控制点与缓冲点。",
   dataReadiness: "核对主数据覆盖、筛选对象和采纳约束，确保场景输入口径一致。",
   exceptions: "从异常 SKU 进入场景配置，优先处理服务损失、需求尖峰和缓冲风险。",
   scenarioRun: "配置模板、参数覆盖、供应限制并运行非持久化场景预览。",
@@ -99,7 +100,6 @@ const collapsiblePanelConfigs = [
   { selector: "#product-family-dashboard-panel .product-family-detail", defaultExpanded: false },
   { selector: "#scenario-run-panel .scenario-config-panel", defaultExpanded: true },
   { selector: "#scenario-run-panel .scenario-run-layout > section:not(.scenario-config-panel)", defaultExpanded: true, title: "可选模板", kicker: "模板与动作" },
-  { selector: "#scenario-run-panel #optimization-panel", defaultExpanded: false },
   { selector: "#scenario-run-panel #scenario-save-panel", defaultExpanded: false },
   { selector: "#scenario-comparison .budget-panel", defaultExpanded: false },
   { selector: "#buffer-trend-panel .buffer-visual-panel", defaultExpanded: false },
@@ -131,13 +131,6 @@ const saveControls = {
   auditList: document.querySelector("#scenario-audit-list"),
   title: document.querySelector("#saved-scenario-title"),
   detailStatus: document.querySelector("#saved-scenario-status"),
-};
-
-const optimizationControls = {
-  solver: document.querySelector("#optimization-solver-select"),
-  status: document.querySelector("#optimization-status"),
-  list: document.querySelector("#optimization-recommendation-list"),
-  button: document.querySelector("#run-optimization"),
 };
 
 const masterSettingControls = {
@@ -528,6 +521,11 @@ function statusLabel(status) {
     Warning: "预警",
     Blocked: "阻塞",
   })[status] || valueOr(status, "-");
+}
+
+function mapLabel(dictionary, value) {
+  const key = String(valueOr(value, ""));
+  return dictionary[key] || key || "-";
 }
 
 function caseLabel(name) {
@@ -1403,7 +1401,7 @@ function renderMultiScenarioComparison(result) {
     return;
   }
 
-  const comparisons = valueOr(result?.scenarioComparisons, []);
+  const comparisons = valueOr(result?.combinationComparisons, []);
   comparisonBody.innerHTML = comparisons.length
     ? comparisons.map(item => row([
       `<strong>${escapeHtml(item.profileName)}</strong><br><small>${escapeHtml(item.profileId)}</small>`,
@@ -1417,7 +1415,7 @@ function renderMultiScenarioComparison(result) {
       money(item.estimatedActionCost),
       `<span class="${item.managementDecision === "需要管理取舍" ? "status-chip is-invalid" : item.managementDecision.includes("复核") || item.managementDecision.includes("评审") ? "status-chip is-warning" : "status-chip is-valid"}">${escapeHtml(item.managementDecision)}</span>`,
     ])).join("")
-    : emptyRow("生成优化推荐后显示多方案 KPI、库存、服务和订单变化。", 10);
+    : emptyRow("选择候选组合后显示多方案 KPI、库存、服务和订单变化。", 10);
 
   const matrix = valueOr(result?.candidateImpactMatrix, []);
   matrixBody.innerHTML = matrix.length
@@ -1433,7 +1431,7 @@ function renderMultiScenarioComparison(result) {
       escapeHtml(item.constraintNote),
       `<span class="${item.feasibilityStatus === "需要管理取舍" ? "status-chip is-invalid" : item.feasibilityStatus.includes("复核") ? "status-chip is-warning" : "status-chip is-valid"}">${escapeHtml(item.feasibilityStatus)}</span>`,
     ])).join("")
-    : emptyRow("候选动作影响矩阵将在优化推荐生成后显示。", 10);
+    : emptyRow("候选动作影响矩阵将在候选组合选择后显示。", 10);
 }
 
 function filterBufferTrendWorkspace(trend) {
@@ -2033,127 +2031,6 @@ async function saveScenarioRun() {
   byId("preview-persistence-chip").className = "status-chip is-valid";
   byId("preview-persistence-chip").textContent = `已保存，未提交审批：${saved.runNumber}`;
   await loadSavedScenarioRuns(saved.runId);
-}
-
-function solverStatusClass(status) {
-  return status === "Optimal" || status === "Feasible"
-    ? "status-chip is-valid"
-    : status === "Unavailable" || status === "Error"
-      ? "status-chip is-invalid"
-      : "status-chip is-warning";
-}
-
-function renderOptimizationResponse(result) {
-  state.optimization = result;
-  optimizationControls.status.className = solverStatusClass(result.solverStatus);
-  optimizationControls.status.textContent = `${result.solverName || "Gurobi"}：${result.message || result.solverStatus}`;
-  renderMultiScenarioComparison(result);
-
-  optimizationControls.list.innerHTML = valueOr(result.recommendations, []).length
-    ? result.recommendations.map((item, index) => {
-      const comparison = item.previewResult.comparison;
-      const optimizationComparison = item.comparison || {};
-      return `
-        <article class="optimization-card">
-          <div class="optimization-card-heading">
-            <div><span class="panel-kicker">${escapeHtml(item.profileId)}</span><h3>${escapeHtml(item.profileName)}</h3></div>
-            <span class="${solverStatusClass(item.solverStatus)}">${escapeHtml(item.solverStatus)}</span>
-          </div>
-          <p>${escapeHtml(item.summary)}</p>
-          <div class="optimization-metrics">
-            <span>流速变化 <strong>${number(comparison.flowIndexDelta)}pp</strong></span>
-            <span>峰值负荷变化 <strong>${number(comparison.peakLoadPercentDelta)}pp</strong></span>
-            <span>供应缺口变化 <strong>${number(comparison.supplyGapDelta)}</strong></span>
-            <span>动作成本 <strong>${money(valueOr(item.estimatedActionCost, 0))}</strong></span>
-            <span>管理判断 <strong>${escapeHtml(valueOr(optimizationComparison.managementDecision, "待评审"))}</strong></span>
-          </div>
-          <div class="optimization-actions">
-            ${item.actions.length
-              ? item.actions.map(action => `<span>${escapeHtml(action.actionType)}：${escapeHtml(action.target)} / ${money(valueOr(action.estimatedCost, 0))}</span>`).join("")
-              : `<span>未选择候选动作</span>`}
-          </div>
-          <button class="button secondary" type="button" data-optimization-index="${index}">带入场景</button>
-        </article>
-      `;
-    }).join("")
-    : `<div class="table-empty"><strong>没有优化推荐</strong><p>${escapeHtml(result.message || "当前求解器未返回可采纳候选。")}</p></div>`;
-}
-
-function applyOptimizationRecommendation(index) {
-  const recommendation = state.optimization?.recommendations?.[index];
-  if (!recommendation) {
-    return;
-  }
-
-  const request = recommendation.previewRequest;
-  const parameters = request.parameters || {};
-  previewControls.template.value = request.templateId || previewControls.template.value;
-  previewControls.adoptionConstraint.value = request.adoptionConstraintMode || previewControls.adoptionConstraint.value;
-
-  const prebuild = valueOr(parameters.prebuildCampaigns, [])[0];
-  if (prebuild) {
-    previewControls.sku.value = prebuild.sku;
-    previewControls.prebuildWeek.value = prebuild.buildWeek;
-    previewControls.prebuildQuantity.value = prebuild.quantity;
-  }
-
-  const capacity = valueOr(parameters.capacityAdjustments, [])[0];
-  if (capacity) {
-    previewControls.capacityResource.value = capacity.resourceCode;
-    previewControls.capacityWeek.value = capacity.week;
-    previewControls.capacityMultiplier.value = capacity.capacityMultiplier;
-  }
-
-  const policy = valueOr(parameters.skuPolicyOverrides, [])[0];
-  if (policy) {
-    previewControls.sku.value = policy.sku;
-    if (policy.minimumOrderQuantity !== null && policy.minimumOrderQuantity !== undefined) {
-      previewControls.moqOverride.value = policy.minimumOrderQuantity;
-    }
-    if (policy.orderCycleDays !== null && policy.orderCycleDays !== undefined) {
-      previewControls.orderCycleOverride.value = Math.max(1, Number(policy.orderCycleDays));
-    }
-  }
-
-  const supplierLimit = valueOr(parameters.supplierCapacityLimits, [])[0];
-  if (supplierLimit) {
-    const value = `${supplierLimit.supplier}|${supplierLimit.materialFamily}`;
-    const optionExists = Array.from(previewControls.supplierLimit.options).some(option => option.value === value);
-    if (optionExists) {
-      previewControls.supplierLimit.value = value;
-    }
-    previewControls.supplierLimitStartWeek.value = supplierLimit.startWeek;
-    previewControls.supplierLimitEndWeek.value = supplierLimit.endWeek;
-    previewControls.supplierCapacityLimit.value = supplierLimit.committedCapacity;
-  }
-
-  renderScenarioTemplates(valueOr(state.filtered, state.data));
-  byId("preview-status").className = "status-chip is-warning";
-  byId("preview-status").textContent = `${recommendation.profileName}已带入，尚未运行预览`;
-}
-
-async function runOptimization() {
-  const solverName = optimizationControls.solver?.value || "Gurobi";
-  optimizationControls.status.className = "status-chip is-warning";
-  optimizationControls.status.textContent = `${solverName} 正在求解`;
-  optimizationControls.list.innerHTML = `<div class="table-empty"><strong>正在生成优化推荐</strong></div>`;
-  const payload = {
-    baseRequest: state.preview?.request || buildPreviewRequest(),
-    recommendationCount: 3,
-    maxActionsPerRecommendation: 3,
-    targetMode: null,
-    solverName,
-  };
-  const response = await fetch("/api/scenario-runs/optimize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(`优化推荐接口失败：${response.status}`);
-  }
-
-  renderOptimizationResponse(await response.json());
 }
 
 function renderBufferTrend(trends) {
@@ -3177,12 +3054,6 @@ document.addEventListener("click", event => {
   });
 });
 
-document.addEventListener("click", event => {
-  const button = event.target.closest("[data-optimization-index]");
-  if (!button) return;
-  applyOptimizationRecommendation(Number(button.dataset.optimizationIndex));
-});
-
 Object.values(selectors).forEach(select => {
   select.addEventListener("change", applyFilters);
 });
@@ -3214,14 +3085,6 @@ byId("run-preview").addEventListener("click", () => {
   runPreview().catch(error => {
     byId("preview-status").className = "status-chip is-invalid";
     byId("preview-status").textContent = "预览失败";
-    showWorkspaceError(error);
-  });
-});
-
-byId("run-optimization").addEventListener("click", () => {
-  runOptimization().catch(error => {
-    optimizationControls.status.className = "status-chip is-invalid";
-    optimizationControls.status.textContent = "优化推荐失败";
     showWorkspaceError(error);
   });
 });

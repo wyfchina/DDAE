@@ -1,5 +1,6 @@
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
+using AdaptiveSopDdsop.Web.NetworkStructureIntegration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,10 +11,8 @@ builder.Services.AddSingleton<DdmrpCalculator>();
 builder.Services.AddSingleton<DdsopScenarioService>();
 builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
-builder.Services.AddSingleton<IOptimizationSolver, GurobiOptimizationSolver>();
-builder.Services.AddSingleton<IOptimizationSolver, OrToolsOptimizationSolver>();
-builder.Services.AddSingleton<ScenarioOptimizationService>();
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
+builder.Services.AddNetworkStructureIntegration(builder.Configuration);
 builder.Services.AddSingleton<RccpWorkspaceService>();
 builder.Services.AddSingleton<ExceptionWorkspaceService>();
 builder.Services.AddSingleton<BufferTrendWorkspaceService>();
@@ -90,6 +89,8 @@ app.MapGet("/api/product-family-dashboard", (int? horizonWeeks, ProductFamilyDas
     return Results.Ok(service.GetBaseline(horizonWeeks.GetValueOrDefault(12)));
 });
 
+app.MapNetworkStructureEndpoints();
+
 app.MapGet("/api/exception-workspace", (int? horizonWeeks, ExceptionWorkspaceService service) =>
 {
     return Results.Ok(service.GetExceptions(horizonWeeks.GetValueOrDefault(12)));
@@ -113,11 +114,6 @@ app.MapGet("/api/supplier-collaboration-workspace", (int? horizonWeeks, Supplier
 app.MapPost("/api/scenario-runs/preview", (ScenarioRunPreviewRequest request, ScenarioRunPreviewService service) =>
 {
     return Results.Ok(service.Preview(request));
-});
-
-app.MapPost("/api/scenario-runs/optimize", (ScenarioOptimizationRequest request, ScenarioOptimizationService service) =>
-{
-    return Results.Ok(service.Optimize(request));
 });
 
 app.MapPost("/api/scenario-runs", (ScenarioRunSaveRequest request, ScenarioRunPersistenceService service) =>

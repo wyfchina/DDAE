@@ -79,7 +79,7 @@
                 <div>
                     <span class="context-label">数据状态</span>
                     <strong>正在读取场景工作台数据</strong>
-                    <p>当前阶段支持场景预览重算、优化推荐、场景留痕和主设置变更治理。</p>
+                    <p>当前阶段支持场景预览重算、候选动作组合选择、场景留痕和主设置变更治理。</p>
                 </div>
             </section>
 
@@ -90,6 +90,39 @@
 
             <section id="overview-panel" class="workspace-section" hidden>
                 <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标"></div>
+                <div id="network-structure-entry-card" class="network-product-entry">
+                    <div class="panel-heading">
+                        <div>
+                            <span class="panel-kicker">独立产品入口</span>
+                            <h2>网络结构评分</h2>
+                        </div>
+                        <a class="button secondary" href="@Model.NetworkStructureProductUrl">打开网络结构评分工作台</a>
+                    </div>
+                    <div class="readiness-banner">
+                        <div>
+                            <span class="context-label">跨产品协同</span>
+                            <strong>网络结构评分已从 DDS&OP 主流程拆出</strong>
+                            <p>网络结构评分独立读取已发布 BOM 快照、供应来源、资源路线、库存位置和缓冲设置，输出候选控制点、缓冲点、证据链与不采纳风险。</p>
+                        </div>
+                    </div>
+                    <div class="metadata-grid">
+                        <div class="metadata-card">
+                            <span>从 DDS&OP 传入</span>
+                            <strong>SKU / 产品族 / 周度运行上下文</strong>
+                            <small>用于解释候选动作对服务、库存、RCCP 和供应风险的影响。</small>
+                        </div>
+                        <div class="metadata-card">
+                            <span>网络评分返回</span>
+                            <strong>候选建议 + 证据链</strong>
+                            <small>候选进入 DDS&OP 后仍需通过白盒场景预览重新验证。</small>
+                        </div>
+                        <div class="metadata-card">
+                            <span>求解器边界</span>
+                            <strong>只选择候选动作组合</strong>
+                            <small>Gurobi / OR-Tools 不生成计划，不自动采纳、不保存、不审批。</small>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <section id="product-family-dashboard-panel" class="workspace-section" hidden>
@@ -206,19 +239,6 @@
                             <button id="run-preview" class="button primary" type="button">运行预览</button>
                             <span id="preview-status" class="status-chip neutral">尚未运行</span>
                         </div>
-                        <div id="optimization-panel" class="optimization-panel">
-                            <div class="panel-heading compact-heading">
-                                <div><span class="panel-kicker">求解器状态</span><h2>优化推荐</h2></div>
-                                <span id="optimization-status" class="status-chip neutral">尚未求解</span>
-                            </div>
-                            <p class="muted-note">求解器选择候选动作组合，系统再用白盒预览引擎重算；推荐不会直接采纳、不会提交审批。</p>
-                            <div class="preview-actions">
-                                <label class="inline-select"><span>求解器</span><select id="optimization-solver-select"><option value="Gurobi">Gurobi</option><option value="OR-Tools">OR-Tools</option></select></label>
-                                <button id="run-optimization" class="button secondary" type="button">生成优化推荐</button>
-                                <span class="muted-note">返回服务优先、库存资金优先、产能平衡优先三类方案。</span>
-                            </div>
-                            <div id="optimization-recommendation-list" class="optimization-recommendation-list"></div>
-                        </div>
                         <div id="scenario-save-panel" class="scenario-save-panel" hidden>
                             <div class="panel-heading compact-heading">
                                 <div><span class="panel-kicker">场景留痕</span><h2>保存场景</h2></div>
@@ -252,7 +272,7 @@
                 <div id="scenario-comparison-result" class="comparison-grid"></div>
                 <section id="multi-scenario-comparison-panel" class="budget-panel">
                     <div class="panel-heading compact-heading">
-                        <div><span class="panel-kicker">多方案比较</span><h2>优化方案 KPI 对比</h2></div>
+                        <div><span class="panel-kicker">多方案比较</span><h2>候选组合 KPI 对比</h2></div>
                     </div>
                     <div class="table-scroll">
                         <table class="data-table">

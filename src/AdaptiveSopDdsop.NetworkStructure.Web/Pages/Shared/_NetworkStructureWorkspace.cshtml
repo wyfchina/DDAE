@@ -1,0 +1,167 @@
+@{
+    var standaloneNetworkStructure = string.Equals(Convert.ToString(ViewData["NetworkStructureMode"]), "Standalone", StringComparison.OrdinalIgnoreCase);
+}
+<section id="network-structure-scoring-panel" class="workspace-section" hidden="@(!standaloneNetworkStructure)">
+    <div class="panel-heading">
+        <div><span class="panel-kicker">控制点候选发现</span><h2>网络结构评分</h2></div>
+        <span id="network-score-model-chip" class="status-chip neutral">未加载</span>
+    </div>
+    <div id="network-scoring-kpis" class="network-kpi-strip" aria-label="网络结构评分关键指标"></div>
+    <div class="network-scoring-workbench">
+        <section id="network-capability-panel" class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">产品边界</span><h2>产品能力边界</h2></div>
+                <span id="network-capability-status" class="status-chip neutral">未加载</span>
+            </div>
+            <div class="network-capability-grid">
+                <div>
+                    <h3>独立能力</h3>
+                    <div id="network-capability-list" class="network-capability-list"></div>
+                </div>
+                <div>
+                    <h3>外部白盒依赖</h3>
+                    <div id="network-external-dependency-list" class="network-capability-list"></div>
+                </div>
+            </div>
+            <div>
+                <h3>边界说明</h3>
+                <div id="network-boundary-list" class="network-boundary-list"></div>
+            </div>
+        </section>
+        <section class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">评分摘要</span><h2>候选类型</h2></div>
+            </div>
+            <div id="network-score-summary-grid" class="network-summary-grid"></div>
+        </section>
+        <section class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">候选点清单</span><h2>控制点 / 缓冲点候选</h2></div>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead><tr><th>对象</th><th>建议类型</th><th>产品族</th><th>得分</th><th>复用</th><th>DLT</th><th>供应</th><th>资源</th><th>库存惩罚</th></tr></thead>
+                    <tbody id="network-score-candidate-body"></tbody>
+                </table>
+            </div>
+        </section>
+        <section class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">物料图遍历</span><h2>物料网络展开</h2></div>
+                <span id="network-graph-status-chip" class="status-chip neutral">未加载</span>
+            </div>
+            <div class="network-filter-bar" aria-label="物料网络筛选">
+                <label><span>物料</span><select id="network-graph-item-select"></select></label>
+                <label><span>方向</span><select id="network-graph-direction-select"><option value="both">上游和下游</option><option value="upstream">只看上游</option><option value="downstream">只看下游</option></select></label>
+                <label><span>层级</span><select id="network-graph-depth-select"><option value="2">2 层</option><option value="3" selected>3 层</option><option value="4">4 层</option><option value="6">6 层</option></select></label>
+                <label class="checkline"><input id="network-graph-risk-only" type="checkbox" /> <span>只看风险节点</span></label>
+                <span class="status-chip neutral">上游 / 下游按已发布 BOM 快照展开</span>
+            </div>
+            <div class="network-graph-map-shell">
+                <div class="network-map-toolbar">
+                    <span class="muted-note">默认显示选中物料的局部网络，点击节点可切换物料并同步指标证据。</span>
+                    <span class="network-map-legend"><i class="node-selected"></i>当前物料 <i class="node-buffer"></i>缓冲点 <i class="node-warning"></i>需关注</span>
+                </div>
+                <div id="network-graph-map" class="network-graph-map" aria-label="物料关系图"></div>
+            </div>
+            <div class="network-detail-grid">
+                <div>
+                    <h3>上游影响</h3>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>深度</th><th>路径</th><th>累计用量</th><th>缓冲</th><th>库存位置</th><th>供应来源</th><th>资源路线</th></tr></thead>
+                            <tbody id="network-graph-upstream-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h3>下游影响</h3>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>深度</th><th>路径</th><th>累计用量</th><th>缓冲</th><th>库存位置</th><th>供应来源</th><th>资源路线</th></tr></thead>
+                            <tbody id="network-graph-downstream-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="network-detail-grid">
+                <div>
+                    <h3>路径明细</h3>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>父项</th><th>组件</th><th>数量</th><th>损耗</th><th>有效用量</th><th>替代组</th></tr></thead>
+                            <tbody id="network-graph-edge-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h3>校验报告</h3>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>级别</th><th>规则</th><th>对象</th><th>说明</th><th>证据</th></tr></thead>
+                            <tbody id="network-validation-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <section class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">第四阶段</span><h2>网络指标计算</h2></div>
+                <span id="network-metrics-status-chip" class="status-chip neutral">未加载</span>
+            </div>
+            <p class="muted-note">指标来自已发布 BOM、供应来源、资源路线、提前期档案、缓冲设置和库存位置；点击物料查看证据链。</p>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead><tr><th>物料</th><th>类型</th><th>产品族</th><th>下游覆盖度</th><th>数量影响度</th><th>累计提前期</th><th>供应风险</th><th>资源约束</th><th>库存代价</th><th>综合说明</th></tr></thead>
+                    <tbody id="network-metrics-body"></tbody>
+                </table>
+            </div>
+            <div class="network-detail-grid">
+                <div>
+                    <h3>指标解释</h3>
+                    <div id="network-metric-breakdown-list" class="diagnostics-list"></div>
+                </div>
+                <div>
+                    <h3>证据链</h3>
+                    <div id="network-metric-evidence-list" class="diagnostics-list"></div>
+                </div>
+            </div>
+        </section>
+        <section id="network-score-detail-panel" class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">白盒解释</span><h2 id="network-score-selected-title">选中候选详情</h2></div>
+            </div>
+            <div id="network-score-detail-summary" class="network-detail-summary"></div>
+            <div class="network-detail-grid">
+                <div id="network-score-evidence-list" class="diagnostics-list"></div>
+                <div id="network-score-recommendation-list" class="diagnostics-list"></div>
+            </div>
+        </section>
+        <section class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">白盒重算</span><h2>场景验证</h2></div>
+                <span id="network-scenario-validation-chip" class="status-chip neutral">未加载</span>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead><tr><th>候选</th><th>推荐类型</th><th>库存金额变化</th><th>红区周变化</th><th>补货订单变化</th><th>补货数量变化</th><th>RCCP 峰值变化</th><th>RCCP 红区周</th><th>供应缺口变化</th><th>结论</th></tr></thead>
+                    <tbody id="network-scenario-validation-body"></tbody>
+                </table>
+            </div>
+        </section>
+        <section id="candidate-action-combination-panel" class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">组合选择器</span><h2>候选动作组合选择</h2></div>
+                <span id="candidate-combination-status" class="status-chip neutral">尚未选择</span>
+            </div>
+            <p class="muted-note">Gurobi / OR-Tools 只在已验证候选动作影响矩阵上选择组合；选中后必须回到白盒预览引擎重算，不自动采纳、不保存、不审批。</p>
+            <div class="network-actions">
+                <label class="inline-select"><span>求解器</span><select id="candidate-combination-solver-select"><option value="Gurobi">Gurobi</option><option value="OR-Tools">OR-Tools</option></select></label>
+                <button id="select-candidate-combinations" class="button secondary" type="button">选择候选组合</button>
+                <span class="muted-note">返回服务优先、库存资金优先、产能平衡优先三类组合。</span>
+            </div>
+            <div id="candidate-combination-list" class="candidate-combination-list"></div>
+        </section>
+    </div>
+</section>
