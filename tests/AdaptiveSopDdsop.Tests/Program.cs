@@ -2,6 +2,8 @@ using AdaptiveSopDdsop.NetworkStructure;
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
 using AdaptiveSopDdsop.Web.NetworkStructureIntegration;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -51,6 +53,27 @@ var tests = new (string Name, Action Run)[]
     ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
+    ("DDSOP-CONFIG-INBOUND-V1 contract exports current reviewed draft payload", TestDdsopConfigInboundContractExportsReviewedDraftPayload),
+    ("DDSOP-CONFIG-INBOUND-V1 contract fingerprint is canonical and stable", TestDdsopConfigInboundContractFingerprintIsCanonicalAndStable),
+    ("DDSOP-CONFIG-INBOUND-V1 ACK interpreter handles accepted rejected pending and duplicate", TestDdsopConfigInboundAckInterpreterHandlesStatuses),
+    ("DDSOP-FEEDBACK-OUTBOUND-V1 payloads can be interpreted without governance mutation", TestDdsopFeedbackOutboundPayloadsCanBeInterpreted),
+    ("DDSOP-FEEDBACK-OUTBOUND-V1 inbound ledger preserves raw payload and is idempotent", TestDdsopFeedbackInboundLedgerPreservesRawPayloadAndIdempotency),
+    ("DDSOP-FEEDBACK-OUTBOUND-V1 SDBR generated payloads can be accepted", TestDdsopFeedbackInboundLedgerAcceptsSdbrGeneratedPayloads),
+    ("DDSOP-FEEDBACK-OUTBOUND-V1 inbound endpoint is exposed", TestDdsopFeedbackInboundEndpointIsExposed),
+    ("PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1 consumer accepts reviewed source without governance mutation", TestProductionSupplierIdentitySourceAcceptsReviewedSourceWithoutGovernanceMutation),
+    ("PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1 rejects governance auto update and contradictory terms", TestProductionSupplierIdentitySourceRejectsGovernanceBoundaryViolations),
+    ("PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1 ledger detects duplicates and idempotency conflicts", TestProductionSupplierIdentitySourceLedgerDetectsDuplicateAndConflict),
+    ("PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1 inbound endpoint is exposed", TestProductionSupplierIdentitySourceEndpointIsExposed),
+    ("PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1 consumer accepts reviewed context without governance mutation", TestProductionInventoryQualityEvidenceAcceptsReviewedContextWithoutGovernanceMutation),
+    ("PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1 rejects contract business rule violations", TestProductionInventoryQualityEvidenceRejectsBusinessRuleViolations),
+    ("PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1 ledger detects duplicates and idempotency conflicts", TestProductionInventoryQualityEvidenceLedgerDetectsDuplicateAndConflict),
+    ("PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1 inbound endpoint is exposed", TestProductionInventoryQualityEvidenceEndpointIsExposed),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 consumer accepts reviewed execution context without governance mutation", TestSdbrExecutionObjectEvidenceAcceptsReviewedContextWithoutGovernanceMutation),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 rejects boundary and validation violations", TestSdbrExecutionObjectEvidenceRejectsBoundaryAndValidationViolations),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 accepts reconciled late captured fixture", TestSdbrExecutionObjectEvidenceAcceptsReconciledLateCapture),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 rejects material consumption without inventory quality evidence", TestSdbrExecutionObjectEvidenceRejectsConsumptionWithoutInventoryQuality),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 ledger detects duplicates and idempotency conflicts", TestSdbrExecutionObjectEvidenceLedgerDetectsDuplicateAndConflict),
+    ("SDBR-EXECUTION-OBJECT-EVIDENCE-V1 inbound endpoint is exposed", TestSdbrExecutionObjectEvidenceEndpointIsExposed),
     ("Scenario preview applies pre-build capacity policy and supplier limits", TestScenarioPreviewAppliesScenarioParameters),
     ("Product RCCP workspace summarizes resources heatmap and detail", TestProductRccpWorkspaceSummarizesResourcesHeatmapAndDetail),
     ("Scenario preview returns product RCCP comparison", TestScenarioPreviewReturnsProductRccpComparison),
@@ -1817,6 +1840,822 @@ static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
     AssertTrue(script.Contains("advanceMasterSettingStatus", StringComparison.Ordinal), "script should support governed status advance");
 }
 
+static void TestDdsopConfigInboundContractExportsReviewedDraftPayload()
+{
+    var service = new DdsopConfigInboundContractService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var message = service.Build(new DdsopConfigInboundContractRequest(
+        12,
+        new DateOnly(2026, 6, 26),
+        "S&OP 经理",
+        "SR-20260626-0001",
+        "CHG-20260626-001"));
+
+    AssertEqual("DDSOP-CONFIG-INBOUND-V1", message.ContractID, "contract id");
+    AssertEqual("1.0.0", message.ContractVersion, "contract version");
+    AssertEqual("OperatingModelConfigurationPublished", message.MessageType, "message type");
+    AssertEqual("DDAE", message.SourceSystem, "contract source system");
+    AssertEqual("SDBR", message.TargetSystem, "contract target system");
+    AssertEqual($"DDAE:{message.MessageID}", message.IdempotencyKey, "idempotency key");
+
+    var payload = message.Payload;
+    AssertTrue(payload.OperatingModelConfigurationID.StartsWith("DDSOP-OMC-", StringComparison.Ordinal), "operating model configuration id");
+    AssertEqual("2026.06-A", payload.ConfigurationVersion, "configuration version");
+    AssertEqual("1.0.0", payload.SchemaVersion, "schema version");
+    AssertEqual("Approved", payload.Status, "approved status");
+    AssertEqual("Asia/Shanghai", payload.TimeZone, "time zone");
+    AssertEqual("S&OP 经理", payload.Approval.ApprovedBy, "approved by");
+    AssertEqual("Approved", payload.Approval.ApprovalStatus, "approval status");
+    AssertEqual("CAPACITY_CONSTRAINT", payload.ChangeReason.ReasonCode, "change reason code");
+    AssertEqual("SR-20260626-0001", payload.SourceScenarioRunID!, "source scenario run");
+    AssertEqual("CHG-20260626-001", payload.ChangeTicketID!, "change ticket");
+    AssertTrue(payload.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) && payload.Fingerprint.Length == 71, "fingerprint should be sha256 prefixed lower hex");
+
+    AssertTrue(payload.SchedulingConfiguration.ControlPoints.Count > 0, "scheduling configuration should expose control points");
+    AssertTrue(payload.SchedulingConfiguration.TimeBufferProfiles.Count > 0, "scheduling configuration should expose time buffer profiles");
+    AssertTrue(payload.SchedulingConfiguration.TimeBufferAssignments.Count > 0, "scheduling configuration should expose time buffer assignments");
+    AssertTrue(payload.SchedulingConfiguration.ResourceSettings.Count > 0, "scheduling configuration should expose resource settings");
+    AssertTrue(payload.SchedulingConfiguration.PartSchedulingSettings.Count > 0, "scheduling configuration should expose part scheduling settings");
+    AssertEqual("PromiseDate", payload.SchedulingConfiguration.ProtectedDueDatePolicy, "protected due date policy");
+    AssertEqual("ControlPointsOnly", payload.SchedulingConfiguration.FiniteResourceScope, "finite resource scope");
+    foreach (var timeBuffer in payload.SchedulingConfiguration.TimeBufferProfiles)
+    {
+        AssertEqual(1.00m, timeBuffer.GreenRatio + timeBuffer.YellowRatio + timeBuffer.RedRatio, $"time buffer ratio for {timeBuffer.ProfileID}");
+    }
+
+    AssertTrue(payload.DDMRPConfiguration.DecouplingPoints.Count > 0, "DDMRP configuration should expose decoupling points");
+    AssertTrue(payload.DDMRPConfiguration.StockBufferProfiles.Count > 0, "DDMRP configuration should expose stock buffer profiles");
+    AssertTrue(payload.DDMRPConfiguration.PartProfileAssignments.Count > 0, "DDMRP configuration should expose part profile assignments");
+    AssertEqual("DDMRP-PRIORITY-RED-YELLOW-GREEN-001", payload.DDMRPConfiguration.PlanningPriorityPolicyID, "planning priority policy");
+    AssertEqual("ProvidedByDDSOP", payload.DDMRPConfiguration.SpikeQualificationMode!, "spike qualification mode");
+    var fpgaBuffer = payload.DDMRPConfiguration.StockBufferProfiles.First(item => item.BufferProfileID.Contains("AV-FPGA-203", StringComparison.Ordinal));
+    AssertTrue(fpgaBuffer.TopOfRed > 0, "stock buffer profile should expose top of red");
+    AssertTrue(fpgaBuffer.TopOfRed <= fpgaBuffer.TopOfYellow, "stock buffer profile should satisfy top of red/yellow order");
+    AssertTrue(fpgaBuffer.TopOfYellow <= fpgaBuffer.TopOfGreen, "stock buffer profile should satisfy top of yellow/green order");
+    AssertEqual("EA", fpgaBuffer.UnitOfMeasure, "unit of measure");
+    var fpgaDecouplingPoint = payload.DDMRPConfiguration.DecouplingPoints.First(item => item.ItemID == "AV-FPGA-203");
+    AssertTrue(fpgaDecouplingPoint.DLTMinutes > 0, "decoupling point should expose DLT minutes");
+    AssertTrue(fpgaDecouplingPoint.MinimumOrderQty > 0, "decoupling point should expose minimum order quantity");
+    AssertTrue(fpgaDecouplingPoint.OrderCycleDays > 0, "decoupling point should expose non-zero order cycle days");
+
+    AssertTrue(payload.Scope.PlantIDs.Contains("PLANT-DDAE-SAT", StringComparer.Ordinal), "scope should expose plant IDs");
+    AssertTrue(payload.Scope.ProductFamilyIDs is { Count: > 0 }, "scope should expose product family IDs");
+    AssertTrue(payload.Scope.ResourceGroupIDs is { Count: > 0 }, "scope should expose resource group IDs");
+    AssertTrue(payload.Scope.ItemLocationIDs is { Count: > 0 }, "scope should expose item location IDs");
+}
+
+static void TestDdsopConfigInboundContractFingerprintIsCanonicalAndStable()
+{
+    var service = new DdsopConfigInboundContractService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var request = new DdsopConfigInboundContractRequest(12, new DateOnly(2026, 6, 26), "S&OP 经理");
+    var message = service.Build(request);
+    var secondMessage = service.Build(request);
+    var recomputedFingerprint = DdsopConfigInboundContractService.ComputeFingerprint(message.Payload);
+
+    AssertEqual(message.Payload.Fingerprint, recomputedFingerprint, "fingerprint should be recomputable from payload");
+    AssertEqual(message.Payload.Fingerprint, secondMessage.Payload.Fingerprint, "fingerprint should be stable when payload is unchanged");
+
+    var json = JsonSerializer.Serialize(message, DdsopConfigInboundContractService.ContractJsonOptions);
+
+    AssertTrue(json.Contains("\"ContractID\"", StringComparison.Ordinal), "contract JSON should keep ContractID");
+    AssertTrue(json.Contains("\"ContractVersion\"", StringComparison.Ordinal), "contract JSON should keep ContractVersion");
+    AssertTrue(json.Contains("\"TargetSystem\"", StringComparison.Ordinal), "contract JSON should keep TargetSystem");
+    AssertTrue(json.Contains("\"OccurredAt\"", StringComparison.Ordinal), "contract JSON should keep OccurredAt");
+    AssertTrue(json.Contains("\"OperatingModelConfigurationID\"", StringComparison.Ordinal), "contract JSON should keep OperatingModelConfigurationID");
+    AssertTrue(json.Contains("\"Approval\"", StringComparison.Ordinal), "contract JSON should keep Approval");
+    AssertTrue(json.Contains("\"ChangeReason\"", StringComparison.Ordinal), "contract JSON should keep ChangeReason");
+    AssertTrue(json.Contains("\"ControlPoints\"", StringComparison.Ordinal), "contract JSON should keep ControlPoints");
+    AssertTrue(json.Contains("\"DecouplingPoints\"", StringComparison.Ordinal), "contract JSON should keep DecouplingPoints");
+    AssertTrue(json.Contains("\"TopOfRed\"", StringComparison.Ordinal), "contract JSON should keep TopOfRed");
+    AssertTrue(json.Contains("\"UnitOfMeasure\"", StringComparison.Ordinal), "contract JSON should keep UnitOfMeasure");
+    AssertTrue(!json.Contains("\"contractID\"", StringComparison.Ordinal), "contract JSON should not camel-case ContractID");
+    AssertTrue(!json.Contains("\"operatingModelConfigurationID\"", StringComparison.Ordinal), "contract JSON should not camel-case OperatingModelConfigurationID");
+    AssertTrue(!json.Contains("\"ConsumerSystem\"", StringComparison.Ordinal), "contract JSON should not expose removed ConsumerSystem");
+    AssertTrue(!json.Contains("\"CreatedAt\"", StringComparison.Ordinal), "contract JSON should not expose removed CreatedAt");
+    AssertTrue(!json.Contains("\"ExpectedAcknowledgementStatuses\"", StringComparison.Ordinal), "contract JSON should not expose removed acknowledgement status list");
+    AssertTrue(!json.Contains("\"Checksum\"", StringComparison.Ordinal), "contract JSON should not expose removed checksum");
+    AssertTrue(!json.Contains("\"SpikeHorizonMinutes\":", StringComparison.Ordinal) || json.Contains("\"DDMRPConfiguration\"", StringComparison.Ordinal), "spike horizon should only exist under DDMRPConfiguration");
+}
+
+static void TestDdsopConfigInboundAckInterpreterHandlesStatuses()
+{
+    var contractRoot = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\ddsop-config-inbound-v1\examples";
+    var acceptedJson = File.ReadAllText(Path.Combine(contractRoot, "ack-accepted.json"));
+    var pendingJson = File.ReadAllText(Path.Combine(contractRoot, "ack-pending-references.json"));
+    var rejectedJson = File.ReadAllText(Path.Combine(contractRoot, "ack-rejected-missing-approval.json"));
+    var duplicateNode = JsonNode.Parse(acceptedJson)!.AsObject();
+    duplicateNode["ProcessingStatus"] = "Duplicate";
+    duplicateNode["UsableForPlanningRun"] = false;
+    duplicateNode["AcceptedConfigurationID"] = null;
+    duplicateNode["Fingerprint"] = null;
+    var duplicateJson = duplicateNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions);
+
+    var interpreter = new DdsopConfigInboundAckInterpreter();
+    var accepted = interpreter.Interpret(acceptedJson);
+    var pending = interpreter.Interpret(pendingJson);
+    var rejected = interpreter.Interpret(rejectedJson);
+    var duplicate = interpreter.Interpret(duplicateJson);
+
+    AssertEqual("Accepted", accepted.ProcessingStatus, "accepted ack status");
+    AssertTrue(accepted.UsableForPlanningRun, "accepted ack usable for planning run");
+    AssertTrue(accepted.Message.Contains("可用于 Planning Run", StringComparison.Ordinal), "accepted ack message");
+    AssertEqual("AcceptedPendingReferences", pending.ProcessingStatus, "pending references ack status");
+    AssertTrue(!pending.UsableForPlanningRun, "pending references ack should not be usable");
+    AssertTrue(pending.PendingReferences.Count > 0, "pending references ack should expose pending references");
+    AssertEqual("Rejected", rejected.ProcessingStatus, "rejected ack status");
+    AssertTrue(rejected.Errors.Count > 0, "rejected ack should expose contract errors");
+    AssertEqual("Duplicate", duplicate.ProcessingStatus, "duplicate ack status");
+    AssertTrue(duplicate.Message.Contains("重复 IdempotencyKey", StringComparison.Ordinal), "duplicate ack message");
+}
+
+static void TestDdsopFeedbackOutboundPayloadsCanBeInterpreted()
+{
+    var contractRoot = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\ddsop-feedback-outbound-v1\examples";
+    var planningJson = File.ReadAllText(Path.Combine(contractRoot, "golden-planning-run-feedback.json"));
+    var varianceJson = File.ReadAllText(Path.Combine(contractRoot, "golden-variance-analysis-feedback.json"));
+
+    var interpreter = new DdsopFeedbackOutboundInterpreter();
+    var planning = interpreter.Interpret(planningJson);
+    var variance = interpreter.Interpret(varianceJson);
+    var duplicate = interpreter.Interpret(planningJson, new HashSet<string>(StringComparer.Ordinal) { "SDBR:SDBR-MSG-PRF-20260626-001" });
+
+    AssertEqual("Accepted", planning.Status, "planning feedback interpretation status");
+    AssertEqual("PlanningRunFeedback", planning.FeedbackType!, "planning feedback type");
+    AssertEqual("RUN-20260626-001", planning.PlanningRunID!, "planning run id");
+    AssertEqual("DDSOP-OMC-20260626-A", planning.OperatingModelConfigurationID!, "planning operating model id");
+    AssertTrue(planning.OperatingModelFingerprint!.StartsWith("sha256:", StringComparison.Ordinal), "planning fingerprint");
+    AssertEqual("Yellow", planning.OverallStatus!, "planning overall status");
+    AssertEqual(0, planning.ApprovedConfigurationChangeCount, "planning feedback should not create approved configuration changes");
+
+    AssertEqual("Accepted", variance.Status, "variance feedback interpretation status");
+    AssertEqual("VarianceAnalysisFeedback", variance.FeedbackType!, "variance feedback type");
+    AssertEqual("RUN-20260626-001", variance.PlanningRunID!, "variance planning run id");
+    AssertEqual("DDSOP-OMC-20260626-A", variance.OperatingModelConfigurationID!, "variance operating model id");
+    AssertEqual("Yellow", variance.OverallStatus!, "variance overall status");
+    AssertEqual(1, variance.ReviewTopicCount, "variance review topic count");
+    AssertEqual(1, variance.DataCoverageIssueCount, "variance data coverage issue count");
+    AssertEqual(0, variance.ApprovedConfigurationChangeCount, "variance feedback should not create approved configuration changes");
+    AssertEqual("Duplicate", duplicate.Status, "duplicate idempotency key should be reported");
+}
+
+static void TestDdsopFeedbackInboundLedgerPreservesRawPayloadAndIdempotency()
+{
+    var contractRoot = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\ddsop-feedback-outbound-v1\examples";
+    var planningJson = File.ReadAllText(Path.Combine(contractRoot, "golden-planning-run-feedback.json"));
+    var ledger = new DdsopFeedbackInboundLedger();
+
+    var accepted = ledger.Accept(planningJson);
+    var duplicate = ledger.Accept(planningJson);
+
+    AssertEqual("DDSOP-FEEDBACK-OUTBOUND-V1", accepted.ContractID, "feedback ack contract id");
+    AssertEqual("1.0.0", accepted.ContractVersion, "feedback ack contract version");
+    AssertEqual("Accepted", accepted.ProcessingStatus, "feedback ack accepted status");
+    AssertEqual("RUN-20260626-001", accepted.LinkedPlanningRunID!, "linked planning run id");
+    AssertEqual("DDSOP-OMC-20260626-A", accepted.LinkedOperatingModelConfigurationID!, "linked operating model id");
+    AssertTrue(accepted.LinkedOperatingModelFingerprint!.StartsWith("sha256:", StringComparison.Ordinal), "linked fingerprint");
+    AssertEqual(0, accepted.Errors.Count, "accepted feedback ack errors");
+    AssertEqual("Duplicate", duplicate.ProcessingStatus, "duplicate feedback ack status");
+    AssertEqual(1, ledger.Records.Count, "duplicate should not create a second ledger record");
+    AssertEqual(planningJson, ledger.Records[0].RawPayload, "ledger should preserve raw payload exactly");
+    AssertEqual(0, ledger.Records[0].Interpretation.ApprovedConfigurationChangeCount, "ledger should not create approved master setting changes");
+
+    var missingNode = JsonNode.Parse(planningJson)!.AsObject();
+    missingNode["IdempotencyKey"] = "SDBR:PlanningRunFeedback:MissingPlanningRunID";
+    missingNode["Payload"]!.AsObject().Remove("PlanningRunID");
+    var missingLedger = new DdsopFeedbackInboundLedger();
+    var rejected = missingLedger.Accept(missingNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", rejected.ProcessingStatus, "missing PlanningRunID should be rejected");
+    AssertTrue(rejected.Errors.Any(item => item.Code == "REQUIRED_FIELD_MISSING" && item.Field == "Payload.PlanningRunID"), "missing PlanningRunID should use contract error code");
+
+    var missingConfigNode = JsonNode.Parse(planningJson)!.AsObject();
+    missingConfigNode["IdempotencyKey"] = "SDBR:PlanningRunFeedback:MissingOperatingModelConfigurationID";
+    missingConfigNode["Payload"]!.AsObject().Remove("OperatingModelConfigurationID");
+    var rejectedMissingConfig = new DdsopFeedbackInboundLedger().Accept(missingConfigNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", rejectedMissingConfig.ProcessingStatus, "missing OperatingModelConfigurationID should be rejected");
+    AssertTrue(rejectedMissingConfig.Errors.Any(item => item.Code == "REQUIRED_FIELD_MISSING" && item.Field == "Payload.OperatingModelConfigurationID"), "missing OperatingModelConfigurationID should use contract error code");
+}
+
+static void TestDdsopFeedbackInboundLedgerAcceptsSdbrGeneratedPayloads()
+{
+    var fixtureRoot = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Fixtures");
+    var planningJson = File.ReadAllText(Path.GetFullPath(Path.Combine(fixtureRoot, "sdbr-actual-planning-run-feedback.json")));
+    var varianceJson = File.ReadAllText(Path.GetFullPath(Path.Combine(fixtureRoot, "sdbr-actual-variance-analysis-feedback.json")));
+    var ledger = new DdsopFeedbackInboundLedger();
+
+    var planningAck = ledger.Accept(planningJson);
+    var varianceAck = ledger.Accept(varianceJson);
+
+    AssertEqual("Accepted", planningAck.ProcessingStatus, "SDBR generated planning feedback should be accepted");
+    AssertEqual("Accepted", varianceAck.ProcessingStatus, "SDBR generated variance feedback should be accepted");
+    AssertEqual("TST-RUN-DDSOP-FREEZE-001", planningAck.LinkedPlanningRunID!, "SDBR planning run id");
+    AssertEqual("TST-RUN-DDSOP-FREEZE-001", varianceAck.LinkedPlanningRunID!, "SDBR variance run id");
+    AssertEqual("DDSOP-OMC-20260626-A", planningAck.LinkedOperatingModelConfigurationID!, "SDBR planning operating model id");
+    AssertEqual("DDSOP-OMC-20260626-A", varianceAck.LinkedOperatingModelConfigurationID!, "SDBR variance operating model id");
+    AssertEqual(2, ledger.Records.Count, "SDBR generated payloads should be stored in ledger");
+    AssertTrue(ledger.Records.All(item => item.RawPayload.Contains("\"ContractID\":\"DDSOP-FEEDBACK-OUTBOUND-V1\"", StringComparison.Ordinal)), "ledger should store raw SDBR payloads");
+    AssertTrue(ledger.Records.All(item => item.Interpretation.ApprovedConfigurationChangeCount == 0), "SDBR review topics should not become approved master setting changes");
+}
+
+static void TestDdsopFeedbackInboundEndpointIsExposed()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var domain = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "DdsopConfigInboundContract.cs"));
+
+    AssertTrue(program.Contains("AddSingleton<DdsopFeedbackInboundLedger>", StringComparison.Ordinal), "feedback ledger should be registered");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-feedback-outbound-v1", StringComparison.Ordinal), "feedback inbound endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-feedback-outbound-v1/ledger", StringComparison.Ordinal), "feedback ledger endpoint should be exposed");
+    AssertTrue(domain.Contains("public sealed class DdsopConfigInboundAckInterpreter", StringComparison.Ordinal), "config ack interpreter should exist");
+    AssertTrue(domain.Contains("public sealed class DdsopFeedbackInboundLedger", StringComparison.Ordinal), "feedback ledger should exist");
+    AssertTrue(domain.Contains("Duplicate", StringComparison.Ordinal), "feedback ledger should support duplicate ACK status");
+    AssertTrue(domain.Contains("REQUIRED_FIELD_MISSING", StringComparison.Ordinal), "feedback ledger should return contract missing field code");
+    AssertTrue(!domain.Contains("MasterSettingChangeSaveRequest", StringComparison.Ordinal), "feedback ledger should not save master setting changes");
+}
+
+static void TestProductionSupplierIdentitySourceAcceptsReviewedSourceWithoutGovernanceMutation()
+{
+    var rawPayload = ProductionSupplierIdentitySourceReviewedJson();
+    var ledger = new ProductionSupplierIdentitySourceInboundLedger(() => new DateTimeOffset(2026, 6, 28, 9, 30, 0, TimeSpan.Zero));
+
+    var ack = ledger.Accept(rawPayload);
+
+    ProductionSupplierIdentitySourceInboundLedger.ValidateAckShape(ack);
+    AssertEqual("PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1", ack.ContractID, "supplier identity ACK contract id");
+    AssertEqual("1.0.0", ack.ContractVersion, "supplier identity ACK contract version");
+    AssertEqual("Accepted", ack.AckStatus, "reviewed supplier identity source should be accepted");
+    AssertEqual("DDAE", ack.ConsumerSystem, "consumer system");
+    AssertEqual("PSISV1-MSG-SUP-MICROCHIP-PART-FPGA-SPACE-20260628-001", ack.MessageID, "message id");
+    AssertEqual("PSIS-EP-SUP-MICROCHIP-PART-FPGA-SPACE-20260628-001", ack.EvidencePackageID, "evidence package id");
+    AssertEqual(0, ack.Errors.Count, "accepted ACK should not include errors");
+    AssertEqual(1, ledger.Records.Count, "accepted payload should be stored in ledger");
+    AssertEqual(rawPayload, ledger.Records[0].RawPayload, "ledger must preserve raw payload exactly");
+    AssertEqual("sha256:", ledger.Records[0].PayloadFingerprint[..7], "ledger should store deterministic payload fingerprint");
+    AssertEqual("Reviewed", ledger.Records[0].Interpretation.EvidenceConfidence, "evidence confidence should remain reviewed");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticMasterSettingUpdate, "contract should not allow automatic DDAE master setting update");
+    AssertTrue(ledger.Records[0].Interpretation.RequiresSeparateDdaeApproval, "contract should require separate DDAE approval");
+    AssertTrue(!ledger.Records[0].Interpretation.MutatedDdaeGovernance, "consumer must not mutate DDAE governance");
+}
+
+static void TestProductionSupplierIdentitySourceRejectsGovernanceBoundaryViolations()
+{
+    var autoUpdate = JsonNode.Parse(ProductionSupplierIdentitySourceReviewedJson())!.AsObject();
+    autoUpdate["MessageID"] = "PSS-MSG-PART-FPGA-SPACE-AUTO-UPDATE";
+    autoUpdate["IdempotencyKey"] = "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:SRC-PART-FPGA-SPACE:20260628-A:auto";
+    autoUpdate["Payload"]!["DDAEGovernanceBoundary"]!["AllowsAutomaticMasterSettingUpdate"] = true;
+    var autoUpdateAck = new ProductionSupplierIdentitySourceInboundLedger().Accept(autoUpdate.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", autoUpdateAck.AckStatus, "automatic governance update must be rejected");
+    AssertTrue(autoUpdateAck.Errors.Any(item => item.ErrorCode == "GOVERNANCE_AUTO_UPDATE_FORBIDDEN"), "automatic governance update should use contract error code");
+
+    var contradictoryTerms = JsonNode.Parse(ProductionSupplierIdentitySourceReviewedJson())!.AsObject();
+    contradictoryTerms["MessageID"] = "PSS-MSG-PART-FPGA-SPACE-CONTRADICTORY";
+    contradictoryTerms["IdempotencyKey"] = "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:SRC-PART-FPGA-SPACE:20260628-A:contradictory";
+    contradictoryTerms["Payload"]!["SourceTerms"]!["TermsAreProductionAuthoritative"] = true;
+    contradictoryTerms["Payload"]!["SourceTerms"]!["DDAEPlanningAssumptionOnly"] = true;
+    var contradictoryAck = new ProductionSupplierIdentitySourceInboundLedger().Accept(contradictoryTerms.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", contradictoryAck.AckStatus, "contradictory source terms must be rejected");
+    AssertTrue(contradictoryAck.Errors.Any(item => item.ErrorCode == "CONTRACT_SCOPE_VIOLATION"), "contradictory source terms should use scope violation code");
+
+    var productionValidated = JsonNode.Parse(ProductionSupplierIdentitySourceReviewedJson())!.AsObject();
+    productionValidated["MessageID"] = "PSS-MSG-PART-FPGA-SPACE-PRODUCTION-VALIDATED";
+    productionValidated["IdempotencyKey"] = "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:SRC-PART-FPGA-SPACE:20260628-A:production-validated";
+    productionValidated["Payload"]!["EvidenceConfidence"] = "ProductionValidatedReserved";
+    var productionValidatedAck = new ProductionSupplierIdentitySourceInboundLedger().Accept(productionValidated.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", productionValidatedAck.AckStatus, "ProductionValidatedReserved must not be accepted by DDAE");
+    AssertTrue(productionValidatedAck.Errors.Any(item => item.ErrorCode == "CONTRACT_SCOPE_VIOLATION"), "ProductionValidatedReserved should use scope violation code");
+
+    var missingAuthority = JsonNode.Parse(ProductionSupplierIdentitySourceReviewedJson())!.AsObject();
+    missingAuthority["MessageID"] = "PSS-MSG-PART-FPGA-SPACE-MISSING-AUTHORITY";
+    missingAuthority["IdempotencyKey"] = "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:SRC-PART-FPGA-SPACE:20260628-A:missing-authority";
+    missingAuthority["Payload"]!.AsObject().Remove("SourceAuthority");
+    var missingAuthorityAck = new ProductionSupplierIdentitySourceInboundLedger().Accept(missingAuthority.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", missingAuthorityAck.AckStatus, "missing source authority must be dead-lettered");
+    AssertTrue(missingAuthorityAck.Errors.Any(item => item.ErrorCode == "MISSING_SOURCE_AUTHORITY"), "missing source authority should use contract error code");
+
+    var invalidWindow = JsonNode.Parse(ProductionSupplierIdentitySourceReviewedJson())!.AsObject();
+    invalidWindow["MessageID"] = "PSS-MSG-PART-FPGA-SPACE-INVALID-WINDOW";
+    invalidWindow["IdempotencyKey"] = "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:SRC-PART-FPGA-SPACE:20260628-A:invalid-window";
+    invalidWindow["Payload"]!["SupplierSourceRelation"]!["EffectiveTo"] = "2026-06-27T00:00:00+08:00";
+    var invalidWindowAck = new ProductionSupplierIdentitySourceInboundLedger().Accept(invalidWindow.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", invalidWindowAck.AckStatus, "EffectiveTo earlier than EffectiveFrom must be dead-lettered");
+    AssertTrue(invalidWindowAck.Errors.Any(item => item.ErrorCode == "INVALID_EFFECTIVE_WINDOW"), "invalid effective window should use contract error code");
+}
+
+static void TestProductionSupplierIdentitySourceLedgerDetectsDuplicateAndConflict()
+{
+    var rawPayload = ProductionSupplierIdentitySourceReviewedJson();
+    var ledger = new ProductionSupplierIdentitySourceInboundLedger();
+
+    var accepted = ledger.Accept(rawPayload);
+    var duplicate = ledger.Accept(rawPayload);
+
+    AssertEqual("Accepted", accepted.AckStatus, "first payload should be accepted");
+    AssertEqual("Duplicate", duplicate.AckStatus, "same IdempotencyKey and same fingerprint should return duplicate");
+    AssertEqual(1, ledger.Records.Count, "duplicate should not create another ledger record");
+
+    var conflictNode = JsonNode.Parse(rawPayload)!.AsObject();
+    conflictNode["Payload"]!["SupplierSourceRelation"]!["AllocationPercent"] = 80;
+    var conflict = ledger.Accept(conflictNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", conflict.AckStatus, "same IdempotencyKey with different fingerprint should be dead-lettered");
+    AssertTrue(conflict.Errors.Any(item => item.ErrorCode == "IDEMPOTENCY_CONFLICT"), "idempotency conflict should use contract error code");
+    AssertEqual(2, ledger.Records.Count, "conflict should be retained as audit evidence");
+}
+
+static void TestProductionSupplierIdentitySourceEndpointIsExposed()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var domain = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ProductionSupplierIdentitySourceContract.cs"));
+
+    AssertTrue(program.Contains("AddSingleton<ProductionSupplierIdentitySourceInboundLedger>", StringComparison.Ordinal), "supplier identity ledger should be registered");
+    AssertTrue(program.Contains("/api/integration-contracts/production-supplier-identity-source-v1", StringComparison.Ordinal), "supplier identity inbound endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/production-supplier-identity-source-v1/ledger", StringComparison.Ordinal), "supplier identity ledger endpoint should be exposed");
+    AssertTrue(domain.Contains("public sealed class ProductionSupplierIdentitySourceInboundLedger", StringComparison.Ordinal), "supplier identity ledger should exist");
+    AssertTrue(domain.Contains("ProductionValidatedReserved", StringComparison.Ordinal), "consumer should explicitly reject reserved ProductionValidated confidence");
+    AssertTrue(domain.Contains("GOVERNANCE_AUTO_UPDATE_FORBIDDEN", StringComparison.Ordinal), "consumer should enforce governance auto-update boundary");
+    AssertTrue(domain.Contains("IDEMPOTENCY_CONFLICT", StringComparison.Ordinal), "consumer should enforce idempotency conflict handling");
+    AssertTrue(!domain.Contains("MasterSettingsGovernanceService", StringComparison.Ordinal), "supplier identity consumer must not depend on master settings governance service");
+    AssertTrue(!domain.Contains("MasterSettingChangeSaveRequest", StringComparison.Ordinal), "supplier identity consumer must not save master setting changes");
+}
+
+static void TestProductionInventoryQualityEvidenceAcceptsReviewedContextWithoutGovernanceMutation()
+{
+    var rawPayload = ProductionInventoryQualityEvidenceReviewedJson();
+    var ledger = new ProductionInventoryQualityInboundLedger(() => new DateTimeOffset(2026, 6, 28, 4, 0, 0, TimeSpan.Zero));
+
+    var ack = ledger.Accept(rawPayload);
+
+    ProductionInventoryQualityInboundLedger.ValidateAckShape(ack);
+    AssertEqual("PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1", ack.ContractID, "inventory quality ACK contract id");
+    AssertEqual("1.0.0", ack.ContractVersion, "inventory quality ACK contract version");
+    AssertEqual("Accepted", ack.AckStatus, "reviewed inventory quality evidence should be accepted as controlled context");
+    AssertEqual("DDAE", ack.ConsumerSystem, "consumer system");
+    AssertEqual("PIQEV1-MSG-PART-FPGA-SPACE-20260628-001", ack.MessageID, "message id");
+    AssertEqual("PIQE-PART-FPGA-SPACE-20260628-001", ack.EvidencePackageID, "evidence package id");
+    AssertEqual(0, ack.Errors.Count, "accepted ACK should not include errors");
+    AssertEqual(1, ledger.Records.Count, "accepted payload should be stored in ledger");
+    AssertEqual(rawPayload, ledger.Records[0].RawPayload, "ledger must preserve raw payload exactly");
+    AssertEqual("sha256:", ledger.Records[0].PayloadFingerprint[..7], "ledger should store deterministic payload fingerprint");
+    AssertEqual("Reviewed", ledger.Records[0].Interpretation.EvidenceConfidence, "reviewed example must remain reviewed context");
+    AssertEqual("PART-FPGA-SPACE", ledger.Records[0].Interpretation.ItemID, "item id should be interpreted");
+    AssertEqual("WH-ELEC-QA", ledger.Records[0].Interpretation.LocationID, "location id should be interpreted");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticMasterSettingUpdate, "contract should not allow automatic DDAE master setting update");
+    AssertTrue(ledger.Records[0].Interpretation.RequiresSeparateDdaeApproval, "contract should require separate DDAE approval");
+    AssertTrue(!ledger.Records[0].Interpretation.MutatedDdaeGovernance, "consumer must not mutate DDAE governance");
+    AssertTrue(!ledger.Records[0].Interpretation.IsProductionValidated, "ACK success must not become production validation");
+
+    var acceptedAckExample = JsonNode.Parse(ProductionInventoryQualityAcceptedAckJson())!.AsObject();
+    var exampleAck = new ProductionInventoryQualityAck(
+        acceptedAckExample["ContractID"]!.GetValue<string>(),
+        acceptedAckExample["ContractVersion"]!.GetValue<string>(),
+        acceptedAckExample["AckID"]!.GetValue<string>(),
+        acceptedAckExample["MessageID"]!.GetValue<string>(),
+        acceptedAckExample["EvidencePackageID"]!.GetValue<string>(),
+        acceptedAckExample["ConsumerSystem"]!.GetValue<string>(),
+        acceptedAckExample["AckStatus"]!.GetValue<string>(),
+        acceptedAckExample["AckAt"]!.GetValue<string>(),
+        Array.Empty<ProductionInventoryQualityAckError>());
+    ProductionInventoryQualityInboundLedger.ValidateAckShape(exampleAck);
+}
+
+static void TestProductionInventoryQualityEvidenceRejectsBusinessRuleViolations()
+{
+    var missingInventoryAuthority = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    missingInventoryAuthority["MessageID"] = "PIQE-MSG-MISSING-INVENTORY-AUTHORITY";
+    missingInventoryAuthority["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:missing-inventory-authority";
+    missingInventoryAuthority["Payload"]!["InventoryAuthority"] = null;
+    var missingInventoryAck = new ProductionInventoryQualityInboundLedger().Accept(missingInventoryAuthority.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", missingInventoryAck.AckStatus, "InventorySnapshot without authority must be rejected");
+    AssertTrue(missingInventoryAck.Errors.Any(item => item.ErrorCode == "MISSING_INVENTORY_AUTHORITY"), "missing inventory authority should use contract error code");
+
+    var missingQualityAuthority = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    missingQualityAuthority["MessageID"] = "PIQE-MSG-MISSING-QUALITY-AUTHORITY";
+    missingQualityAuthority["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:missing-quality-authority";
+    missingQualityAuthority["Payload"]!["QualityAuthority"] = null;
+    var missingQualityAck = new ProductionInventoryQualityInboundLedger().Accept(missingQualityAuthority.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", missingQualityAck.AckStatus, "QualityReleased without authority must be rejected");
+    AssertTrue(missingQualityAck.Errors.Any(item => item.ErrorCode == "MISSING_QUALITY_AUTHORITY"), "missing quality authority should use contract error code");
+
+    var unknownItem = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    unknownItem["MessageID"] = "PIQE-MSG-UNKNOWN-ITEM";
+    unknownItem["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:unknown-item";
+    unknownItem["Payload"]!["ItemLocation"]!["ItemID"] = "PART-UNKNOWN";
+    var unknownItemAck = new ProductionInventoryQualityInboundLedger().Accept(unknownItem.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", unknownItemAck.AckStatus, "unknown item must be rejected");
+    AssertTrue(unknownItemAck.Errors.Any(item => item.ErrorCode == "UNKNOWN_ITEM"), "unknown item should use contract error code");
+
+    var unsupportedUom = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    unsupportedUom["MessageID"] = "PIQE-MSG-UNSUPPORTED-UOM";
+    unsupportedUom["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:unsupported-uom";
+    unsupportedUom["Payload"]!["ItemLocation"]!["QuantityUOM"] = "BOX";
+    var unsupportedUomAck = new ProductionInventoryQualityInboundLedger().Accept(unsupportedUom.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", unsupportedUomAck.AckStatus, "unsupported UOM must be rejected");
+    AssertTrue(unsupportedUomAck.Errors.Any(item => item.ErrorCode == "UNSUPPORTED_UOM"), "unsupported UOM should use contract error code");
+
+    var invalidQuantity = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    invalidQuantity["MessageID"] = "PIQE-MSG-INVALID-QUANTITY";
+    invalidQuantity["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:invalid-quantity";
+    invalidQuantity["Payload"]!["InventorySnapshot"]!["AvailableQty"] = -1;
+    var invalidQuantityAck = new ProductionInventoryQualityInboundLedger().Accept(invalidQuantity.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", invalidQuantityAck.AckStatus, "negative inventory quantity must be rejected");
+    AssertTrue(invalidQuantityAck.Errors.Any(item => item.ErrorCode == "INVALID_QUANTITY"), "invalid quantity should use contract error code");
+
+    var invalidTimestamp = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    invalidTimestamp["MessageID"] = "PIQE-MSG-INVALID-TIMESTAMP";
+    invalidTimestamp["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:invalid-timestamp";
+    invalidTimestamp["OccurredAt"] = "2026-06-28T11:30:00";
+    var invalidTimestampAck = new ProductionInventoryQualityInboundLedger().Accept(invalidTimestamp.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", invalidTimestampAck.AckStatus, "timezone-free timestamp must be rejected");
+    AssertTrue(invalidTimestampAck.Errors.Any(item => item.ErrorCode == "INVALID_TIMESTAMP"), "invalid timestamp should use contract error code");
+
+    var autoUpdate = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    autoUpdate["MessageID"] = "PIQE-MSG-AUTO-UPDATE";
+    autoUpdate["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:auto-update";
+    autoUpdate["Payload"]!["DDAEGovernanceBoundary"]!["AllowsAutomaticMasterSettingUpdate"] = true;
+    var autoUpdateAck = new ProductionInventoryQualityInboundLedger().Accept(autoUpdate.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", autoUpdateAck.AckStatus, "automatic DDAE governance update must be rejected");
+    AssertTrue(autoUpdateAck.Errors.Any(item => item.ErrorCode == "GOVERNANCE_AUTO_UPDATE_FORBIDDEN"), "automatic update should use governance error code");
+
+    var productionValidated = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    productionValidated["MessageID"] = "PIQE-MSG-PRODUCTION-VALIDATED";
+    productionValidated["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:production-validated";
+    productionValidated["Payload"]!["EvidenceConfidence"] = "ProductionValidatedReserved";
+    var productionValidatedAck = new ProductionInventoryQualityInboundLedger().Accept(productionValidated.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", productionValidatedAck.AckStatus, "ProductionValidatedReserved must not be accepted");
+    AssertTrue(productionValidatedAck.Errors.Any(item => item.ErrorCode == "CONTRACT_SCOPE_VIOLATION"), "reserved production validation should use scope violation");
+
+    var reversal = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    reversal["MessageID"] = "PIQE-MSG-REVERSAL-MISSING-TARGET";
+    reversal["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:reversal-missing-target";
+    reversal["Payload"]!["StockMovements"]![0]!["MovementType"] = "Reversal";
+    reversal["Payload"]!["StockMovements"]![0]!["MovementState"] = "Reversed";
+    reversal["Payload"]!["StockMovements"]![0]!["ReversesMovementID"] = null;
+    var reversalAck = new ProductionInventoryQualityInboundLedger().Accept(reversal.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", reversalAck.AckStatus, "reversal without target must be dead-lettered");
+    AssertTrue(reversalAck.Errors.Any(item => item.ErrorCode == "MOVEMENT_REVERSAL_TARGET_NOT_FOUND"), "reversal without target should use contract error code");
+
+    var supersession = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    supersession["MessageID"] = "PIQE-MSG-SUPERSESSION-MISSING-TARGET";
+    supersession["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:supersession-missing-target";
+    supersession["Payload"]!["EvidenceStatus"] = "Corrected";
+    var supersessionAck = new ProductionInventoryQualityInboundLedger().Accept(supersession.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", supersessionAck.AckStatus, "corrected evidence without predecessor must be dead-lettered");
+    AssertTrue(supersessionAck.Errors.Any(item => item.ErrorCode == "SUPERSESSION_TARGET_NOT_FOUND"), "missing predecessor should use contract error code");
+
+    var scopeViolation = JsonNode.Parse(ProductionInventoryQualityEvidenceReviewedJson())!.AsObject();
+    scopeViolation["MessageID"] = "PIQE-MSG-SCOPE-VIOLATION";
+    scopeViolation["IdempotencyKey"] = "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:scope-violation";
+    scopeViolation["Payload"]!["Routing"] = "not allowed";
+    var scopeViolationAck = new ProductionInventoryQualityInboundLedger().Accept(scopeViolation.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", scopeViolationAck.AckStatus, "routing proof claim must be rejected");
+    AssertTrue(scopeViolationAck.Errors.Any(item => item.ErrorCode == "CONTRACT_SCOPE_VIOLATION"), "out-of-scope claim should use scope violation");
+}
+
+static void TestProductionInventoryQualityEvidenceLedgerDetectsDuplicateAndConflict()
+{
+    var rawPayload = ProductionInventoryQualityEvidenceReviewedJson();
+    var ledger = new ProductionInventoryQualityInboundLedger();
+
+    var accepted = ledger.Accept(rawPayload);
+    var duplicate = ledger.Accept(rawPayload);
+
+    AssertEqual("Accepted", accepted.AckStatus, "first payload should be accepted");
+    AssertEqual("Duplicate", duplicate.AckStatus, "same IdempotencyKey and same fingerprint should return duplicate");
+    AssertEqual(1, ledger.Records.Count, "duplicate should not create another ledger record");
+
+    var conflictNode = JsonNode.Parse(rawPayload)!.AsObject();
+    conflictNode["Payload"]!["InventorySnapshot"]!["AvailableQty"] = 119;
+    var conflict = ledger.Accept(conflictNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", conflict.AckStatus, "same IdempotencyKey with different fingerprint should be dead-lettered");
+    AssertTrue(conflict.Errors.Any(item => item.ErrorCode == "IDEMPOTENCY_CONFLICT"), "idempotency conflict should use contract error code");
+    AssertEqual(2, ledger.Records.Count, "conflict should be retained as audit evidence");
+}
+
+static void TestProductionInventoryQualityEvidenceEndpointIsExposed()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var domain = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ProductionInventoryQualityEvidenceContract.cs"));
+
+    AssertTrue(program.Contains("AddSingleton<ProductionInventoryQualityInboundLedger>", StringComparison.Ordinal), "inventory quality ledger should be registered");
+    AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1", StringComparison.Ordinal), "inventory quality inbound endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1/ledger", StringComparison.Ordinal), "inventory quality ledger endpoint should be exposed");
+    AssertTrue(domain.Contains("public sealed class ProductionInventoryQualityInboundLedger", StringComparison.Ordinal), "inventory quality ledger should exist");
+    AssertTrue(domain.Contains("MISSING_INVENTORY_AUTHORITY", StringComparison.Ordinal), "consumer should enforce inventory authority rule");
+    AssertTrue(domain.Contains("MISSING_QUALITY_AUTHORITY", StringComparison.Ordinal), "consumer should enforce quality authority rule");
+    AssertTrue(domain.Contains("ProductionValidatedReserved", StringComparison.Ordinal), "consumer should explicitly reject reserved ProductionValidated confidence");
+    AssertTrue(domain.Contains("GOVERNANCE_AUTO_UPDATE_FORBIDDEN", StringComparison.Ordinal), "consumer should enforce governance auto-update boundary");
+    AssertTrue(domain.Contains("IDEMPOTENCY_CONFLICT", StringComparison.Ordinal), "consumer should enforce idempotency conflict handling");
+    AssertTrue(!domain.Contains("MasterSettingsGovernanceService", StringComparison.Ordinal), "inventory quality consumer must not depend on master settings governance service");
+    AssertTrue(!domain.Contains("MasterSettingChangeSaveRequest", StringComparison.Ordinal), "inventory quality consumer must not save master setting changes");
+}
+
+static void TestSdbrExecutionObjectEvidenceAcceptsReviewedContextWithoutGovernanceMutation()
+{
+    var rawPayload = SdbrExecutionObjectEvidenceReviewedJson();
+    var ledger = new SdbrExecutionObjectEvidenceInboundLedger(() => new DateTimeOffset(2026, 6, 28, 2, 0, 0, TimeSpan.Zero));
+
+    var ack = ledger.Accept(rawPayload);
+
+    SdbrExecutionObjectEvidenceInboundLedger.ValidateAckShape(ack);
+    AssertEqual("SDBR-EXECUTION-OBJECT-EVIDENCE-V1", ack.ContractID, "execution object ACK contract id");
+    AssertEqual("1.0.0", ack.ContractVersion, "execution object ACK contract version");
+    AssertEqual("Accepted", ack.AckStatus, "reviewed execution object evidence should be accepted as controlled context");
+    AssertEqual("DDAE", ack.ConsumerSystem, "consumer system");
+    AssertEqual("MSG-SDBR-EOE-20260628-001", ack.MessageID, "message id");
+    AssertEqual("TRACE-SDBR-EOE-20260628-001", ack.TraceableID, "traceable id");
+    AssertEqual(null, ack.ErrorCode, "accepted ACK should not include error code");
+    AssertEqual(1, ledger.Records.Count, "accepted payload should be stored in ledger");
+    AssertEqual(rawPayload, ledger.Records[0].RawPayload, "ledger must preserve raw payload exactly");
+    AssertEqual("sha256:", ledger.Records[0].PayloadFingerprint[..7], "ledger should store deterministic payload fingerprint");
+    AssertEqual("Reviewed", ledger.Records[0].Interpretation.EvidenceStatus, "fixture must remain reviewed context");
+    AssertEqual("Reviewed", ledger.Records[0].Interpretation.EvidenceConfidence, "fixture must remain reviewed confidence");
+    AssertEqual("SDBR-PLAN-RUN-20260628-001", ledger.Records[0].Interpretation.PlanningRunID, "planning run should be interpreted");
+    AssertEqual("OMC-SAT-BUS-001-20260628-001", ledger.Records[0].Interpretation.OperatingModelConfigurationID, "operating model config should be interpreted");
+    AssertEqual("WO-SUB-AVIONICS-COMPUTE-001", ledger.Records[0].Interpretation.WorkOrderID, "work order should be interpreted");
+    AssertEqual("SDBR_EXECUTABLE_ROUTING", ledger.Records[0].Interpretation.RoutingAuthority, "routing authority should be interpreted");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticOperatingModelUpdate, "contract should not allow automatic operating model update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticMasterSettingUpdate, "contract should not allow automatic master setting update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticBufferUpdate, "contract should not allow automatic buffer update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticSupplierSourceFactUpdate, "contract should not allow automatic supplier source update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticLeadTimeUpdate, "contract should not allow automatic lead time update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticMOQUpdate, "contract should not allow automatic MOQ update");
+    AssertTrue(!ledger.Records[0].Interpretation.AllowsAutomaticOrderCycleUpdate, "contract should not allow automatic order cycle update");
+    AssertTrue(ledger.Records[0].Interpretation.RequiresSeparateDdaeApproval, "contract should require separate DDAE approval");
+    AssertTrue(!ledger.Records[0].Interpretation.MutatedDdaeGovernance, "consumer must not mutate DDAE governance");
+
+    var acceptedAckExample = JsonNode.Parse(SdbrExecutionObjectAcceptedAckJson())!.AsObject();
+    var exampleAck = new SdbrExecutionObjectEvidenceAck(
+        acceptedAckExample["ContractID"]!.GetValue<string>(),
+        acceptedAckExample["ContractVersion"]!.GetValue<string>(),
+        acceptedAckExample["AckID"]!.GetValue<string>(),
+        acceptedAckExample["MessageID"]!.GetValue<string>(),
+        acceptedAckExample["IdempotencyKey"]!.GetValue<string>(),
+        acceptedAckExample["ConsumerSystem"]!.GetValue<string>(),
+        acceptedAckExample["AckStatus"]!.GetValue<string>(),
+        acceptedAckExample["ErrorCode"]?.GetValue<string>(),
+        acceptedAckExample["ErrorMessage"]?.GetValue<string>(),
+        acceptedAckExample["ReceivedAt"]!.GetValue<string>(),
+        acceptedAckExample["Retryable"]!.GetValue<bool>(),
+        acceptedAckExample["TraceableID"]!.GetValue<string>());
+    SdbrExecutionObjectEvidenceInboundLedger.ValidateAckShape(exampleAck);
+}
+
+static void TestSdbrExecutionObjectEvidenceRejectsBoundaryAndValidationViolations()
+{
+    var missingWorkOrder = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    missingWorkOrder["MessageID"] = "MSG-SDBR-EOE-MISSING-WORK-ORDER";
+    missingWorkOrder["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:missing-work-order";
+    missingWorkOrder["Payload"]!["WorkOrder"] = null;
+    var missingWorkOrderAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(missingWorkOrder.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", missingWorkOrderAck.AckStatus, "missing work order must be rejected");
+    AssertEqual("MISSING_WORK_ORDER", missingWorkOrderAck.ErrorCode, "missing work order should use contract error");
+
+    var badRouting = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    badRouting["MessageID"] = "MSG-SDBR-EOE-BAD-ROUTING";
+    badRouting["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:bad-routing";
+    badRouting["Payload"]!["Routing"]!["RoutingID"] = "DDAE-PRIMARY-ROUTING-001";
+    badRouting["Payload"]!["Routing"]!["RoutingAuthority"] = "DDAE_PLANNING_ROUTING";
+    var badRoutingAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(badRouting.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", badRoutingAck.AckStatus, "DDAE planning routing cannot be executable SDBR routing proof");
+    AssertEqual("UNKNOWN_ROUTING", badRoutingAck.ErrorCode, "bad routing should use contract error");
+
+    var missingPlanningRun = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    missingPlanningRun["MessageID"] = "MSG-SDBR-EOE-MISSING-PLANNING-RUN";
+    missingPlanningRun["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:missing-planning-run";
+    missingPlanningRun["Payload"]!["PlanningContext"]!["PlanningRunID"] = "";
+    var missingPlanningRunAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(missingPlanningRun.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", missingPlanningRunAck.AckStatus, "missing PlanningRunID must be rejected");
+    AssertEqual("MISSING_PLANNING_RUN", missingPlanningRunAck.ErrorCode, "missing planning run should use contract error");
+
+    var missingFrozenConfig = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    missingFrozenConfig["MessageID"] = "MSG-SDBR-EOE-MISSING-FROZEN-CONFIG";
+    missingFrozenConfig["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:missing-frozen-config";
+    missingFrozenConfig["Payload"]!["PlanningContext"]!["OperatingModelConfigurationID"] = "";
+    var missingFrozenConfigAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(missingFrozenConfig.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", missingFrozenConfigAck.AckStatus, "missing frozen config must be rejected");
+    AssertEqual("MISSING_FROZEN_CONFIG", missingFrozenConfigAck.ErrorCode, "missing frozen config should use contract error");
+
+    var frozenMismatch = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    frozenMismatch["MessageID"] = "MSG-SDBR-EOE-FROZEN-CONFIG-MISMATCH";
+    frozenMismatch["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:frozen-config-mismatch";
+    frozenMismatch["Payload"]!["PlanningContext"]!["OperatingModelFingerprint"] = "sha256:not-the-reviewed-fixture-baseline";
+    var frozenMismatchAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(frozenMismatch.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", frozenMismatchAck.AckStatus, "changed frozen config field must be rejected");
+    AssertEqual("FROZEN_CONFIG_MISMATCH", frozenMismatchAck.ErrorCode, "changed frozen config should use mismatch error");
+
+    var materialRequirementAsIssue = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    materialRequirementAsIssue["MessageID"] = "MSG-SDBR-EOE-MATERIAL-REQ-AS-ISSUE";
+    materialRequirementAsIssue["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:material-req-as-issue";
+    materialRequirementAsIssue["Payload"]!["MaterialRequirements"]![0]!["IssuedQty"] = 63;
+    var materialRequirementAsIssueAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(materialRequirementAsIssue.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", materialRequirementAsIssueAck.AckStatus, "material requirement must not be treated as issue proof");
+    AssertEqual("CONTRACT_SCOPE_VIOLATION", materialRequirementAsIssueAck.ErrorCode, "requirement-as-issue should use scope violation");
+
+    var issueWithoutInventoryQuality = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    issueWithoutInventoryQuality["MessageID"] = "MSG-SDBR-EOE-ISSUE-MISSING-IQ";
+    issueWithoutInventoryQuality["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:issue-missing-iq";
+    issueWithoutInventoryQuality["Payload"]!["MaterialIssues"] = new JsonArray
+    {
+        new JsonObject
+        {
+            ["IssueEventID"] = "ISSUE-PART-FPGA-SPACE-001",
+            ["IssueState"] = "Issued",
+            ["ConsumedItemID"] = "PART-FPGA-SPACE",
+            ["IssueLocationID"] = "WH-ELEC-QA",
+            ["LotID"] = "LOT-FPGA-001",
+            ["SerialID"] = null,
+            ["BatchID"] = null,
+            ["IssuedQty"] = 1,
+            ["QuantityUOM"] = "EA",
+            ["UOMAuthority"] = "SDBR-MASTER-DATA",
+            ["IssuedAt"] = "2026-07-15T08:00:00+08:00",
+            ["IssueSourceSystem"] = "SDBR",
+            ["IssueDocumentID"] = "ISSUE-DOC-001",
+            ["InventoryQualityEvidencePackageID"] = null,
+            ["InventoryQualityEvidenceVersion"] = null,
+            ["IssueAuthorityReferenceID"] = null,
+            ["ReversesIssueEventID"] = null
+        }
+    };
+    var issueWithoutInventoryQualityAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(issueWithoutInventoryQuality.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", issueWithoutInventoryQualityAck.AckStatus, "issue without inventory-quality or authority reference must be rejected");
+    AssertEqual("MISSING_INVENTORY_QUALITY_EVIDENCE", issueWithoutInventoryQualityAck.ErrorCode, "missing issue dependency should use contract error");
+
+    var completedWithoutLateCapture = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    completedWithoutLateCapture["MessageID"] = "MSG-SDBR-EOE-COMPLETED-WITHOUT-LATE-CAPTURE";
+    completedWithoutLateCapture["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:completed-without-late-capture";
+    completedWithoutLateCapture["Payload"]!["WorkOrder"]!["WorkOrderStatus"] = "Completed";
+    completedWithoutLateCapture["Payload"]!["WorkOrder"]!["CompletedQty"] = 1;
+    completedWithoutLateCapture["Payload"]!["WorkOrder"]!["RemainingQty"] = 0;
+    var completedWithoutLateCaptureAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(completedWithoutLateCapture.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", completedWithoutLateCaptureAck.AckStatus, "completed without started evidence and late-capture reconciliation must be rejected");
+    AssertEqual("EVENT_ORDER_INVALID", completedWithoutLateCaptureAck.ErrorCode, "late-capture violation should use event order error");
+
+    var reservedConfidence = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    reservedConfidence["MessageID"] = "MSG-SDBR-EOE-PRODUCTION-VALIDATED-RESERVED";
+    reservedConfidence["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:production-validated-reserved";
+    reservedConfidence["Payload"]!["EvidenceConfidence"] = "ProductionValidatedReserved";
+    var reservedConfidenceAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(reservedConfidence.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", reservedConfidenceAck.AckStatus, "ProductionValidatedReserved must not be accepted in V1");
+    AssertEqual("CONTRACT_SCOPE_VIOLATION", reservedConfidenceAck.ErrorCode, "reserved production validation should use scope violation");
+
+    var autoUpdate = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    autoUpdate["MessageID"] = "MSG-SDBR-EOE-AUTO-UPDATE";
+    autoUpdate["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:auto-update";
+    autoUpdate["Payload"]!["DDAEGovernanceBoundary"]!["AllowsAutomaticMasterSettingUpdate"] = true;
+    var autoUpdateAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(autoUpdate.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", autoUpdateAck.AckStatus, "automatic DDAE governance update must be rejected");
+    AssertEqual("GOVERNANCE_AUTO_UPDATE_FORBIDDEN", autoUpdateAck.ErrorCode, "automatic update should use governance error");
+
+    foreach (var marker in new[]
+             {
+                 "IsProductionValidated",
+                 "BusinessGoldenLoopReady",
+                 "AllowsProductionValidation",
+                 "ClaimsSupplierExecution",
+                 "ClaimsDeliveryPerformance",
+                 "ClaimsLeadTimePerformance",
+                 "ClaimsProductionInventoryAuthority",
+                 "ClaimsProductionQualityAuthority"
+             })
+    {
+        var markerClaim = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+        markerClaim["MessageID"] = $"MSG-SDBR-EOE-{marker.ToUpperInvariant()}";
+        markerClaim["IdempotencyKey"] = $"SDBR-EXECUTION-OBJECT-EVIDENCE-V1:{marker}";
+        markerClaim["Payload"]![marker] = true;
+        var markerClaimAck = new SdbrExecutionObjectEvidenceInboundLedger().Accept(markerClaim.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+        AssertEqual("Rejected", markerClaimAck.AckStatus, $"{marker} must be rejected");
+        AssertEqual("CONTRACT_SCOPE_VIOLATION", markerClaimAck.ErrorCode, $"{marker} should use scope violation");
+    }
+}
+
+static void TestSdbrExecutionObjectEvidenceAcceptsReconciledLateCapture()
+{
+    var lateCaptured = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    lateCaptured["MessageID"] = "MSG-SDBR-EOE-LATE-CAPTURED-COMPLETE";
+    lateCaptured["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:late-captured-complete";
+    lateCaptured["Payload"]!["WorkOrder"]!["WorkOrderStatus"] = "Completed";
+    lateCaptured["Payload"]!["WorkOrder"]!["CompletedQty"] = 1;
+    lateCaptured["Payload"]!["WorkOrder"]!["RemainingQty"] = 0;
+    lateCaptured["Payload"]!["WorkOrder"]!["EventCaptureMode"] = "LateCaptured";
+    lateCaptured["Payload"]!["WorkOrder"]!["LateCaptureReason"] = "Reviewed fixture reconciliation record supplied by SDBR.";
+    lateCaptured["Payload"]!["WorkOrder"]!["ReconciliationReferenceID"] = "RECON-SDBR-EOE-20260628-001";
+    lateCaptured["Payload"]!["WorkOrder"]!["ObservedAt"] = "2026-07-16T18:00:00+08:00";
+    lateCaptured["Payload"]!["WorkOrder"]!["RecordedAt"] = "2026-07-16T18:15:00+08:00";
+
+    var ack = new SdbrExecutionObjectEvidenceInboundLedger().Accept(lateCaptured.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Accepted", ack.AckStatus, "complete late-captured fixture should be accepted as reviewed context only");
+    AssertEqual(null, ack.ErrorCode, "accepted late-captured fixture should not carry an error");
+}
+
+static void TestSdbrExecutionObjectEvidenceRejectsConsumptionWithoutInventoryQuality()
+{
+    var consumptionWithoutInventoryQuality = JsonNode.Parse(SdbrExecutionObjectEvidenceReviewedJson())!.AsObject();
+    consumptionWithoutInventoryQuality["MessageID"] = "MSG-SDBR-EOE-CONSUMPTION-MISSING-IQ";
+    consumptionWithoutInventoryQuality["IdempotencyKey"] = "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:consumption-missing-iq";
+    consumptionWithoutInventoryQuality["Payload"]!["MaterialConsumptions"] = new JsonArray
+    {
+        new JsonObject
+        {
+            ["ConsumptionEventID"] = "CONS-PART-FPGA-SPACE-001",
+            ["ConsumptionState"] = "Consumed",
+            ["ConsumedByOperationID"] = "OP-INSTALL-FPGA-SPACE-001",
+            ["ConsumedItemID"] = "PART-FPGA-SPACE",
+            ["ConsumedLocationID"] = "WH-ELEC-QA",
+            ["ConsumedQty"] = 1,
+            ["ScrapQty"] = 0,
+            ["RejectQty"] = 0,
+            ["RemainingQty"] = 62,
+            ["QuantityUOM"] = "EA",
+            ["UOMAuthority"] = "SDBR-MASTER-DATA",
+            ["ConsumedAt"] = "2026-07-15T10:00:00+08:00",
+            ["ConsumptionSourceSystem"] = "SDBR",
+            ["ConsumptionMethod"] = "ReviewedFixtureOnly",
+            ["InventoryQualityEvidencePackageID"] = null,
+            ["InventoryQualityEvidenceVersion"] = null,
+            ["ConsumptionAuthorityReferenceID"] = null,
+            ["ReversesConsumptionEventID"] = null
+        }
+    };
+
+    var ack = new SdbrExecutionObjectEvidenceInboundLedger().Accept(consumptionWithoutInventoryQuality.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("Rejected", ack.AckStatus, "consumption without inventory-quality or accepted authority reference must be rejected");
+    AssertEqual("MISSING_INVENTORY_QUALITY_EVIDENCE", ack.ErrorCode, "missing consumption dependency should use contract error");
+}
+
+static void TestSdbrExecutionObjectEvidenceLedgerDetectsDuplicateAndConflict()
+{
+    var rawPayload = SdbrExecutionObjectEvidenceReviewedJson();
+    var ledger = new SdbrExecutionObjectEvidenceInboundLedger();
+
+    var accepted = ledger.Accept(rawPayload);
+    var duplicate = ledger.Accept(rawPayload);
+
+    AssertEqual("Accepted", accepted.AckStatus, "first payload should be accepted");
+    AssertEqual("Duplicate", duplicate.AckStatus, "same IdempotencyKey and same fingerprint should return duplicate");
+    AssertEqual(1, ledger.Records.Count, "duplicate should not create another ledger record");
+
+    var conflictNode = JsonNode.Parse(rawPayload)!.AsObject();
+    conflictNode["Payload"]!["WorkOrder"]!["RequiredQty"] = 2;
+    var conflict = ledger.Accept(conflictNode.ToJsonString(DdsopConfigInboundContractService.ContractJsonOptions));
+
+    AssertEqual("DeadLettered", conflict.AckStatus, "same IdempotencyKey with different fingerprint should be dead-lettered");
+    AssertEqual("IDEMPOTENCY_CONFLICT", conflict.ErrorCode, "idempotency conflict should use contract error code");
+    AssertEqual(2, ledger.Records.Count, "conflict should be retained as audit evidence");
+}
+
+static void TestSdbrExecutionObjectEvidenceEndpointIsExposed()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var domain = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "SdbrExecutionObjectEvidenceContract.cs"));
+
+    AssertTrue(program.Contains("AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>", StringComparison.Ordinal), "execution object ledger should be registered");
+    AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1", StringComparison.Ordinal), "execution object inbound endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1/ledger", StringComparison.Ordinal), "execution object ledger endpoint should be exposed");
+    AssertTrue(domain.Contains("public sealed class SdbrExecutionObjectEvidenceInboundLedger", StringComparison.Ordinal), "execution object ledger should exist");
+    AssertTrue(domain.Contains("SDBR_EXECUTABLE_ROUTING", StringComparison.Ordinal), "consumer should enforce SDBR executable routing authority");
+    AssertTrue(domain.Contains("ProductionValidatedReserved", StringComparison.Ordinal), "consumer should reject reserved ProductionValidated confidence");
+    AssertTrue(domain.Contains("MISSING_INVENTORY_QUALITY_EVIDENCE", StringComparison.Ordinal), "consumer should enforce issue/consumption dependency");
+    AssertTrue(domain.Contains("EventCaptureMode", StringComparison.Ordinal), "consumer should enforce late-capture fields");
+    AssertTrue(domain.Contains("GOVERNANCE_AUTO_UPDATE_FORBIDDEN", StringComparison.Ordinal), "consumer should enforce governance auto-update boundary");
+    AssertTrue(domain.Contains("IDEMPOTENCY_CONFLICT", StringComparison.Ordinal), "consumer should enforce idempotency conflict handling");
+    AssertTrue(!domain.Contains("MasterSettingsGovernanceService", StringComparison.Ordinal), "execution object consumer must not depend on master settings governance service");
+    AssertTrue(!domain.Contains("MasterSettingChangeSaveRequest", StringComparison.Ordinal), "execution object consumer must not save master setting changes");
+}
+
 static void TestScenarioPreviewAppliesScenarioParameters()
 {
     var service = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
@@ -2101,6 +2940,439 @@ static void TestGurobiOptimizationSolverToyProblem()
 
     AssertTrue(result.Status is OptimizationSolverStatus.Optimal or OptimizationSolverStatus.Feasible, "toy problem should solve when Gurobi is available");
     AssertContains(result.SelectedCandidateIds, "high", "solver should choose highest value candidate");
+}
+
+static string ProductionSupplierIdentitySourceReviewedJson()
+{
+    var contractExamplePath = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\production-supplier-identity-source-v1\examples\sup-microchip-part-fpga-space-reviewed.json";
+    if (File.Exists(contractExamplePath))
+    {
+        return File.ReadAllText(contractExamplePath);
+    }
+
+    return """
+        {
+          "ContractID": "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1",
+          "ContractVersion": "1.0.0",
+          "MessageID": "PSISV1-MSG-SUP-MICROCHIP-PART-FPGA-SPACE-20260628-001",
+          "IdempotencyKey": "PRODUCTION-SUPPLIER-IDENTITY-SOURCE-V1:ContractAgentAcceptedSource:PSISR-SUP-MICROCHIP-PART-FPGA-SPACE-001:1:2026-06-28T00:00:00+08:00",
+          "ProducerSystem": "ContractAgentAcceptedSource",
+          "ConsumerSystems": ["DDAE", "SDBR", "ContractAgent"],
+          "OccurredAt": "2026-06-28T10:30:00+08:00",
+          "TimeZone": "Asia/Shanghai",
+          "Payload": {
+            "EvidencePackageID": "PSIS-EP-SUP-MICROCHIP-PART-FPGA-SPACE-20260628-001",
+            "EvidenceVersion": "1",
+            "EvidenceStatus": "Reviewed",
+            "EvidenceConfidence": "Reviewed",
+            "SourceAuthority": {
+              "AuthoritySystemID": "ContractAgentAcceptedSource",
+              "AuthoritySystemType": "ContractAgentAcceptedSource",
+              "AuthorityRecordID": "CTRL-SUPPLIER-SOURCE-REVIEW-20260628-001",
+              "AuthorityOwner": "Contract Agent controlled review",
+              "AuthorityConfidence": "Reviewed"
+            },
+            "SupplierIdentity": {
+              "SupplierID": "SUP-MICROCHIP",
+              "SupplierName": "Microchip Space",
+              "SupplierIdentityStatus": "Reviewed",
+              "SupplierIdentityAuthority": "ContractAgentAcceptedSource",
+              "ApprovedSupplierStatus": "Reviewed"
+            },
+            "SupplierSourceRelation": {
+              "SupplierSourceRelationID": "PSISR-SUP-MICROCHIP-PART-FPGA-SPACE-001",
+              "SupplierID": "SUP-MICROCHIP",
+              "ItemID": "PART-FPGA-SPACE",
+              "LocationID": "WH-ELEC-QA",
+              "ProgramID": "SAT-BUS-001",
+              "SourceType": "Primary",
+              "EligibilityStatus": "Reviewed",
+              "EffectiveFrom": "2026-06-28T00:00:00+08:00",
+              "EffectiveTo": null,
+              "SourcePriority": 1
+            },
+            "SourceTerms": {
+              "SourceTermsAuthority": "ContractAgentAcceptedSource",
+              "UOM": "EA",
+              "UOMAuthority": "ContractAgentAcceptedSource",
+              "TermsAreProductionAuthoritative": false,
+              "DDAEPlanningAssumptionOnly": true,
+              "LeadTimeDays": 30,
+              "MOQ": 1,
+              "OrderCycleDays": 7
+            },
+            "DDAEGovernanceBoundary": {
+              "AllowsAutomaticMasterSettingUpdate": false,
+              "MayCreateReviewTopic": true,
+              "MayCreateGovernanceProposal": false,
+              "RequiresSeparateDDAEApproval": true
+            },
+            "Traceability": {
+              "SourceSystem": "ContractAgentAcceptedSource",
+              "SourceDocumentType": "ControlledSupplierSourceReview",
+              "SourceDocumentID": "CTRL-SUPPLIER-SOURCE-REVIEW-20260628-001",
+              "SourceDocumentLineID": "001",
+              "SourceRecordID": "USER-SUPPLIER-SOURCE-REVIEW-20260628-001",
+              "TraceableID": "TRACE-SUP-MICROCHIP-PART-FPGA-SPACE-SOURCE-20260628-001",
+              "RegisteredAt": "2026-06-28T10:30:00+08:00",
+              "ApprovedAt": null,
+              "ApprovedBy": null
+            },
+            "Supersession": {
+              "SupersedesEvidencePackageID": null,
+              "SupersedesEvidenceVersion": null,
+              "CorrectionReason": null,
+              "SupersessionReason": null
+            },
+            "NonClaims": [
+              "NotProductionValidated",
+              "NotInventoryBalanceProof",
+              "NotQualityReleaseProof",
+              "NotSupplierExecutionProof",
+              "NotDeliveryPerformanceProof",
+              "NotLeadTimePerformanceProof",
+              "NoAutomaticDDAEMasterSettingUpdate",
+              "NotBusinessGoldenLoopReady"
+            ]
+          }
+        }
+        """;
+}
+
+static string ProductionInventoryQualityEvidenceReviewedJson()
+{
+    var contractExamplePath = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\production-inventory-quality-evidence-v1\examples\part-fpga-space-reviewed-inventory-quality.json";
+    if (File.Exists(contractExamplePath))
+    {
+        return File.ReadAllText(contractExamplePath);
+    }
+
+    return """
+        {
+          "ContractID": "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1",
+          "ContractVersion": "1.0.0",
+          "MessageID": "PIQEV1-MSG-PART-FPGA-SPACE-20260628-001",
+          "IdempotencyKey": "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1:ContractAgentAcceptedSource:PIQE-PART-FPGA-SPACE-20260628-001:1:SDBR-FPGA-MATERIAL-AVAILABILITY-SNAPSHOT-20260627-001",
+          "ProducerSystem": "ContractAgentAcceptedSource",
+          "ConsumerSystems": ["DDAE", "SDBR", "ContractAgent"],
+          "OccurredAt": "2026-06-28T11:30:00+08:00",
+          "TimeZone": "Asia/Shanghai",
+          "Payload": {
+            "EvidencePackageID": "PIQE-PART-FPGA-SPACE-20260628-001",
+            "EvidenceVersion": "1",
+            "EvidenceStatus": "Reviewed",
+            "EvidenceConfidence": "Reviewed",
+            "InventoryAuthority": {
+              "AuthoritySystemID": "ContractAgentAcceptedSource",
+              "AuthoritySystemType": "ContractAgentAcceptedSource",
+              "AuthorityRecordID": "CTRL-INVENTORY-QUALITY-REVIEW-20260628-001",
+              "AuthorityOwner": "Contract Agent controlled review",
+              "AuthorityConfidence": "Reviewed"
+            },
+            "QualityAuthority": {
+              "AuthoritySystemID": "ContractAgentAcceptedSource",
+              "AuthoritySystemType": "ContractAgentAcceptedSource",
+              "AuthorityRecordID": "CTRL-QA-RELEASE-FPGA-20260712-001",
+              "AuthorityOwner": "Contract Agent controlled review",
+              "AuthorityConfidence": "Reviewed"
+            },
+            "ItemLocation": {
+              "ItemID": "PART-FPGA-SPACE",
+              "LocationID": "WH-ELEC-QA",
+              "SublocationID": null,
+              "LotID": null,
+              "SerialID": null,
+              "ProgramID": "SAT-BUS-001",
+              "QuantityUOM": "EA",
+              "UOMAuthority": "ContractAgentAcceptedSource",
+              "ItemLocationStatus": "Reviewed"
+            },
+            "InventorySnapshot": {
+              "SnapshotID": "SDBR-FPGA-MATERIAL-AVAILABILITY-SNAPSHOT-20260627-001",
+              "SnapshotTimestamp": "2026-06-27T20:00:00+08:00",
+              "OnHandQty": 120,
+              "AvailableQty": 120,
+              "AllocatedQty": 30,
+              "AvailableAfterAllocationQty": 90,
+              "InboundQty": 80,
+              "InspectionQty": 0,
+              "QuarantineQty": 0,
+              "QualityReleasedQty": 80,
+              "RejectedQty": 0,
+              "BlockedQty": 0,
+              "ReservedQty": 0
+            },
+            "StockMovements": [
+              {
+                "MovementID": "PIQE-MOVE-PART-FPGA-SPACE-QA-RELEASE-20260712-001",
+                "MovementType": "InspectionRelease",
+                "MovementState": "QualityReleased",
+                "MovementQty": 80,
+                "MovementUOM": "EA",
+                "MovementTimestamp": "2026-07-12T15:00:00+08:00",
+                "FromLocationID": "WH-IQC",
+                "ToLocationID": "WH-ELEC-QA",
+                "ReversesMovementID": null
+              }
+            ],
+            "QualityEvidence": {
+              "InspectionID": "CTRL-RECEIPT-FPGA-20260710-001",
+              "InspectionStatus": "QualityReleased",
+              "QualityReleaseID": "CTRL-QA-RELEASE-FPGA-20260712-001",
+              "QualityReleaseStatus": "QualityReleased",
+              "QualityReleasedAt": "2026-07-12T15:00:00+08:00",
+              "RejectedAt": null,
+              "RejectedReason": null
+            },
+            "DDAEGovernanceBoundary": {
+              "AllowsAutomaticMasterSettingUpdate": false,
+              "MayCreateReviewTopic": true,
+              "MayCreateGovernanceProposal": false,
+              "RequiresSeparateDDAEApproval": true
+            },
+            "Traceability": {
+              "SourceSystem": "ContractAgentAcceptedSource",
+              "SourceDocumentType": "ControlledInventoryQualityReview",
+              "SourceDocumentID": "CTRL-INVENTORY-QUALITY-REVIEW-20260628-001",
+              "SourceDocumentLineID": "001",
+              "SourceRecordID": "USER-INVENTORY-QUALITY-REVIEW-20260628-001",
+              "TraceableID": "TRACE-PART-FPGA-SPACE-WH-ELEC-QA-INVENTORY-QUALITY-20260628-001",
+              "RegisteredAt": "2026-06-28T11:30:00+08:00"
+            },
+            "Supersession": {
+              "SupersedesEvidencePackageID": null,
+              "SupersedesEvidenceVersion": null,
+              "CorrectionReason": null,
+              "SnapshotReplacementScope": null,
+              "ReversalReason": null
+            },
+            "NonClaims": [
+              "NotProductionValidated",
+              "NotSupplierSourceApproval",
+              "NotSupplierExecutionProof",
+              "NotDeliveryPerformanceProof",
+              "NotLeadTimePerformanceProof",
+              "NotWorkOrderRoutingOperationProof",
+              "NotMaterialConsumptionProof",
+              "NoAutomaticDDAEMasterSettingUpdate",
+              "NotBusinessGoldenLoopReady"
+            ]
+          }
+        }
+        """;
+}
+
+static string SdbrExecutionObjectEvidenceReviewedJson()
+{
+    var contractExamplePath = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\sdbr-execution-object-evidence-v1\examples\sub-avionics-compute-part-fpga-space-reviewed.json";
+    if (File.Exists(contractExamplePath))
+    {
+        return File.ReadAllText(contractExamplePath);
+    }
+
+    return """
+        {
+          "ContractID": "SDBR-EXECUTION-OBJECT-EVIDENCE-V1",
+          "ContractVersion": "1.0.0",
+          "MessageID": "MSG-SDBR-EOE-20260628-001",
+          "IdempotencyKey": "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:SDBR:EOE-SUB-AVIONICS-COMPUTE-20260628-001:1.0.0:WorkOrder:WO-SUB-AVIONICS-COMPUTE-001:2026-06-28T10:00:00+08:00",
+          "ProducerSystem": "SDBR",
+          "ConsumerSystems": ["DDAE", "ContractAgent"],
+          "OccurredAt": "2026-06-28T10:00:00+08:00",
+          "TimeZone": "Asia/Shanghai",
+          "Payload": {
+            "EvidencePackageID": "EOE-SUB-AVIONICS-COMPUTE-20260628-001",
+            "EvidenceVersion": "1.0.0",
+            "EvidenceStatus": "Reviewed",
+            "EvidenceConfidence": "Reviewed",
+            "PlanningContext": {
+              "PlanningRunID": "SDBR-PLAN-RUN-20260628-001",
+              "OperatingModelConfigurationID": "OMC-SAT-BUS-001-20260628-001",
+              "OperatingModelFingerprint": "sha256:reviewed-fixture-operating-model",
+              "SchedulingConfigurationID": "SCH-SAT-BUS-001-20260628-001",
+              "DDMRPConfigurationID": "DDMRP-SAT-BUS-001-20260628-001",
+              "MasterDataVersionID": "MDV-SDBR-20260628-001",
+              "OperationalStateSnapshotID": "OSS-SDBR-20260628-001",
+              "ScheduleFingerprint": "sha256:reviewed-fixture-schedule"
+            },
+            "WorkOrder": {
+              "WorkOrderID": "WO-SUB-AVIONICS-COMPUTE-001",
+              "WorkOrderVersion": "1.0.0",
+              "WorkOrderType": "Assembly",
+              "WorkOrderStatus": "Frozen",
+              "ProductID": "SUB-AVIONICS-COMPUTE",
+              "ItemID": "SUB-AVIONICS-COMPUTE",
+              "LocationID": "ASSY-LINE-AVIONICS",
+              "RequiredQty": 1,
+              "CompletedQty": 0,
+              "RemainingQty": 1,
+              "ScrapQty": 0,
+              "RejectQty": 0,
+              "QuantityUOM": "EA",
+              "UOMAuthority": "SDBR-MASTER-DATA",
+              "PlannedStartAt": "2026-07-15T08:00:00+08:00",
+              "PlannedFinishAt": "2026-07-16T18:00:00+08:00",
+              "DueAt": "2026-07-18T18:00:00+08:00",
+              "EventCaptureMode": "Normal",
+              "LateCaptureReason": null,
+              "ReconciliationReferenceID": null,
+              "ObservedAt": null,
+              "RecordedAt": "2026-06-28T10:00:00+08:00"
+            },
+            "Routing": {
+              "RoutingID": "SDBR-ROUTE-SUB-AVIONICS-COMPUTE-001",
+              "RoutingVersion": "1.0.0",
+              "RoutingAuthority": "SDBR_EXECUTABLE_ROUTING",
+              "RoutingSelectionReason": "Reviewed fixture routing for contract validation only",
+              "PrimaryRoutingID": "DDAE-PRIMARY-ROUTING-TRACE-ONLY",
+              "AlternateRoutingID": null
+            },
+            "Operations": [
+              {
+                "OperationID": "OP-INSTALL-FPGA-SPACE-001",
+                "OperationSequence": 10,
+                "OperationCode": "INSTALL-FPGA",
+                "OperationName": "Install space-grade FPGA into avionics compute assembly",
+                "OperationStatus": "Frozen",
+                "ResourceID": "RES-AVIONICS-BENCH-001",
+                "WorkCenterID": "WC-AVIONICS-ASSEMBLY",
+                "ControlPointID": "CP-AVIONICS-COMPUTE-TRACE-ONLY",
+                "PlannedOperationStartAt": "2026-07-15T08:00:00+08:00",
+                "PlannedOperationFinishAt": "2026-07-15T12:00:00+08:00",
+                "ActualOperationStartAt": null,
+                "ActualOperationFinishAt": null,
+                "EventCaptureMode": "Normal",
+                "LateCaptureReason": null,
+                "ReconciliationReferenceID": null,
+                "ObservedAt": null,
+                "RecordedAt": "2026-06-28T10:00:00+08:00"
+              }
+            ],
+            "Release": {
+              "ReleaseID": "REL-WO-SUB-AVIONICS-COMPUTE-001",
+              "ReleaseDecisionID": "RELDEC-WO-SUB-AVIONICS-COMPUTE-001",
+              "ReleaseState": "ReleaseCandidate",
+              "ReleaseAuthorizedAt": null,
+              "ReleaseAuthorizedBy": null,
+              "ReleaseBlockReasons": ["Reviewed fixture only; no production release authority"]
+            },
+            "Dispatch": {
+              "DispatchPackageID": "DISP-PKG-WO-SUB-AVIONICS-COMPUTE-001",
+              "DispatchQueueID": "DQ-WC-AVIONICS-ASSEMBLY-001",
+              "DispatchState": "DispatchSuggested",
+              "DispatchSuggestedAt": "2026-07-15T07:30:00+08:00",
+              "DispatchIssuedAt": null,
+              "DispatchAcceptedAt": null,
+              "DispatchRejectedAt": null,
+              "DispatchReason": "Reviewed fixture dispatch suggestion only",
+              "DispatchPriorityRank": 1
+            },
+            "MaterialRequirements": [
+              {
+                "MaterialRequirementID": "MR-SUB-AVIONICS-COMPUTE-PART-FPGA-SPACE-001",
+                "ConsumedItemID": "PART-FPGA-SPACE",
+                "ConsumedLocationID": "WH-ELEC-QA",
+                "RequiredAt": "2026-07-15T08:00:00+08:00",
+                "RequiredQty": 63,
+                "QuantityUOM": "EA",
+                "UOMAuthority": "SDBR-MASTER-DATA",
+                "InventoryQualityEvidencePackageID": "PIQE-PART-FPGA-SPACE-WH-ELEC-QA-20260628-001"
+              }
+            ],
+            "MaterialIssues": [],
+            "MaterialConsumptions": [],
+            "DDAEGovernanceBoundary": {
+              "AllowsAutomaticOperatingModelUpdate": false,
+              "AllowsAutomaticMasterSettingUpdate": false,
+              "AllowsAutomaticBufferUpdate": false,
+              "AllowsAutomaticSupplierSourceFactUpdate": false,
+              "AllowsAutomaticLeadTimeUpdate": false,
+              "AllowsAutomaticMOQUpdate": false,
+              "AllowsAutomaticOrderCycleUpdate": false,
+              "MayCreateReviewTopic": true,
+              "MayCreateGovernanceProposal": true,
+              "RequiresSeparateDDAEApproval": true
+            },
+            "Traceability": {
+              "SourceSystem": "SDBR",
+              "SourceDocumentType": "ReviewedFixture",
+              "SourceDocumentID": "SDBR-EOE-FIXTURE-20260628-001",
+              "SourceDocumentLineID": "1",
+              "SourceRecordID": "SDBR-EOE-REC-20260628-001",
+              "TraceableID": "TRACE-SDBR-EOE-20260628-001",
+              "RegisteredAt": "2026-06-28T10:00:00+08:00"
+            },
+            "Supersession": {
+              "SupersedesEvidencePackageID": null,
+              "SupersedesEvidenceVersion": null,
+              "CorrectsExecutionEventID": null,
+              "CorrectionReason": null,
+              "ReversesExecutionEventID": null,
+              "ReversalReason": null
+            },
+            "NonClaims": [
+              "Reviewed fixture only",
+              "Not source-authoritative production execution evidence",
+              "Not production material issue evidence",
+              "Not production material consumption evidence",
+              "Not production inventory authority",
+              "Not production quality authority",
+              "Not automatic DDAE master-setting update",
+              "Not ProductionValidated",
+              "Not Business Golden Loop readiness"
+            ]
+          }
+        }
+        """;
+}
+
+static string SdbrExecutionObjectAcceptedAckJson()
+{
+    var contractExamplePath = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\sdbr-execution-object-evidence-v1\examples\ack-accepted-reviewed.json";
+    if (File.Exists(contractExamplePath))
+    {
+        return File.ReadAllText(contractExamplePath);
+    }
+
+    return """
+        {
+          "ContractID": "SDBR-EXECUTION-OBJECT-EVIDENCE-V1",
+          "ContractVersion": "1.0.0",
+          "AckID": "ACK-DDAE-SDBR-EOE-20260628-001",
+          "MessageID": "MSG-SDBR-EOE-20260628-001",
+          "IdempotencyKey": "SDBR-EXECUTION-OBJECT-EVIDENCE-V1:SDBR:EOE-SUB-AVIONICS-COMPUTE-20260628-001:1.0.0:WorkOrder:WO-SUB-AVIONICS-COMPUTE-001:2026-06-28T10:00:00+08:00",
+          "ConsumerSystem": "DDAE",
+          "AckStatus": "Accepted",
+          "ErrorCode": null,
+          "ErrorMessage": null,
+          "ReceivedAt": "2026-06-28T10:00:05+08:00",
+          "Retryable": false,
+          "TraceableID": "TRACE-SDBR-EOE-20260628-001"
+        }
+        """;
+}
+
+static string ProductionInventoryQualityAcceptedAckJson()
+{
+    var contractExamplePath = @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\production-inventory-quality-evidence-v1\examples\ack-accepted-reviewed.json";
+    if (File.Exists(contractExamplePath))
+    {
+        return File.ReadAllText(contractExamplePath);
+    }
+
+    return """
+        {
+          "ContractID": "PRODUCTION-INVENTORY-QUALITY-EVIDENCE-V1",
+          "ContractVersion": "1.0.0",
+          "AckID": "PIQEV1-ACK-DDAE-PART-FPGA-SPACE-20260628-001",
+          "MessageID": "PIQEV1-MSG-PART-FPGA-SPACE-20260628-001",
+          "EvidencePackageID": "PIQE-PART-FPGA-SPACE-20260628-001",
+          "ConsumerSystem": "DDAE",
+          "AckStatus": "Accepted",
+          "AckAt": "2026-06-28T11:31:00+08:00",
+          "Errors": []
+        }
+        """;
 }
 
 static void AssertEqual<T>(T expected, T actual, string label)

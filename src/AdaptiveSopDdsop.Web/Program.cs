@@ -12,6 +12,11 @@ builder.Services.AddSingleton<DdsopScenarioService>();
 builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
+builder.Services.AddSingleton<DdsopConfigInboundContractService>();
+builder.Services.AddSingleton<DdsopFeedbackInboundLedger>();
+builder.Services.AddSingleton<ProductionSupplierIdentitySourceInboundLedger>();
+builder.Services.AddSingleton<ProductionInventoryQualityInboundLedger>();
+builder.Services.AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>();
 builder.Services.AddNetworkStructureIntegration(builder.Configuration);
 builder.Services.AddSingleton<RccpWorkspaceService>();
 builder.Services.AddSingleton<ExceptionWorkspaceService>();
@@ -87,6 +92,82 @@ app.MapGet("/api/rccp-workspace", (int? horizonWeeks, RccpWorkspaceService servi
 app.MapGet("/api/product-family-dashboard", (int? horizonWeeks, ProductFamilyDashboardService service) =>
 {
     return Results.Ok(service.GetBaseline(horizonWeeks.GetValueOrDefault(12)));
+});
+
+app.MapGet("/api/integration-contracts/ddsop-config-inbound-v1", (
+    int? horizonWeeks,
+    string? approvedBy,
+    string? sourceScenarioRunId,
+    string? changeTicketId,
+    DdsopConfigInboundContractService service) =>
+{
+    var message = service.Build(new DdsopConfigInboundContractRequest(
+        horizonWeeks.GetValueOrDefault(12),
+        new DateOnly(2026, 6, 1),
+        approvedBy,
+        sourceScenarioRunId,
+        changeTicketId));
+    return Results.Json(message, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapPost("/api/integration-contracts/ddsop-feedback-outbound-v1", async (
+    HttpRequest request,
+    DdsopFeedbackInboundLedger ledger) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var rawPayload = await reader.ReadToEndAsync();
+    var ack = ledger.Accept(rawPayload);
+    return Results.Json(ack, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/integration-contracts/ddsop-feedback-outbound-v1/ledger", (DdsopFeedbackInboundLedger ledger) =>
+{
+    return Results.Json(ledger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapPost("/api/integration-contracts/production-supplier-identity-source-v1", async (
+    HttpRequest request,
+    ProductionSupplierIdentitySourceInboundLedger ledger) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var rawPayload = await reader.ReadToEndAsync();
+    var ack = ledger.Accept(rawPayload);
+    return Results.Json(ack, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/integration-contracts/production-supplier-identity-source-v1/ledger", (ProductionSupplierIdentitySourceInboundLedger ledger) =>
+{
+    return Results.Json(ledger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapPost("/api/integration-contracts/production-inventory-quality-evidence-v1", async (
+    HttpRequest request,
+    ProductionInventoryQualityInboundLedger ledger) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var rawPayload = await reader.ReadToEndAsync();
+    var ack = ledger.Accept(rawPayload);
+    return Results.Json(ack, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/integration-contracts/production-inventory-quality-evidence-v1/ledger", (ProductionInventoryQualityInboundLedger ledger) =>
+{
+    return Results.Json(ledger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapPost("/api/integration-contracts/sdbr-execution-object-evidence-v1", async (
+    HttpRequest request,
+    SdbrExecutionObjectEvidenceInboundLedger ledger) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var rawPayload = await reader.ReadToEndAsync();
+    var ack = ledger.Accept(rawPayload);
+    return Results.Json(ack, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/integration-contracts/sdbr-execution-object-evidence-v1/ledger", (SdbrExecutionObjectEvidenceInboundLedger ledger) =>
+{
+    return Results.Json(ledger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
 });
 
 app.MapNetworkStructureEndpoints();
