@@ -78,13 +78,6 @@ const solverStatusLabel = {
 };
 
 
-const candidateCombinationControls = {
-  solver: document.querySelector("#candidate-combination-solver-select"),
-  status: document.querySelector("#candidate-combination-status"),
-  list: document.querySelector("#candidate-combination-list"),
-  button: document.querySelector("#select-candidate-combinations"),
-};
-
 const networkCollapseState = new Map();
 const networkFocusState = {
   panel: null,
@@ -166,13 +159,6 @@ function networkEmptyRow(message, colspan) {
   return typeof helper === "function"
     ? helper(message, colspan)
     : `<tr><td colspan="${colspan}" class="table-empty"><strong>${networkEscapeHtml(message)}</strong></td></tr>`;
-}
-
-function networkRenderMultiScenarioComparison(result) {
-  const helper = networkHost().renderMultiScenarioComparison;
-  if (typeof helper === "function") {
-    helper(result);
-  }
 }
 
 function networkShowWorkspaceError(error) {
@@ -916,75 +902,6 @@ function renderNetworkScenarioValidation(result) {
 }
 
 
-function solverStatusClass(status) {
-  return status === "Optimal" || status === "Feasible"
-    ? "status-chip is-valid"
-    : status === "Unavailable" || status === "Error"
-      ? "status-chip is-invalid"
-      : "status-chip is-warning";
-}
-
-function renderCandidateActionCombinations(result) {
-  networkState().candidateCombinations = result;
-  candidateCombinationControls.status.className = solverStatusClass(result.solverStatus);
-  candidateCombinationControls.status.textContent = `${result.solverName || "Gurobi"}：${businessText(result.message || solverStatusName(result.solverStatus))}`;
-  networkRenderMultiScenarioComparison(result);
-
-  candidateCombinationControls.list.innerHTML = networkValueOr(result.combinations, []).length
-    ? result.combinations.map(item => {
-      const comparison = item.whiteBoxPreviewResult.comparison;
-      const combinationComparison = item.comparison || {};
-      return `
-        <article class="candidate-combination-card">
-          <div class="optimization-card-heading">
-            <div><span class="panel-kicker">${networkEscapeHtml(item.profileId)}</span><h3>${networkEscapeHtml(item.profileName)}</h3></div>
-            <span class="${solverStatusClass(item.solverStatus)}">${networkEscapeHtml(solverStatusName(item.solverStatus))}</span>
-          </div>
-          <p>${networkEscapeHtml(businessText(item.summary))}</p>
-          <div class="optimization-metrics">
-            <span>流速变化 <strong>${networkNumber(comparison.flowIndexDelta)}pp</strong></span>
-            <span>峰值负荷变化 <strong>${networkNumber(comparison.peakLoadPercentDelta)}pp</strong></span>
-            <span>供应缺口变化 <strong>${networkNumber(comparison.supplyGapDelta)}</strong></span>
-            <span>动作成本 <strong>${networkMoney(networkValueOr(item.estimatedActionCost, 0))}</strong></span>
-            <span>管理判断 <strong>${networkEscapeHtml(networkValueOr(combinationComparison.managementDecision, "待评审"))}</strong></span>
-          </div>
-          <div class="optimization-actions">
-            ${item.selectedActions.length
-              ? item.selectedActions.map(action => `<span>${networkEscapeHtml(businessText(action.actionType))}：${networkEscapeHtml(action.target)} / ${networkMoney(networkValueOr(action.estimatedCost, 0))}</span>`).join("")
-              : `<span>未选择候选动作</span>`}
-          </div>
-          <small class="muted-note">已白盒重算：不自动带入场景、不保存、不审批。</small>
-        </article>
-      `;
-    }).join("")
-    : `<div class="table-empty"><strong>没有候选组合</strong><p>${networkEscapeHtml(result.message || "当前求解器未返回可进入评审的候选组合。")}</p></div>`;
-}
-
-async function selectCandidateActionCombinations() {
-  const solverName = candidateCombinationControls.solver?.value || "Gurobi";
-  candidateCombinationControls.status.className = "status-chip is-warning";
-  candidateCombinationControls.status.textContent = `${solverName} 正在选择`;
-  candidateCombinationControls.list.innerHTML = `<div class="table-empty"><strong>正在选择候选动作组合</strong></div>`;
-  const payload = {
-    horizonWeeks: 12,
-    combinationCount: 3,
-    maxActionsPerCombination: 3,
-    targetMode: null,
-    solverName,
-  };
-  const response = await fetch("/api/candidate-action-combinations/select", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(`候选组合选择接口失败：${response.status}`);
-  }
-
-  renderCandidateActionCombinations(await response.json());
-}
-
-
 async function loadNetworkGraph(itemCode = networkState().selectedNetworkItem || "PART-FPGA-SPACE", maxDepth = networkState().networkGraphMaxDepth || 3) {
   const depth = Math.max(1, Math.min(12, Number(maxDepth || 3)));
   networkState().networkGraphMaxDepth = depth;
@@ -1102,13 +1019,6 @@ function initializeNetworkStructureWorkspace() {
     });
   });
 
-  networkById("select-candidate-combinations")?.addEventListener("click", () => {
-    selectCandidateActionCombinations().catch(error => {
-      candidateCombinationControls.status.className = "status-chip is-invalid";
-      candidateCombinationControls.status.textContent = "组合选择失败";
-      networkShowWorkspaceError(error);
-    });
-  });
 }
 
 window.NetworkStructureProductWorkspace = {
@@ -1120,5 +1030,4 @@ window.NetworkStructureProductWorkspace = {
   renderScenarioValidation: renderNetworkScenarioValidation,
   loadGraph: loadNetworkGraph,
   loadData: loadNetworkStructureWorkspaceData,
-  selectCandidateCombinations: selectCandidateActionCombinations,
 };
