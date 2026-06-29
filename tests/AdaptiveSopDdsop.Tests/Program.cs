@@ -46,9 +46,9 @@ var tests = new (string Name, Action Run)[]
     ("Buffer trend workspace summarizes KPIs heatmap and SKU detail", TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail),
     ("Scenario preview returns graphical buffer trend comparison", TestScenarioPreviewReturnsBufferTrendComparison),
     ("Exception workspace detects variance signals and scenario presets", TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets),
-    ("Scenario optimization service uses solver adapter and returns recommendations", TestScenarioOptimizationServiceUsesSolverAdapter),
-    ("Gurobi optimization solver solves toy problem or reports unavailable", TestGurobiOptimizationSolverToyProblem),
-    ("OR-Tools optimization solver solves toy problem", TestOrToolsOptimizationSolverSolvesToyProblem),
+    ("DDSOP-CONFIG-INBOUND-V1 payload and ACK interpreter stay contract-shaped", TestDdsopConfigInboundPayloadAndAckInterpreter),
+    ("DDSOP-FEEDBACK-OUTBOUND-V1 ledger accepts SDBR fixture feedback without governance mutation", TestDdsopFeedbackInboundLedgerAcceptsSdbrFixtures),
+    ("SDBR integration contract endpoints are exposed and old optimization endpoint is removed", TestIntegrationContractEndpointsAndRemovedOptimizationPath),
 };
 
 var failed = 0;
@@ -213,24 +213,22 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(!page.Contains("拖拽排序", StringComparison.Ordinal), "page should not expose drag sorting in first UX version");
     AssertTrue(!page.Contains("自由布局", StringComparison.Ordinal), "page should not expose free layout in first UX version");
     AssertTrue(page.Contains("流速优先", StringComparison.Ordinal), "adoption constraints should include a flow-first mode");
-    AssertTrue(page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "scenario run should expose optimization panel");
-    AssertTrue(page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "scenario run should expose solver selector");
-    AssertTrue(page.Contains("<option value=\"Gurobi\">Gurobi</option>", StringComparison.Ordinal), "solver selector should include Gurobi");
-    AssertTrue(page.Contains("<option value=\"OR-Tools\">OR-Tools</option>", StringComparison.Ordinal), "solver selector should include OR-Tools");
-    AssertTrue(page.Contains("id=\"run-optimization\"", StringComparison.Ordinal), "scenario run should expose optimization button");
-    AssertTrue(page.Contains("id=\"optimization-status\"", StringComparison.Ordinal), "scenario run should expose Gurobi status");
-    AssertTrue(page.Contains("id=\"optimization-recommendation-list\"", StringComparison.Ordinal), "scenario run should expose optimization recommendation list");
+    AssertTrue(page.Contains("id=\"network-structure-entry-card\"", StringComparison.Ordinal), "DDS&OP main should expose a minimal network structure scoring entry card");
+    AssertTrue(page.Contains("打开网络结构评分工作台", StringComparison.Ordinal), "network entry card should link to the independent product workspace");
+    AssertTrue(page.Contains("只选择候选动作组合", StringComparison.Ordinal), "network entry card should explain candidate action combination selection");
+    AssertTrue(!page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "old scenario optimization panel should be removed from DDS&OP main");
+    AssertTrue(!page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "old solver selector should not remain in scenario run");
+    AssertTrue(!page.Contains("id=\"run-optimization\"", StringComparison.Ordinal), "old optimization button should be removed from scenario run");
+    AssertTrue(!page.Contains("id=\"optimization-status\"", StringComparison.Ordinal), "old optimization status should be removed from scenario run");
+    AssertTrue(!page.Contains("id=\"optimization-recommendation-list\"", StringComparison.Ordinal), "old optimization recommendation list should be removed from scenario run");
     AssertTrue(page.Contains("id=\"multi-scenario-comparison-body\"", StringComparison.Ordinal), "scenario comparison should expose multi-scenario comparison body");
     AssertTrue(page.Contains("id=\"candidate-impact-matrix-body\"", StringComparison.Ordinal), "scenario comparison should expose candidate impact matrix body");
     AssertTrue(page.Contains("多方案比较", StringComparison.Ordinal), "scenario comparison should show multi-scenario comparison label");
     AssertTrue(page.Contains("候选动作影响矩阵", StringComparison.Ordinal), "scenario comparison should show candidate impact matrix label");
-    AssertTrue(page.Contains("优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization label");
-    AssertTrue(page.Contains("生成优化推荐", StringComparison.Ordinal), "scenario run should show Chinese optimization action");
-    AssertTrue(page.Contains("求解器状态", StringComparison.Ordinal), "scenario run should show generic solver status label");
-    AssertTrue(page.Contains("带入场景", StringComparison.Ordinal), "scenario run should allow applying recommendations to scenario configuration");
-    AssertTrue(!page.Contains("自动采纳", StringComparison.Ordinal), "scenario run should not expose automatic adoption action");
-    AssertTrue(!page.Contains("自动审批", StringComparison.Ordinal), "scenario run should not expose automatic approval action");
-    AssertTrue(!page.Contains("自动保存", StringComparison.Ordinal), "scenario run should not expose automatic save action");
+    AssertTrue(!page.Contains("生成优化推荐", StringComparison.Ordinal), "scenario run should not show the removed optimization recommendation action");
+    AssertTrue(!page.Contains(">自动采纳<", StringComparison.Ordinal), "scenario run should not expose automatic adoption action");
+    AssertTrue(!page.Contains(">自动审批<", StringComparison.Ordinal), "scenario run should not expose automatic approval action");
+    AssertTrue(!page.Contains(">自动保存<", StringComparison.Ordinal), "scenario run should not expose automatic save action");
 
     var scriptPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js");
     var script = File.ReadAllText(Path.GetFullPath(scriptPath));
@@ -258,11 +256,7 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("state.data?.guardrails", StringComparison.Ordinal), "guardrail drawer should read from state data");
     AssertTrue(script.Contains("renderMultiScenarioComparison", StringComparison.Ordinal), "script should render multi-scenario comparison");
     AssertTrue(script.Contains("candidateImpactMatrix", StringComparison.Ordinal), "script should consume candidate impact matrix");
-    AssertTrue(script.Contains("scenarioComparisons", StringComparison.Ordinal), "script should consume scenario comparisons");
-    AssertTrue(script.Contains("solverName", StringComparison.Ordinal), "script should send selected solver to optimization API");
     AssertTrue(script.Contains("管理取舍", StringComparison.Ordinal), "script should expose management trade-off labels");
-    AssertTrue(css.Contains("overflow-x: auto", StringComparison.Ordinal) && css.Contains("scroll-snap-type: x proximity", StringComparison.Ordinal), "optimization recommendations should expand horizontally");
-    AssertTrue(css.Contains(".is-focused-panel .optimization-recommendation-list", StringComparison.Ordinal) && css.Contains("repeat(3, minmax(320px, 1fr))", StringComparison.Ordinal), "focused optimization recommendations should expand across the right side");
     AssertTrue(css.Contains("width: calc(100vw - 48px)", StringComparison.Ordinal), "focused panel should use the available viewport width");
     AssertTrue(!script.Contains("cloneNode", StringComparison.Ordinal), "focused panel should move existing DOM rather than clone stable nodes");
     AssertTrue(script.Contains("initializeCollapsiblePanels", StringComparison.Ordinal), "script should initialize collapsible workspace panels");
@@ -298,8 +292,9 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("adoption-rule-list", StringComparison.Ordinal), "script should render adoption rule details");
     AssertTrue(script.Contains("服务红线", StringComparison.Ordinal), "script should explain service guardrail violations");
     AssertTrue(script.Contains("供应硬约束", StringComparison.Ordinal), "script should explain supply guardrail violations");
-    AssertTrue(script.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "script should call optimization API");
-    AssertTrue(script.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "script should bring optimization recommendation into scenario controls");
+    AssertTrue(!script.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "script should not call the removed optimization API");
+    AssertTrue(!script.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "script should not keep the removed recommendation apply path");
+    AssertTrue(!css.Contains(".optimization-recommendation-list", StringComparison.Ordinal), "CSS should not keep the removed optimization recommendation layout");
 }
 
 static void TestAsopGuardrailBlocksExcessiveScenario()
@@ -1212,79 +1207,136 @@ static void TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets()
     AssertTrue(summary.ScenarioPresets.Any(item => item.TemplateId == "TPL-CONSTRAINED"), "star electronics with supply risk should offer constrained preset");
 }
 
-static void TestScenarioOptimizationServiceUsesSolverAdapter()
+static void TestDdsopConfigInboundPayloadAndAckInterpreter()
 {
-    var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
-    var preview = new ScenarioRunPreviewService(source);
-    var solver = new CapturingOptimizationSolver();
-    var service = new ScenarioOptimizationService(source, preview, new[] { solver });
-    var result = service.Optimize(new ScenarioOptimizationRequest(
-        new ScenarioRunPreviewRequest(12, "TPL-PREBUILD-PEAK", AdoptionConstraintMode: "ServiceFirst"),
-        RecommendationCount: 3,
-        MaxActionsPerRecommendation: 2,
-        SolverName: "FakeSolver"));
+    var service = new DdsopConfigInboundContractService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var message = service.Build(new DdsopConfigInboundContractRequest(
+        12,
+        new DateOnly(2026, 6, 26),
+        "S&OP 经理",
+        "SR-20260626-0001",
+        "CHG-20260626-001"));
 
-    AssertTrue(source.LoadCount > 0, "optimization service should load data through IScenarioWorkspaceDataSource");
-    AssertEqual(3, solver.CallCount, "solver should be called once per optimization profile");
-    AssertEqual(3, result.Recommendations.Count, "optimization should return three recommendation profiles");
-    AssertTrue(result.Recommendations.All(item => item.PreviewResult is not null), "recommendation should include recalculated preview result");
-    AssertTrue(result.Recommendations.All(item => item.PreviewRequest.Parameters is not null), "recommendation should include runnable preview request");
-    AssertTrue(result.Recommendations.Select(item => item.ProfileId).ToHashSet().SetEquals(new[] { "ServiceFirst", "CashFirst", "CapacityFirst" }), "recommendation profiles should cover service cash and capacity");
-    AssertTrue(result.CandidateImpactMatrix.Count > 0, "optimization should expose candidate action impact matrix");
-    AssertTrue(result.CandidateImpactMatrix.All(item => item.EstimatedCost >= 0m && !string.IsNullOrWhiteSpace(item.ConstraintNote)), "candidate matrix should include cost and constraints");
-    AssertEqual(result.Recommendations.Count, result.ScenarioComparisons.Count, "optimization should expose one comparison per recommendation");
-    AssertTrue(result.Recommendations.All(item => item.Comparison is not null && item.EstimatedActionCost >= 0m), "recommendation should include comparison and estimated cost");
-    AssertTrue(result.Trace.Any(item => item.Message.Contains("候选动作影响矩阵", StringComparison.Ordinal)), "optimization trace should explain impact matrix");
-    AssertTrue(!result.IsPersisted, "optimization recommendation should not be persisted");
-    AssertTrue(solver.LastProblem?.Candidates.Count > 0, "optimization problem should include candidates");
-    AssertTrue(solver.LastProblem?.CostBudget > 0m, "optimization problem should include cost budget boundary");
+    AssertEqual("DDSOP-CONFIG-INBOUND-V1", message.ContractID, "config contract id");
+    AssertEqual("1.0.0", message.ContractVersion, "config contract version");
+    AssertEqual("DDAE", message.SourceSystem, "config source system");
+    AssertEqual("SDBR", message.TargetSystem, "config target system");
+    AssertEqual("Approved", message.Payload.Status, "config status");
+    AssertEqual("Approved", message.Payload.Approval.ApprovalStatus, "approval status");
+    AssertTrue(message.Payload.SchedulingConfiguration.ControlPoints.Count > 0, "config should include control points");
+    AssertTrue(message.Payload.DDMRPConfiguration.DecouplingPoints.Count > 0, "config should include DDMRP decoupling points");
+    AssertTrue(message.Payload.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal), "config should expose a fingerprint");
+
+    var interpreter = new DdsopConfigInboundAckInterpreter();
+    var accepted = interpreter.Interpret("""
+        {
+          "ContractID": "DDSOP-CONFIG-INBOUND-V1",
+          "ContractVersion": "1.0.0",
+          "OriginalMessageID": "DDAE-MSG-001",
+          "IdempotencyKey": "DDAE:DDAE-MSG-001",
+          "ProcessingStatus": "Accepted",
+          "UsableForPlanningRun": true,
+          "AcceptedConfigurationID": "DDSOP-OMC-20260626-A",
+          "Fingerprint": "sha256:240afdcce3131250675342ec370f3aac4b3fd6d499d86fa6d6ee467a1832fe87",
+          "PendingReferences": [],
+          "Errors": []
+        }
+        """);
+    var pending = interpreter.Interpret("""
+        {
+          "ContractID": "DDSOP-CONFIG-INBOUND-V1",
+          "ContractVersion": "1.0.0",
+          "OriginalMessageID": "DDAE-MSG-001",
+          "IdempotencyKey": "DDAE:DDAE-MSG-001",
+          "ProcessingStatus": "AcceptedPendingReferences",
+          "UsableForPlanningRun": false,
+          "AcceptedConfigurationID": null,
+          "Fingerprint": null,
+          "PendingReferences": [
+            { "Field": "Payload.SchedulingConfiguration.ControlPoints[0].ResourceID", "ReferenceID": "RES-001", "ReferenceType": "Resource" }
+          ],
+          "Errors": []
+        }
+        """);
+    var rejected = interpreter.Interpret("""
+        {
+          "ContractID": "DDSOP-CONFIG-INBOUND-V1",
+          "ContractVersion": "1.0.0",
+          "OriginalMessageID": "DDAE-MSG-001",
+          "IdempotencyKey": "DDAE:DDAE-MSG-001",
+          "ProcessingStatus": "Rejected",
+          "UsableForPlanningRun": false,
+          "AcceptedConfigurationID": null,
+          "Fingerprint": null,
+          "PendingReferences": [],
+          "Errors": [
+            { "Code": "REQUIRED_FIELD_MISSING", "Message": "Approval is required.", "Field": "Payload.Approval" }
+          ]
+        }
+        """);
+    var duplicate = interpreter.Interpret("""
+        {
+          "ContractID": "DDSOP-CONFIG-INBOUND-V1",
+          "ContractVersion": "1.0.0",
+          "OriginalMessageID": "DDAE-MSG-001",
+          "IdempotencyKey": "DDAE:DDAE-MSG-001",
+          "ProcessingStatus": "Duplicate",
+          "UsableForPlanningRun": false,
+          "AcceptedConfigurationID": null,
+          "Fingerprint": null,
+          "PendingReferences": [],
+          "Errors": []
+        }
+        """);
+
+    AssertEqual("Accepted", accepted.ProcessingStatus, "accepted ACK");
+    AssertTrue(accepted.UsableForPlanningRun, "accepted ACK should be usable");
+    AssertEqual("AcceptedPendingReferences", pending.ProcessingStatus, "pending ACK");
+    AssertTrue(!pending.UsableForPlanningRun && pending.PendingReferences.Count == 1, "pending ACK should expose unresolved references");
+    AssertEqual("Rejected", rejected.ProcessingStatus, "rejected ACK");
+    AssertTrue(rejected.Errors.Count == 1, "rejected ACK should expose errors");
+    AssertEqual("Duplicate", duplicate.ProcessingStatus, "duplicate ACK");
 }
 
-static void TestOrToolsOptimizationSolverSolvesToyProblem()
+static void TestDdsopFeedbackInboundLedgerAcceptsSdbrFixtures()
 {
-    var solver = new OrToolsOptimizationSolver();
-    var problem = new OptimizationProblem(
-        "toy-ortools-problem",
-        "ServiceFirst",
-        1,
-        10,
-        100,
-        new[]
-        {
-            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
-            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
-        });
-    var result = solver.Solve(problem);
+    var fixtureRoot = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Fixtures");
+    var planningJson = File.ReadAllText(Path.GetFullPath(Path.Combine(fixtureRoot, "sdbr-actual-planning-run-feedback.json")));
+    var varianceJson = File.ReadAllText(Path.GetFullPath(Path.Combine(fixtureRoot, "sdbr-actual-variance-analysis-feedback.json")));
+    var ledger = new DdsopFeedbackInboundLedger();
 
-    AssertEqual("OR-Tools", result.SolverName, "OR-Tools solver name");
-    AssertTrue(result.Status is OptimizationSolverStatus.Optimal or OptimizationSolverStatus.Feasible, "OR-Tools adapter should solve toy problem");
-    AssertContains(result.SelectedCandidateIds, "high", "OR-Tools adapter should choose highest value candidate");
+    var planningAck = ledger.Accept(planningJson);
+    var varianceAck = ledger.Accept(varianceJson);
+    var duplicateAck = ledger.Accept(planningJson);
+
+    AssertEqual("DDSOP-FEEDBACK-OUTBOUND-V1", planningAck.ContractID, "feedback ACK contract id");
+    AssertEqual("Accepted", planningAck.ProcessingStatus, "planning feedback should be accepted");
+    AssertEqual("Accepted", varianceAck.ProcessingStatus, "variance feedback should be accepted");
+    AssertEqual("Duplicate", duplicateAck.ProcessingStatus, "duplicate feedback should return duplicate ACK");
+    AssertEqual(2, ledger.Records.Count, "duplicate should not add another ledger record");
+    AssertTrue(ledger.Records.Any(item => item.RawPayload == planningJson), "ledger should preserve planning feedback raw payload");
+    AssertTrue(ledger.Records.Any(item => item.RawPayload == varianceJson), "ledger should preserve variance feedback raw payload");
+    AssertTrue(ledger.Records.All(item => item.Interpretation.ApprovedConfigurationChangeCount == 0), "feedback should not become approved master-setting changes");
 }
 
-static void TestGurobiOptimizationSolverToyProblem()
+static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
 {
-    var solver = new GurobiOptimizationSolver();
-    var problem = new OptimizationProblem(
-        "toy-problem",
-        "ServiceFirst",
-        1,
-        10,
-        100,
-        new[]
-        {
-            new OptimizationCandidate("low", "测试动作", "A", "A", 1, 0, 1, new OptimizationCandidateImpact("low", "测试动作", "A", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "低收益动作"),
-            new OptimizationCandidate("high", "测试动作", "B", "B", 10, 0, 1, new OptimizationCandidateImpact("high", "测试动作", "B", 0, 0, 0, 0, 0, 1, "测试成本", "测试约束", "可进入方案评审"), "测试约束", "可进入方案评审", new ScenarioRunParameterSet(), "高收益动作")
-        });
-    var result = solver.Solve(problem);
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
 
-    if (result.Status == OptimizationSolverStatus.Unavailable)
-    {
-        AssertContains(new[] { result.Message }, "Gurobi", "unavailable result should explain Gurobi availability");
-        return;
-    }
-
-    AssertTrue(result.Status is OptimizationSolverStatus.Optimal or OptimizationSolverStatus.Feasible, "toy problem should solve when Gurobi is available");
-    AssertContains(result.SelectedCandidateIds, "high", "solver should choose highest value candidate");
+    AssertTrue(program.Contains("AddSingleton<DdsopConfigInboundContractService>", StringComparison.Ordinal), "config contract service should be registered");
+    AssertTrue(program.Contains("AddSingleton<DdsopFeedbackInboundLedger>", StringComparison.Ordinal), "feedback ledger should be registered");
+    AssertTrue(program.Contains("AddSingleton<ProductionSupplierIdentitySourceInboundLedger>", StringComparison.Ordinal), "supplier identity ledger should be registered");
+    AssertTrue(program.Contains("AddSingleton<ProductionInventoryQualityInboundLedger>", StringComparison.Ordinal), "inventory quality ledger should be registered");
+    AssertTrue(program.Contains("AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>", StringComparison.Ordinal), "execution evidence ledger should be registered");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-config-inbound-v1", StringComparison.Ordinal), "config endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-feedback-outbound-v1", StringComparison.Ordinal), "feedback endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/production-supplier-identity-source-v1", StringComparison.Ordinal), "supplier identity endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1", StringComparison.Ordinal), "inventory quality endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1", StringComparison.Ordinal), "execution evidence endpoint should be exposed");
+    AssertTrue(!program.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "old scenario optimization endpoint should be removed from main");
+    AssertTrue(!program.Contains("ScenarioOptimizationService", StringComparison.Ordinal), "old scenario optimization service should not be registered");
+    AssertTrue(!program.Contains("IOptimizationSolver", StringComparison.Ordinal), "solver adapter should not be wired into DDS&OP main");
 }
 
 static void AssertEqual<T>(T expected, T actual, string label)
@@ -1352,33 +1404,6 @@ internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDa
     {
         LoadCount++;
         return _inner.Load(request);
-    }
-}
-
-internal sealed class CapturingOptimizationSolver : IOptimizationSolver
-{
-    public string SolverName => "FakeSolver";
-
-    public int CallCount { get; private set; }
-
-    public OptimizationProblem? LastProblem { get; private set; }
-
-    public OptimizationSolution Solve(OptimizationProblem problem)
-    {
-        CallCount++;
-        LastProblem = problem;
-        var selected = problem.Candidates
-            .OrderByDescending(candidate => candidate.ObjectiveValue)
-            .Take(Math.Max(1, Math.Min(problem.MaxSelectedCandidates, problem.Candidates.Count)))
-            .Select(candidate => candidate.CandidateId)
-            .ToList();
-
-        return new OptimizationSolution(
-            OptimizationSolverStatus.Optimal,
-            "FakeSolver",
-            "测试求解器已选择候选动作。",
-            selected.Count,
-            selected);
     }
 }
 
