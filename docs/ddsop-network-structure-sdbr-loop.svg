@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="760" viewBox="0 0 1480 760" role="img" aria-labelledby="title desc">
+  <title id="title">DDS&amp;OP、网络结构评分、SDBR 闭环关系</title>
+  <desc id="desc">从 DDS&amp;OP 到网络结构评分，再回到 DDS&amp;OP 白盒验证和主设置治理，批准后下发 SDBR，SDBR 反馈再回到 DDS&amp;OP 的闭环。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f4f7f8; }
+      .lane { fill: #ffffff; stroke: #d7e2e5; stroke-width: 2; }
+      .lane-title { font: 700 22px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #0f2a3d; }
+      .box { fill: #ffffff; stroke: #b8ccd1; stroke-width: 2; rx: 14; }
+      .box.ddsop { stroke: #0f766e; }
+      .box.network { stroke: #2563eb; }
+      .box.sdbr { stroke: #7c3aed; }
+      .box.audit { stroke: #b45309; }
+      .head { font: 700 19px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #102033; }
+      .text { font: 15px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #425466; }
+      .small { font: 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #5f7182; }
+      .tag { font: 700 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #0f766e; }
+      .tag-bg { fill: #e8f7f4; stroke: #9bd8d0; stroke-width: 1; rx: 10; }
+      .line { fill: none; stroke: #64748b; stroke-width: 2.5; marker-end: url(#arrow); }
+      .line.green { stroke: #0f766e; }
+      .line.blue { stroke: #2563eb; }
+      .line.purple { stroke: #7c3aed; }
+      .line.orange { stroke: #b45309; stroke-dasharray: 8 6; }
+      .label-bg { fill: #ffffff; stroke: #d7e2e5; stroke-width: 1; rx: 8; }
+      .label { font: 700 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .note { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.5; rx: 12; }
+      .note-title { font: 700 16px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #9a3412; }
+      .note-text { font: 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #7c2d12; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#64748b" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1480" height="760" />
+
+  <text x="50" y="50" class="lane-title">DDS&amp;OP 到网络结构评分再到 SDBR 的业务闭环</text>
+  <text x="50" y="78" class="text">网络结构评分只产生候选与证据，DDS&amp;OP 执行白盒验证、主设置治理和对 SDBR 的契约通信。</text>
+
+  <rect class="lane" x="40" y="120" width="1400" height="155" rx="18" />
+  <text x="64" y="154" class="lane-title">1. DDS&amp;OP 输入与治理意图</text>
+  <rect class="box ddsop" x="72" y="178" width="280" height="72" rx="14" />
+  <text x="96" y="207" class="head">业务上下文</text>
+  <text x="96" y="232" class="text">产品族、SKU、需求、预算、异常</text>
+
+  <rect class="box ddsop" x="405" y="178" width="290" height="72" rx="14" />
+  <text x="429" y="207" class="head">主数据快照</text>
+  <text x="429" y="232" class="text">BOM、routing、供应来源、库存位置</text>
+
+  <rect class="box ddsop" x="748" y="178" width="320" height="72" rx="14" />
+  <text x="772" y="207" class="head">治理目标</text>
+  <text x="772" y="232" class="text">服务、流速、现金、风险、产能平衡</text>
+
+  <rect class="box ddsop" x="1120" y="178" width="280" height="72" rx="14" />
+  <text x="1144" y="207" class="head">输入指令</text>
+  <text x="1144" y="232" class="text">请求网络评分与候选证据</text>
+
+  <path class="line green" d="M352 214 H405" />
+  <path class="line green" d="M695 214 H748" />
+  <path class="line green" d="M1068 214 H1120" />
+
+  <rect class="lane" x="40" y="310" width="1400" height="170" rx="18" />
+  <text x="64" y="344" class="lane-title">2. 网络结构评分工作台</text>
+  <rect class="box network" x="72" y="370" width="250" height="84" rx="14" />
+  <text x="96" y="400" class="head">物料网络展开</text>
+  <text x="96" y="425" class="text">上游、下游、路径、校验报告</text>
+
+  <rect class="box network" x="360" y="370" width="250" height="84" rx="14" />
+  <text x="384" y="400" class="head">网络指标计算</text>
+  <text x="384" y="425" class="text">覆盖度、数量、提前期、风险</text>
+
+  <rect class="box network" x="648" y="370" width="270" height="84" rx="14" />
+  <text x="672" y="400" class="head">候选建议</text>
+  <text x="672" y="425" class="text">解耦点、库存缓冲、时间缓冲</text>
+
+  <rect class="box network" x="956" y="370" width="270" height="84" rx="14" />
+  <text x="980" y="400" class="head">证据链</text>
+  <text x="980" y="425" class="text">BOM 行、供应来源、routing 行</text>
+
+  <rect class="box network" x="1260" y="370" width="140" height="84" rx="14" />
+  <text x="1284" y="400" class="head">输出</text>
+  <text x="1284" y="425" class="text">候选包</text>
+
+  <path class="line blue" d="M322 412 H360" />
+  <path class="line blue" d="M610 412 H648" />
+  <path class="line blue" d="M918 412 H956" />
+  <path class="line blue" d="M1226 412 H1260" />
+
+  <rect class="label-bg" x="1170" y="310" width="230" height="34" rx="8" />
+  <text x="1187" y="332" class="label">不直接下发 SDBR</text>
+
+  <path class="line blue" d="M1260 250 C1260 288, 1330 300, 1330 370" />
+  <rect class="label-bg" x="1190" y="283" width="180" height="32" rx="8" />
+  <text x="1204" y="305" class="label">评分请求</text>
+
+  <rect class="lane" x="40" y="515" width="1400" height="160" rx="18" />
+  <text x="64" y="549" class="lane-title">3. DDS&amp;OP 白盒验证、批准与 SDBR 执行反馈</text>
+
+  <rect class="box ddsop" x="72" y="575" width="240" height="76" rx="14" />
+  <text x="96" y="604" class="head">白盒场景回算</text>
+  <text x="96" y="629" class="text">库存、红区周、RCCP、供应缺口</text>
+
+  <rect class="box audit" x="356" y="575" width="240" height="76" rx="14" />
+  <text x="380" y="604" class="head">主设置治理</text>
+  <text x="380" y="629" class="text">评审、批准、审计链</text>
+
+  <rect class="box ddsop" x="640" y="575" width="245" height="76" rx="14" />
+  <text x="664" y="604" class="head">契约输出</text>
+  <text x="664" y="629" class="text">已批准配置 payload</text>
+
+  <rect class="box sdbr" x="930" y="575" width="220" height="76" rx="14" />
+  <text x="954" y="604" class="head">SDBR / DDOM</text>
+  <text x="954" y="629" class="text">排程、释放、执行反馈</text>
+
+  <rect class="box ddsop" x="1195" y="575" width="205" height="76" rx="14" />
+  <text x="1219" y="604" class="head">DDS&amp;OP 接收反馈</text>
+  <text x="1219" y="629" class="text">ACK、ledger、异常复核</text>
+
+  <path class="line green" d="M1330 454 C1330 508, 192 510, 192 575" />
+  <rect class="label-bg" x="680" y="486" width="210" height="32" rx="8" />
+  <text x="696" y="508" class="label">候选包返回 DDS&amp;OP</text>
+
+  <path class="line green" d="M312 613 H356" />
+  <path class="line orange" d="M596 613 H640" />
+  <path class="line purple" d="M885 613 H930" />
+  <path class="line purple" d="M1150 613 H1195" />
+
+  <path class="line orange" d="M1298 575 C1298 535, 1260 512, 1190 500 C1010 470, 785 500, 765 575" />
+  <rect class="label-bg" x="1030" y="493" width="190" height="32" rx="8" />
+  <text x="1044" y="515" class="label">反馈触发复核</text>
+
+  <rect class="note" x="72" y="690" width="1328" height="48" rx="12" />
+  <text x="96" y="720" class="note-title">边界原则：</text>
+  <text x="190" y="720" class="note-text">网络结构评分负责发现候选与解释证据；DDS&amp;OP 负责白盒验证、批准和契约通信；SDBR 只接收已批准配置并回传执行证据。</text>
+</svg>

@@ -150,18 +150,5 @@
                 </table>
             </div>
         </section>
-        <section id="candidate-action-combination-panel" class="network-scoring-block">
-            <div class="panel-heading compact-heading">
-                <div><span class="panel-kicker">组合选择器</span><h2>候选动作组合选择</h2></div>
-                <span id="candidate-combination-status" class="status-chip neutral">尚未选择</span>
-            </div>
-            <p class="muted-note">Gurobi / OR-Tools 只在已验证候选动作影响矩阵上选择组合；选中后必须回到白盒预览引擎重算，不自动采纳、不保存、不审批。</p>
-            <div class="network-actions">
-                <label class="inline-select"><span>求解器</span><select id="candidate-combination-solver-select"><option value="Gurobi">Gurobi</option><option value="OR-Tools">OR-Tools</option></select></label>
-                <button id="select-candidate-combinations" class="button secondary" type="button">选择候选组合</button>
-                <span class="muted-note">返回服务优先、库存资金优先、产能平衡优先三类组合。</span>
-            </div>
-            <div id="candidate-combination-list" class="candidate-combination-list"></div>
-        </section>
     </div>
 </section>
