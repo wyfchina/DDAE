@@ -3,6 +3,7 @@ const state = {
   filtered: null,
   preview: null,
   productFamilyDashboard: null,
+  publicDemoGoldenLoop: null,
   rccp: null,
   constraints: null,
   supplierCollaboration: null,
@@ -59,6 +60,7 @@ const previewControls = {
 
 const navigationHelp = {
   overview: "查看全局 KPI 与当前运行状态，判断本次场景工作台是否可用于会议评审。",
+  publicDemoGoldenLoop: "读取 PUBLIC-DEMO-GOLDEN-DATA-V1 文件化演示包，生成 DDAE 到 SDBR 的配置 payload，并解释 SDBR 回传 feedback。",
   productFamilyDashboard: "按产品族聚合查看服务、流速、库存、RCCP、供应缺口和预算偏差，避免默认陷入 SKU 明细。",
   networkScoring: "打开独立网络结构评分产品，基于已发布 BOM、供应来源、资源路线、库存位置和缓冲设置发现候选控制点与缓冲点。",
   dataReadiness: "核对主数据覆盖、筛选对象和采纳约束，确保场景输入口径一致。",
@@ -95,6 +97,8 @@ const ddmrpCompactLimit = 6;
 
 const collapsiblePanelConfigs = [
   { selector: "#data-readiness-panel .readiness-panel", defaultExpanded: true },
+  { selector: "#public-demo-golden-loop-panel .public-demo-card", defaultExpanded: false },
+  { selector: "#public-demo-golden-loop-panel .public-demo-card:first-of-type", defaultExpanded: true },
   { selector: "#product-family-dashboard-panel .product-family-block", defaultExpanded: false },
   { selector: "#product-family-dashboard-panel .product-family-block:first-of-type", defaultExpanded: true },
   { selector: "#product-family-dashboard-panel .product-family-detail", defaultExpanded: false },
@@ -425,6 +429,7 @@ function normalizeWorkspaceFlow() {
   const workspace = byId("workspace");
   const order = [
     "overview-panel",
+    "public-demo-golden-loop-panel",
     "product-family-dashboard-panel",
     "data-readiness-panel",
     "variance-panel",
@@ -2703,6 +2708,7 @@ function renderWorkspace() {
   const data = state.filtered;
 
   renderKpis(data);
+  renderPublicDemoGoldenLoop(state.publicDemoGoldenLoop);
   renderProductFamilyDashboard(state.productFamilyDashboard);
   renderReadiness(data);
   renderScenarioTemplates(data);
@@ -2731,6 +2737,251 @@ function activateTab(tabId) {
   document.querySelectorAll("[data-tab-panel]").forEach(panel => {
     panel.hidden = panel.id !== tabId;
   });
+}
+
+function renderPublicDemoGoldenLoop(workspace) {
+  if (!workspace) return;
+  const packageChip = byId("public-demo-package-chip");
+  packageChip.className = `status-chip ${workspace.packageChecksumMatches ? "is-valid" : "is-invalid"}`;
+  packageChip.textContent = workspace.packageChecksumMatches ? "数据包校验一致" : "数据包校验不一致";
+
+  byId("public-demo-kpis").innerHTML = [
+    ["数据包", workspace.packageAvailable ? "已读取" : "不可用", workspace.packagePath],
+    ["Package checksum", workspace.packageChecksumMatches ? "一致" : "不一致", workspace.expectedPackageChecksum],
+    ["MappingConfidence", workspace.mappingConfidence, "仅用于公开演示"],
+    ["物料 / 地点 / UOM", "PART-FPGA-SPACE / WH-ELEC-QA / EA", "Reviewed candidate mapping"],
+    ["DDAE handoff", workspace.handoff.payloadWritten ? "已写出" : "未写出", workspace.handoff.ddaeToSdbrPayloadPath],
+    ["SDBR feedback", `${workspace.feedback.filter(item => item.exists).length}/${workspace.feedback.length}`, "从约定 handoff 路径读取"],
+  ].map(([label, value, hint]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`).join("");
+
+  byId("public-demo-package-summary").innerHTML = [
+    ["PackageID", "PUBLIC-DEMO-GOLDEN-DATA-V1"],
+    ["受控标签", workspace.evidenceLabels.join(" / ")],
+    ["期望 checksum", workspace.expectedPackageChecksum],
+    ["manifest checksum", workspace.manifestPackageChecksum || "未读取"],
+    ["样例物料", workspace.packageContext.sampleItem || "未读取"],
+    ["样例地点", workspace.packageContext.sampleLocation || "未读取"],
+    ["样例数量", `${number(workspace.packageContext.sampleQuantity)} ${workspace.packageContext.sampleUom}`],
+    ["非声明", workspace.nonClaimsSummary],
+  ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+
+  byId("public-demo-package-file-body").innerHTML = workspace.packageFiles.map(item => row([
+    escapeHtml(item.fileName),
+    escapeHtml(item.role),
+    item.rowCount === null || item.rowCount === undefined ? "文本文件" : number(item.rowCount),
+    `<code>${escapeHtml((item.checksum || "").slice(0, 12))}</code>`,
+  ])).join("") || emptyRow("未读取到 package file role map", 4);
+
+  byId("public-demo-mapping-body").innerHTML = workspace.reviewedMappings.map(item => row([
+    `<strong>${escapeHtml(item.demoObject)}</strong>`,
+    escapeHtml(item.boundary),
+    escapeHtml(item.allowedUse),
+    escapeHtml(item.forbiddenUse),
+  ])).join("");
+
+  renderPublicDemoSchedulingAdapter(workspace.schedulingAdapter);
+  renderPublicDemoPayload(workspace.payloadPreview, workspace.handoff);
+  renderPublicDemoFeedback(workspace.feedback, workspace.nonClaimsSummary);
+  renderPublicDemoBusinessUserView(workspace);
+}
+
+function renderPublicDemoSchedulingAdapter(adapter) {
+  if (!adapter) return;
+  const chip = byId("public-demo-adapter-chip");
+  chip.className = "status-chip is-paused";
+  chip.textContent = "非 DDAE 执行权威";
+
+  byId("public-demo-scheduling-governance").innerHTML = [
+    ["适配器档案", adapter.adapterProfileID],
+    ["场景标签", adapter.scenarioLabel],
+    ["映射置信", adapter.mappingConfidence],
+    ["反馈边界", adapter.feedbackBoundary],
+  ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+
+  byId("public-demo-adapter-metadata-body").innerHTML = adapter.adapterMetadata.map(item => row([
+    `<code>${escapeHtml(item.fieldName)}</code>`,
+    escapeHtml(item.value),
+    escapeHtml(item.owner),
+    escapeHtml(item.ddaeUse),
+    escapeHtml(item.forbiddenUse),
+  ])).join("") || emptyRow("未读取到适配器元数据", 5);
+
+  const policyItems = adapter.governancePolicies.map(item => `
+    <div class="diagnostic-item">
+      <strong>${escapeHtml(item.policyArea)}</strong>
+      <span>${escapeHtml(item.ddaeResponsibility)}</span>
+      <small>${escapeHtml(item.evidenceFieldGroup)} / ${escapeHtml(item.ruleVersionID)}</small>
+    </div>
+  `).join("");
+  const boundaryItems = adapter.nonDdaeOwnedExecutionMetadata.map(item => `
+    <div class="diagnostic-item">
+      <strong>${escapeHtml(item.executionObject)}</strong>
+      <span>${escapeHtml(item.owner)}：${escapeHtml(item.ddaeDisplayUse)}</span>
+      <small>${escapeHtml(item.forbiddenUse)}</small>
+    </div>
+  `).join("");
+  byId("public-demo-adapter-boundary-list").innerHTML = `${policyItems}${boundaryItems}`;
+}
+
+function renderPublicDemoPayload(payload, handoff) {
+  if (!payload?.payload) return;
+  byId("public-demo-handoff-chip").className = `status-chip ${handoff.payloadWritten ? "is-valid" : "neutral"}`;
+  byId("public-demo-handoff-chip").textContent = handoff.payloadWritten ? "payload 已写出" : "payload 未写出";
+  byId("public-demo-payload-summary").innerHTML = [
+    ["ContractID", payload.contractID],
+    ["MessageID", payload.messageID],
+    ["OperatingModelConfigurationID", payload.payload.operatingModelConfigurationID],
+    ["Fingerprint", payload.payload.fingerprint],
+    ["写出路径", handoff.ddaeToSdbrPayloadPath],
+    ["写出时间", handoff.payloadWrittenAt || "尚未写出"],
+  ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  byId("public-demo-operating-model").textContent = JSON.stringify({
+    OperatingModelConfigurationID: payload.payload.operatingModelConfigurationID,
+    Status: payload.payload.status,
+    Scope: payload.payload.scope,
+    Approval: payload.payload.approval,
+    ChangeReason: payload.payload.changeReason,
+    Fingerprint: payload.payload.fingerprint,
+  }, null, 2);
+  byId("public-demo-scheduling").textContent = JSON.stringify(payload.payload.schedulingConfiguration, null, 2);
+  byId("public-demo-ddmrp").textContent = JSON.stringify(payload.payload.ddmrpConfiguration, null, 2);
+}
+
+function renderPublicDemoFeedback(feedback, nonClaimsSummary) {
+  byId("public-demo-feedback-body").innerHTML = feedback.map(item => row([
+    escapeHtml(item.feedbackName),
+    `<span class="status-chip ${item.exists ? "is-valid" : "neutral"}">${escapeHtml(item.processingStatus)}</span>`,
+    escapeHtml(item.messageID || "未回传"),
+    escapeHtml(item.planningRunID || "-"),
+    escapeHtml(item.operatingModelConfigurationID || "-"),
+    `<code>${escapeHtml((item.operatingModelFingerprint || "-").slice(0, 24))}</code>`,
+    escapeHtml([item.runStatus, item.solverStatus].filter(Boolean).join(" / ") || "-"),
+    escapeHtml([
+      item.overallStatus ? `总体 ${item.overallStatus}` : null,
+      item.reliabilityStatus ? `可靠 ${item.reliabilityStatus}` : null,
+      item.speedStatus ? `速度 ${item.speedStatus}` : null,
+      item.stabilityStatus ? `稳定 ${item.stabilityStatus}` : null,
+      item.validationStatus ? `验证 ${item.validationStatus}` : null,
+    ].filter(Boolean).join(" / ") || "-"),
+    escapeHtml(item.mappingConfidence || (item.labels || []).find(label => label.includes("MappingConfidence")) || "-"),
+    escapeHtml(item.message),
+  ])).join("");
+  byId("public-demo-non-claims").innerHTML = `
+    <div class="diagnostic-item">
+      <strong>非生产声明已保留</strong>
+      <span>${escapeHtml(nonClaimsSummary)}</span>
+      <span>不自动更新 DDAE 主数据、Operating Model、主设置、buffer、supplier-source facts、lead time、MOQ 或 order cycle。</span>
+    </div>`;
+}
+
+function renderPublicDemoBusinessUserView(workspace) {
+  const payload = workspace?.payloadPreview?.payload;
+  const scheduling = payload?.payload?.schedulingConfiguration;
+  const ddmrp = payload?.payload?.ddmrpConfiguration;
+  const operatingModel = payload?.payload;
+  const adapter = workspace?.schedulingAdapter;
+  const feedback = workspace?.feedback || [];
+  const planningFeedback = feedback.find(item => item.feedbackName === "PlanningRunFeedback");
+  const varianceFeedback = feedback.find(item => item.feedbackName === "VarianceAnalysisFeedback");
+  const validationSummary = feedback.find(item => item.feedbackName === "ValidationSummary");
+  const controlPoint = scheduling?.controlPoints?.[0];
+  const bufferPoint = ddmrp?.decouplingPoints?.[0];
+  const policies = adapter?.governancePolicies || [];
+  const materialMode = (adapter?.adapterMetadata || []).find(item => item.fieldName === "MaterialConstraintsMode")?.value || "OmittedForPublicDemo";
+
+  byId("public-demo-business-summary").innerHTML = [
+    {
+      step: "1",
+      title: "当前业务场景",
+      body: "公开演示关注一个关键进口空间级 FPGA 在电子质检库存点的受控可用性。业务上它代表星载电子链路中的关键长周期物料，适合用来说明 DDS&OP 参数发布和 SDBR 评审反馈如何衔接。",
+      trace: [
+        `关键对象：${bufferPoint?.itemID || "PART-FPGA-SPACE"} / ${bufferPoint?.locationID || "WH-ELEC-QA"} / ${bufferPoint?.uom || "EA"}`,
+        `映射置信：${workspace.mappingConfidence || "PublicDemoOnly"}`,
+      ],
+    },
+    {
+      step: "2",
+      title: "DDAE 批准了什么",
+      body: "DDAE 批准的是运营模型、DDMRP 缓冲治理和排程治理口径。它表达计划意图和约束边界，不发布 SDBR 的可执行工艺路线、工序时长或资源日历。",
+      trace: [
+        `Operating Model：${operatingModel?.operatingModelConfigurationID || "-"}`,
+        `DDMRP：${ddmrp?.ddmrpConfigurationID || "-"}`,
+        `控制点：${controlPoint?.resourceID || "WH-ELEC-QA"}`,
+        `治理策略：${policies.map(item => item.policyArea).join("、") || "控制点、资源角色、释放策略、时间缓冲、优先级、计划窗口"}`,
+      ],
+    },
+    {
+      step: "3",
+      title: "DDAE 交付给 SDBR 什么",
+      body: "DDAE 交付的是受控的配置 payload 和 runtime planning input。SDBR 可以读取它们作为演示级计划输入，但不能把它们当作 DDAE 对可执行 routing 或生产排程能力的授权。",
+      trace: [
+        "DDSOP-CONFIG-INBOUND-V1",
+        "DDSOP-RUNTIME-PLANNING-INPUT-V1",
+        `MaterialConstraintsMode：${materialMode}`,
+        "MaterialConstraints[]：空列表",
+      ],
+    },
+    {
+      step: "4",
+      title: "SDBR 反馈对 DDAE 意味着什么",
+      body: "Planning Run 反馈说明 SDBR 是否能消费本次受控输入；Variance Analysis 反馈说明演示链路的稳定性、速度和可靠性状态。DDAE 把这些结果作为治理评审上下文，而不是自动批准新的主设置。",
+      trace: [
+        `Planning Run：${planningFeedback?.planningRunID || "等待回传"}`,
+        `运行状态：${[planningFeedback?.runStatus, planningFeedback?.solverStatus].filter(Boolean).join(" / ") || "-"}`,
+        `偏差状态：${[varianceFeedback?.overallStatus, validationSummary?.validationStatus].filter(Boolean).join(" / ") || "-"}`,
+      ],
+    },
+  ].map(item => `
+    <article class="business-demo-step">
+      <span>${escapeHtml(item.step)}</span>
+      <div>
+        <h3>${escapeHtml(item.title)}</h3>
+        <p>${escapeHtml(item.body)}</p>
+        <ul>${item.trace.map(trace => `<li>${escapeHtml(trace)}</li>`).join("")}</ul>
+      </div>
+    </article>
+  `).join("");
+
+  byId("public-demo-business-boundary").innerHTML = [
+    "不是 ProductionValidated。",
+    "不是 Business Golden Loop Readiness。",
+    "SDBR feedback 不会自动修改 DDAE 已批准主设置。",
+    "没有生产级物料可行性声明。",
+    "DDAE 不拥有 SDBR 可执行 routing、工序时长、资源日历或工单执行状态。",
+  ].map(item => `<span>${escapeHtml(item)}</span>`).join("");
+}
+
+async function loadPublicDemoGoldenLoop() {
+  const response = await fetch("/api/public-demo-golden-loop", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`公开演示闭环接口失败：${response.status}`);
+  }
+
+  state.publicDemoGoldenLoop = await response.json();
+  renderPublicDemoGoldenLoop(state.publicDemoGoldenLoop);
+}
+
+async function writePublicDemoPayload() {
+  const status = byId("public-demo-handoff-chip");
+  status.className = "status-chip is-warning";
+  status.textContent = "正在写出";
+  const response = await fetch("/api/public-demo-golden-loop/write-payload", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`公开演示 payload 写出失败：${response.status}`);
+  }
+
+  const result = await response.json();
+  state.publicDemoGoldenLoop = {
+    ...state.publicDemoGoldenLoop,
+    payloadPreview: result.payload,
+    handoff: result.handoff,
+  };
+  renderPublicDemoGoldenLoop(state.publicDemoGoldenLoop);
 }
 
 async function loadWorkspace() {
@@ -2801,6 +3052,7 @@ async function loadWorkspace() {
     throw new Error(`主设置治理工作台接口失败：${masterSettingsResponse.status}`);
   }
   state.masterSettings = await masterSettingsResponse.json();
+  await loadPublicDemoGoldenLoop();
   configureFilters(state.data);
   configurePreviewControls(state.data);
   await loadSavedScenarioRuns();
@@ -3079,6 +3331,18 @@ byId("ddmrp-missing-only").addEventListener("click", () => {
 
 byId("refresh-workspace").addEventListener("click", () => {
   loadWorkspace().catch(showWorkspaceError);
+});
+
+byId("refresh-public-demo").addEventListener("click", () => {
+  loadPublicDemoGoldenLoop().catch(showWorkspaceError);
+});
+
+byId("write-public-demo-payload").addEventListener("click", () => {
+  writePublicDemoPayload().catch(error => {
+    byId("public-demo-handoff-chip").className = "status-chip is-invalid";
+    byId("public-demo-handoff-chip").textContent = "写出失败";
+    showWorkspaceError(error);
+  });
 });
 
 byId("run-preview").addEventListener("click", () => {

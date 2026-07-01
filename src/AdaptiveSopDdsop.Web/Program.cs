@@ -13,6 +13,9 @@ builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
 builder.Services.AddSingleton<DdsopConfigInboundContractService>();
 builder.Services.AddSingleton<DdsopFeedbackInboundLedger>();
+builder.Services.AddSingleton<DdsopRuntimePlanningInputContractService>();
+builder.Services.AddSingleton<DdsopRuntimeDeliveryLedger>();
+builder.Services.AddSingleton<PublicDemoGoldenLoopService>();
 builder.Services.AddSingleton<ProductionSupplierIdentitySourceInboundLedger>();
 builder.Services.AddSingleton<ProductionInventoryQualityInboundLedger>();
 builder.Services.AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>();
@@ -108,6 +111,55 @@ app.MapGet("/api/integration-contracts/ddsop-config-inbound-v1", (
     return Results.Json(message, DdsopConfigInboundContractService.ContractJsonOptions);
 });
 
+app.MapGet("/api/integration-contracts/ddsop-runtime-planning-input-v1", (
+    int? horizonWeeks,
+    string? approvedBy,
+    string? sourceScenarioRunId,
+    string? changeTicketId,
+    string? packageStatus,
+    string? executionMode,
+    string? mappingConfidence,
+    string? scenarioLabel,
+    DdsopRuntimePlanningInputContractService service,
+    DdsopRuntimeDeliveryLedger deliveryLedger) =>
+{
+    var message = service.Build(new DdsopRuntimePlanningInputRequest(
+        horizonWeeks.GetValueOrDefault(12),
+        new DateOnly(2026, 6, 1),
+        approvedBy,
+        sourceScenarioRunId,
+        changeTicketId,
+        PackageStatus: string.IsNullOrWhiteSpace(packageStatus) ? "Reviewed" : packageStatus,
+        ExecutionMode: string.IsNullOrWhiteSpace(executionMode) ? "DDMRPAndBoundedScheduling" : executionMode,
+        MappingConfidence: string.IsNullOrWhiteSpace(mappingConfidence) ? "PublicDemoOnly" : mappingConfidence,
+        ScenarioLabel: string.IsNullOrWhiteSpace(scenarioLabel) ? "ControlledContractGoldenLoopDemo" : scenarioLabel));
+    deliveryLedger.RegisterPackage(message);
+    return Results.Json(message, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapPost("/api/integration-contracts/ddsop-runtime-planning-input-v1/{deliveryLedgerCorrelationId}/feedback", async (
+    string deliveryLedgerCorrelationId,
+    HttpRequest request,
+    DdsopFeedbackInboundLedger feedbackLedger,
+    DdsopRuntimeDeliveryLedger deliveryLedger) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var rawPayload = await reader.ReadToEndAsync();
+    var ack = feedbackLedger.Accept(rawPayload);
+    var record = feedbackLedger.Records.FirstOrDefault(item => item.IdempotencyKey == ack.IdempotencyKey);
+    if (record is not null)
+    {
+        deliveryLedger.CorrelateFeedback(deliveryLedgerCorrelationId, record);
+    }
+
+    return Results.Json(ack, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/integration-contracts/ddsop-runtime-planning-input-v1/ledger", (DdsopRuntimeDeliveryLedger deliveryLedger) =>
+{
+    return Results.Json(deliveryLedger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
 app.MapPost("/api/integration-contracts/ddsop-feedback-outbound-v1", async (
     HttpRequest request,
     DdsopFeedbackInboundLedger ledger) =>
@@ -121,6 +173,16 @@ app.MapPost("/api/integration-contracts/ddsop-feedback-outbound-v1", async (
 app.MapGet("/api/integration-contracts/ddsop-feedback-outbound-v1/ledger", (DdsopFeedbackInboundLedger ledger) =>
 {
     return Results.Json(ledger.Records, DdsopConfigInboundContractService.ContractJsonOptions);
+});
+
+app.MapGet("/api/public-demo-golden-loop", (PublicDemoGoldenLoopService service) =>
+{
+    return Results.Ok(service.GetWorkspace());
+});
+
+app.MapPost("/api/public-demo-golden-loop/write-payload", (PublicDemoGoldenLoopService service) =>
+{
+    return Results.Ok(service.WritePayload());
 });
 
 app.MapPost("/api/integration-contracts/production-supplier-identity-source-v1", async (

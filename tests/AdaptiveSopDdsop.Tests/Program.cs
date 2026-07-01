@@ -1,5 +1,6 @@
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
+using System.Text.Json;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -48,6 +49,10 @@ var tests = new (string Name, Action Run)[]
     ("Exception workspace detects variance signals and scenario presets", TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets),
     ("DDSOP-CONFIG-INBOUND-V1 payload and ACK interpreter stay contract-shaped", TestDdsopConfigInboundPayloadAndAckInterpreter),
     ("DDSOP-FEEDBACK-OUTBOUND-V1 ledger accepts SDBR fixture feedback without governance mutation", TestDdsopFeedbackInboundLedgerAcceptsSdbrFixtures),
+    ("DDSOP-RUNTIME-PLANNING-INPUT-V1 generates DDAE-owned runtime package", TestDdsopRuntimePlanningInputGeneratesDdaeOwnedPackage),
+    ("AdventureWorks scheduling adapter metadata stays non-DDAE-owned", TestAdventureWorksSchedulingAdapterMetadataStaysNonDdaeOwned),
+    ("DDSOP-RUNTIME-PLANNING-INPUT-V1 correlates feedback through delivery ledger", TestDdsopRuntimePlanningInputCorrelatesFeedback),
+    ("PUBLIC-DEMO-GOLDEN-DATA-V1 demo service writes handoff payload without production claims", TestPublicDemoGoldenLoopServiceWritesHandoffPayload),
     ("SDBR integration contract endpoints are exposed and old optimization endpoint is removed", TestIntegrationContractEndpointsAndRemovedOptimizationPath),
 };
 
@@ -216,6 +221,20 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(page.Contains("id=\"network-structure-entry-card\"", StringComparison.Ordinal), "DDS&OP main should expose a minimal network structure scoring entry card");
     AssertTrue(page.Contains("打开网络结构评分工作台", StringComparison.Ordinal), "network entry card should link to the independent product workspace");
     AssertTrue(page.Contains("只选择候选动作组合", StringComparison.Ordinal), "network entry card should explain candidate action combination selection");
+    AssertTrue(page.Contains("id=\"public-demo-golden-loop-panel\"", StringComparison.Ordinal), "homepage should expose public demo golden loop panel");
+    AssertTrue(page.Contains("公开演示闭环", StringComparison.Ordinal), "homepage should expose public demo golden loop navigation label");
+    AssertTrue(page.IndexOf("href=\"#public-demo-golden-loop-panel\"", StringComparison.Ordinal) > page.IndexOf("href=\"#trace-panel\"", StringComparison.Ordinal), "public demo navigation item should be last in the left navigation");
+    AssertTrue(page.Contains("DemoFixture / ReviewedEvidence / Controlled Contract Golden Loop Demo / MappingConfidence = PublicDemoOnly", StringComparison.Ordinal), "public demo panel should show required evidence labels");
+    AssertTrue(page.Contains("id=\"write-public-demo-payload\"", StringComparison.Ordinal), "public demo panel should expose payload handoff button");
+    AssertTrue(page.Contains("id=\"public-demo-feedback-body\"", StringComparison.Ordinal), "public demo panel should expose feedback interpretation table");
+    AssertTrue(page.Contains("id=\"public-demo-scheduling-governance\"", StringComparison.Ordinal), "public demo panel should expose scheduling governance adapter read model");
+    AssertTrue(page.Contains("id=\"public-demo-adapter-metadata-body\"", StringComparison.Ordinal), "public demo panel should expose adapter metadata table");
+    AssertTrue(page.Contains("id=\"public-demo-adapter-boundary-list\"", StringComparison.Ordinal), "public demo panel should expose adapter boundary list");
+    AssertTrue(page.Contains("排程治理与适配器审计", StringComparison.Ordinal), "public demo panel should expose scheduling governance audit label");
+    AssertTrue(page.Contains("非 DDAE 执行权威", StringComparison.Ordinal), "public demo panel should label adapter metadata as non-DDAE-owned");
+    AssertTrue(page.Contains("id=\"public-demo-business-user-view\"", StringComparison.Ordinal), "public demo panel should expose bottom business user demo view");
+    AssertTrue(page.Contains("业务用户演示视图", StringComparison.Ordinal), "public demo panel should label the business user view");
+    AssertTrue(page.Contains("从 DDS&OP 治理到 SDBR 评审反馈", StringComparison.Ordinal), "public demo business view should explain governance to feedback flow");
     AssertTrue(!page.Contains("id=\"optimization-panel\"", StringComparison.Ordinal), "old scenario optimization panel should be removed from DDS&OP main");
     AssertTrue(!page.Contains("id=\"optimization-solver-select\"", StringComparison.Ordinal), "old solver selector should not remain in scenario run");
     AssertTrue(!page.Contains("id=\"run-optimization\"", StringComparison.Ordinal), "old optimization button should be removed from scenario run");
@@ -1319,6 +1338,315 @@ static void TestDdsopFeedbackInboundLedgerAcceptsSdbrFixtures()
     AssertTrue(ledger.Records.All(item => item.Interpretation.ApprovedConfigurationChangeCount == 0), "feedback should not become approved master-setting changes");
 }
 
+static void TestDdsopRuntimePlanningInputGeneratesDdaeOwnedPackage()
+{
+    var configService = new DdsopConfigInboundContractService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var service = new DdsopRuntimePlanningInputContractService(configService);
+    var message = service.Build(new DdsopRuntimePlanningInputRequest(
+        12,
+        new DateOnly(2026, 6, 26),
+        "S&OP 经理",
+        "SR-20260626-0001",
+        "CHG-20260626-001"));
+    var refs = message.Payload.ParameterAuthorityEvidence.ParameterEvidenceRefs;
+    var fieldGroups = refs.Select(item => item.FieldGroup).ToHashSet(StringComparer.Ordinal);
+    var json = JsonSerializer.Serialize(message, DdsopConfigInboundContractService.ContractJsonOptions);
+
+    AssertEqual("DDSOP-RUNTIME-PLANNING-INPUT-V1", message.ContractID, "runtime planning input contract id");
+    AssertEqual("0.1.0-draft", message.ContractVersion, "runtime planning input contract version");
+    AssertTrue(message.TargetSystem.Contains("SDBR"), "runtime planning input should target SDBR");
+    AssertEqual("RuntimePlanningInputPackagePublished", message.MessageType, "runtime package message type");
+    AssertEqual("Reviewed", message.Payload.PackageIdentity.PackageStatus, "package status should be reviewed by default");
+    AssertEqual("DDMRPAndBoundedScheduling", message.Payload.PackageIdentity.ExecutionMode, "default execution mode");
+    AssertEqual("PublicDemoOnly", message.Payload.PackageIdentity.MappingConfidence, "default mapping confidence");
+    AssertEqual("ControlledContractGoldenLoopDemo", message.Payload.PackageIdentity.ScenarioLabel, "default scenario label");
+    AssertEqual("DDSOP-CONFIG-INBOUND-V1", message.Payload.FrozenDdsopConfiguration.SourceConfigurationContractID, "source configuration contract id");
+    AssertTrue(message.Payload.FrozenDdsopConfiguration.OperatingModelFingerprint.StartsWith("sha256:", StringComparison.Ordinal), "frozen fingerprint");
+    AssertEqual("DDAE-DDMRP-FORMULA-V1", message.Payload.ParameterAuthorityEvidence.DDMRPFormulaVersionID, "DDMRP formula version");
+    AssertEqual("DDAE-SCHEDULING-RULE-V1", message.Payload.ParameterAuthorityEvidence.SchedulingRuleVersionID, "scheduling rule version");
+
+    foreach (var required in new[]
+             {
+                 "ADU", "DLT", "VariabilityFactor", "MOQ", "OrderCycle", "BufferZones", "DecouplingPoint",
+                 "BufferProfile", "UOM", "AdjustmentFactor", "ControlPoint", "TimeBuffer", "ResourcePolicy",
+                 "CalendarPolicy", "ReleasePolicy"
+             })
+    {
+        AssertTrue(fieldGroups.Contains(required), $"parameter authority evidence should cover {required}");
+    }
+
+    AssertTrue(refs.All(item => item.ProductionAuthorityStatus == "PublicDemoOnly"), "parameter evidence should stay public demo only");
+    AssertTrue(message.Payload.ConsumerRules.ReadOnlyFrozenInputs.Contains("OPERATING_MODEL_CONFIGURATION_ID"), "consumer rules should freeze OMC id");
+    AssertTrue(message.Payload.ConsumerRules.ReadOnlyFrozenInputs.Contains("DDMRP_DLT_MOQ_ORDER_CYCLE"), "consumer rules should freeze DDMRP policy");
+    AssertTrue(message.Payload.ConsumerRules.SDBRDerivedRuntimeSignals.Contains("SCHEDULE_FEASIBILITY"), "consumer rules should allow SDBR schedule feasibility signals");
+    AssertTrue(message.Payload.ConsumerRules.ForbiddenMutations.Contains("PROMOTE_RUNTIME_FEEDBACK_TO_APPROVED_MASTER_SETTING"), "consumer rules should forbid feedback promotion");
+    AssertEqual("DDSOP-FEEDBACK-OUTBOUND-V1", message.Payload.OutputExpectations.FeedbackContractID, "feedback expectation contract id");
+    AssertEqual("DeliveryLedger", message.Payload.OutputExpectations.FeedbackCorrelationMode, "feedback correlation mode");
+    AssertTrue(message.Payload.RuntimeEvidenceSnapshot is not null, "DDMRP execution should include runtime evidence");
+    AssertTrue(message.Payload.ExecutableSchedulingInputs is not null, "bounded scheduling execution should include executable inputs");
+    AssertEqual("ADVENTUREWORKS-BOUNDED-SCHEDULING-ADAPTER-PROFILE-V1", message.Payload.ExecutableSchedulingInputs!.AdapterProfileID, "AdventureWorks adapter profile id");
+    AssertEqual("AW-CAPACITY-UNIT-FIXTURE-ONE-UNIT-PER-RESOURCE-WINDOW", message.Payload.ExecutableSchedulingInputs.CapacityUnitNormalizationRuleID, "capacity normalization rule");
+    AssertEqual("OmittedForPublicDemo", message.Payload.ExecutableSchedulingInputs.MaterialConstraintsMode, "material constraints mode");
+    AssertEqual("NoSetupRulesApplied", message.Payload.ExecutableSchedulingInputs.SetupChangeoverMode, "setup changeover mode");
+    AssertTrue(message.Payload.RuntimeEvidenceSnapshot!.InventoryPositions.All(item => item.EvidenceRefs.Count > 0), "inventory evidence refs");
+    AssertTrue(message.Payload.ExecutableSchedulingInputs.WorkOrders.All(item => item.EvidenceRefs.Count > 0), "work order evidence refs");
+    AssertTrue(message.Payload.ExecutableSchedulingInputs.ResourceCalendars.All(item => item.EvidenceRefs.Any(evidence => evidence.SourceAuthority.Contains("SDBR public demo calendar fixture", StringComparison.Ordinal))), "resource calendars should be marked as SDBR-owned fixture evidence");
+    AssertEqual(0, message.Payload.ExecutableSchedulingInputs.MaterialConstraints.Count, "active public demo should omit material constraints");
+    AssertTrue(!json.Contains("IncludedWithPublicDemoEvidence", StringComparison.Ordinal), "runtime package should not display candidate material evidence as active mode");
+    AssertTrue(!json.Contains("ProductionValidated", StringComparison.Ordinal), "runtime package should not claim production validation");
+    AssertTrue(!json.Contains("Business Golden Loop Readiness", StringComparison.Ordinal), "runtime package should not claim business golden loop readiness");
+}
+
+static void TestAdventureWorksSchedulingAdapterMetadataStaysNonDdaeOwned()
+{
+    var service = new PublicDemoGoldenLoopService(new PublicDemoGoldenLoopOptions(
+        Path.GetTempPath(),
+        "unused",
+        Path.Combine(Path.GetTempPath(), "unused-ddae-to-sdbr.json"),
+        Path.Combine(Path.GetTempPath(), "unused-planning-feedback.json"),
+        Path.Combine(Path.GetTempPath(), "unused-variance-feedback.json"),
+        Path.Combine(Path.GetTempPath(), "unused-validation-summary.json")));
+
+    var workspace = service.GetWorkspace();
+    var adapter = workspace.SchedulingAdapter;
+
+    AssertEqual("ADVENTUREWORKS-BOUNDED-SCHEDULING-ADAPTER-PROFILE-V1", adapter.AdapterProfileID, "adapter profile read model");
+    AssertEqual("PublicDemoOnly", adapter.MappingConfidence, "adapter mapping confidence");
+    AssertTrue(adapter.GovernancePolicies.Any(item => item.PolicyArea == "控制点策略" && item.DdaeResponsibility.Contains("治理意图", StringComparison.Ordinal)), "DDAE should publish control point governance policy");
+    AssertTrue(adapter.AdapterMetadata.Any(item => item.FieldName == "AdapterProfileID" && item.ForbiddenUse.Contains("DDAE executable routing authority", StringComparison.Ordinal)), "adapter metadata should forbid DDAE executable routing authority");
+    AssertTrue(adapter.AdapterMetadata.Any(item => item.FieldName == "MaterialConstraintsMode" && item.Value == "OmittedForPublicDemo" && item.ForbiddenUse.Contains("active material-feasible scheduling", StringComparison.Ordinal)), "active material constraints mode should be omitted and non-authoritative");
+    AssertTrue(adapter.NonDdaeOwnedExecutionMetadata.Any(item => item.ExecutionObject.Contains("资源日历", StringComparison.Ordinal) && item.ForbiddenUse.Contains("must not author executable calendars", StringComparison.Ordinal)), "resource calendars should stay non-DDAE-owned");
+    AssertTrue(adapter.FeedbackBoundary.Contains("cannot mutate approved DDAE operating model", StringComparison.Ordinal), "feedback should stay governance context");
+}
+
+static void TestDdsopRuntimePlanningInputCorrelatesFeedback()
+{
+    var configService = new DdsopConfigInboundContractService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var service = new DdsopRuntimePlanningInputContractService(configService);
+    var message = service.Build(new DdsopRuntimePlanningInputRequest(12, new DateOnly(2026, 6, 26)));
+    var runtimeLedger = new DdsopRuntimeDeliveryLedger();
+    var feedbackLedger = new DdsopFeedbackInboundLedger();
+    var deliveryId = message.Payload.OutputExpectations.DeliveryLedgerCorrelationID;
+    runtimeLedger.RegisterPackage(message);
+
+    var feedbackJson = $$"""
+        {
+          "ContractID": "DDSOP-FEEDBACK-OUTBOUND-V1",
+          "ContractVersion": "1.0.0",
+          "MessageID": "SDBR-MSG-RPI-FEEDBACK-001",
+          "MessageType": "PlanningRunFeedbackPublished",
+          "SourceSystem": "SDBR",
+          "TargetSystem": "DDAE",
+          "IdempotencyKey": "SDBR:RPI-FEEDBACK:001",
+          "Payload": {
+            "FeedbackType": "PlanningRunFeedback",
+            "PlanningRunID": "SDBR-RUN-RPI-001",
+            "OperatingModelConfigurationID": "{{message.Payload.FrozenDdsopConfiguration.OperatingModelConfigurationID}}",
+            "OperatingModelFingerprint": "{{message.Payload.FrozenDdsopConfiguration.OperatingModelFingerprint}}",
+            "MasterDataVersionID": "PUBLIC-DEMO-GOLDEN-DATA-V1",
+            "OperationalStateSnapshotID": "DDAE-OPS-SNAPSHOT-RPI-001",
+            "RunStatus": "Completed",
+            "SolverStatus": "Feasible",
+            "OperationalMetrics": { "OverallStatus": "Green" },
+            "RecommendedDDSOPReviewTopics": [
+              { "Topic": "Review buffer policy", "IsApprovedConfigurationChange": false }
+            ],
+            "DataCoverageIssues": []
+          }
+        }
+        """;
+    var ack = feedbackLedger.Accept(feedbackJson);
+    var record = feedbackLedger.Records.Single(item => item.IdempotencyKey == ack.IdempotencyKey);
+    var correlated = runtimeLedger.CorrelateFeedback(deliveryId, record);
+
+    AssertEqual("Accepted", ack.ProcessingStatus, "runtime feedback should be accepted");
+    AssertTrue(correlated is not null, "runtime ledger should correlate feedback by delivery id");
+    AssertEqual(message.Payload.PackageIdentity.RuntimePlanningInputPackageID, correlated!.RuntimePlanningInputPackageID, "runtime package id should stay on ledger");
+    AssertEqual(1, correlated.FeedbackCorrelations.Count, "one feedback correlation should be recorded");
+    AssertEqual("SDBR-RUN-RPI-001", correlated.FeedbackCorrelations[0].PlanningRunID, "planning run should be correlated");
+    AssertEqual(0, feedbackLedger.Records.Single().Interpretation.ApprovedConfigurationChangeCount, "feedback should remain review context");
+}
+
+static void TestPublicDemoGoldenLoopServiceWritesHandoffPayload()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ddae-public-demo-{Guid.NewGuid():N}");
+    var handoffRoot = Path.Combine(root, "handoff");
+    Directory.CreateDirectory(root);
+    try
+    {
+        WriteJson(root, "manifest.json", """
+            {
+              "PackageID": "PUBLIC-DEMO-GOLDEN-DATA-V1",
+              "PackageChecksum": "test-checksum",
+              "PackageFrozenAt": "2026-06-29T16:48:06+08:00",
+              "FileRoleMap": {
+                "items.json": "Demo item/product master proxy",
+                "locations.json": "Demo location/work-center/resource proxy",
+                "item-locations.json": "Demo item-location and quantity proxy",
+                "uoms.json": "Demo UOM and item-UOM proxy",
+                "boms.json": "Demo material-structure proxy",
+                "work-orders.json": "Demo work-order proxy",
+                "routings.json": "Demo routing/operation proxy",
+                "capacities.json": "Demo capacity/calendar proxy",
+                "crosswalk.json": "Demo DDAE/SDBR object crosswalk",
+                "non-claims.md": "Package-level non-claims"
+              },
+              "RowCountsByFile": {
+                "items.json": 1,
+                "locations.json": 1,
+                "item-locations.json": 1,
+                "uoms.json": 1,
+                "boms.json": 1,
+                "work-orders.json": 1,
+                "routings.json": 1,
+                "capacities.json": 1,
+                "crosswalk.json": 1,
+                "non-claims.md": null
+              },
+              "ChecksumsByFile": {
+                "items.json": "i",
+                "locations.json": "l",
+                "item-locations.json": "il",
+                "uoms.json": "u",
+                "boms.json": "b",
+                "work-orders.json": "w",
+                "routings.json": "r",
+                "capacities.json": "c",
+                "crosswalk.json": "x",
+                "non-claims.md": "n"
+              }
+            }
+            """);
+        WriteJson(root, "items.json", """[{ "DemoItemID": "AW-PRODUCT-1", "Name": "Adjustable Race" }]""");
+        WriteJson(root, "locations.json", """[{ "DemoLocationID": "AW-LOCATION-1", "Name": "Tool Crib" }]""");
+        WriteJson(root, "item-locations.json", """[{ "DemoItemID": "AW-PRODUCT-1", "DemoLocationID": "AW-LOCATION-1", "Quantity": 408, "QuantityUom": "EA" }]""");
+        WriteJson(root, "capacities.json", """[{ "DemoLocationID": "AW-LOCATION-1", "Availability": 96.0 }]""");
+        foreach (var file in new[] { "uoms.json", "boms.json", "work-orders.json", "routings.json", "crosswalk.json" })
+        {
+            WriteJson(root, file, "[]");
+        }
+
+        File.WriteAllText(Path.Combine(root, "non-claims.md"), "No production validation confidence");
+        var options = new PublicDemoGoldenLoopOptions(
+            root,
+            "test-checksum",
+            Path.Combine(handoffRoot, "ddae-to-sdbr", "ddsop-config-inbound-v1-payload.json"),
+            Path.Combine(handoffRoot, "sdbr-to-ddae", "planning-run-feedback.json"),
+            Path.Combine(handoffRoot, "sdbr-to-ddae", "variance-analysis-feedback.json"),
+            Path.Combine(handoffRoot, "sdbr-to-ddae", "validation-summary.json"));
+        var service = new PublicDemoGoldenLoopService(options);
+
+        var workspace = service.GetWorkspace();
+        var write = service.WritePayload();
+        var payloadJson = File.ReadAllText(options.DdaeToSdbrPayloadPath);
+
+        AssertTrue(workspace.PackageChecksumMatches, "public demo package checksum should match expected checksum");
+        AssertEqual("PublicDemoOnly", workspace.MappingConfidence, "public demo mapping confidence");
+        AssertEqual("ADVENTUREWORKS-BOUNDED-SCHEDULING-ADAPTER-PROFILE-V1", workspace.SchedulingAdapter.AdapterProfileID, "public demo should expose AdventureWorks adapter profile");
+        AssertTrue(workspace.SchedulingAdapter.AdapterMetadata.Any(item => item.FieldName == "MaterialConstraintsMode" && item.Value == "OmittedForPublicDemo" && item.ForbiddenUse.Contains("active material-feasible scheduling", StringComparison.Ordinal)), "public demo adapter metadata should keep active material feasibility out of DDAE authority");
+        AssertTrue(workspace.SchedulingAdapter.NonDdaeOwnedExecutionMetadata.Any(item => item.ExecutionObject.Contains("可执行 routing", StringComparison.Ordinal)), "public demo should explain executable routing is non-DDAE-owned");
+        AssertEqual("DDSOP-CONFIG-INBOUND-V1", write.Payload.ContractID, "public demo payload contract id");
+        AssertEqual("DDSOP-OMC-PUBLIC-DEMO-V1", write.Payload.Payload.OperatingModelConfigurationID, "public demo OMC id");
+        AssertEqual("MODEL_RESTRUCTURE", write.Payload.Payload.ChangeReason.ReasonCode, "public demo change reason should use schema enum");
+        AssertTrue(write.Payload.Payload.ChangeReason.Description.Contains("DemoFixture / ReviewedEvidence / Controlled Contract Golden Loop Demo / MappingConfidence = PublicDemoOnly", StringComparison.Ordinal), "public demo labels should stay in change reason description");
+        AssertTrue(write.Payload.Payload.SchedulingConfiguration.ControlPoints.Any(item => item.ResourceID == "WH-ELEC-QA"), "public demo payload should include reviewed location control point");
+        AssertTrue(write.Payload.Payload.DDMRPConfiguration.DecouplingPoints.Any(item => item.ItemID == "PART-FPGA-SPACE" && item.LocationID == "WH-ELEC-QA"), "public demo payload should include reviewed item-location decoupling point");
+        AssertTrue(File.Exists(options.DdaeToSdbrPayloadPath), "public demo payload should be written to handoff path");
+        AssertTrue(!payloadJson.Contains("CONTROLLED_CONTRACT_DEMO", StringComparison.Ordinal), "public demo payload should not use invalid reason code");
+        AssertTrue(!payloadJson.Contains("ProductionValidated", StringComparison.Ordinal), "public demo payload should not claim ProductionValidated");
+        AssertTrue(!payloadJson.Contains("Business Golden Loop Readiness", StringComparison.Ordinal), "public demo payload should not claim Business Golden Loop readiness");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(options.PlanningRunFeedbackPath)!);
+        File.WriteAllText(options.PlanningRunFeedbackPath, """
+            {
+              "ContractID": "DDSOP-FEEDBACK-OUTBOUND-V1",
+              "ContractVersion": "1.0.0",
+              "MessageID": "SDBR-MSG-PLANNING-RUN-FEEDBACK-PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+              "MessageType": "PlanningRunFeedbackPublished",
+              "SourceSystem": "SDBR",
+              "TargetSystem": "DDAE",
+              "IdempotencyKey": "SDBR:PlanningRunFeedback:PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+              "Payload": {
+                "FeedbackType": "PlanningRunFeedback",
+                "PlanningRunID": "PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+                "OperatingModelConfigurationID": "DDSOP-OMC-PUBLIC-DEMO-V1",
+                "OperatingModelFingerprint": "sha256:demo-fingerprint",
+                "MasterDataVersionID": "PUBLIC-DEMO-GOLDEN-DATA-V1",
+                "OperationalStateSnapshotID": "PUBLIC-DEMO-GOLDEN-DATA-V1-SNAPSHOT",
+                "RunStatus": "Completed",
+                "SolverStatus": "Feasible",
+                "OperationalMetrics": { "OverallStatus": "Green" },
+                "RecommendedDDSOPReviewTopics": [],
+                "DataCoverageIssues": []
+              }
+            }
+            """);
+        File.WriteAllText(options.VarianceAnalysisFeedbackPath, """
+            {
+              "ContractID": "DDSOP-FEEDBACK-OUTBOUND-V1",
+              "ContractVersion": "1.0.0",
+              "MessageID": "SDBR-MSG-VARIANCE-FEEDBACK-PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+              "MessageType": "VarianceAnalysisFeedbackPublished",
+              "SourceSystem": "SDBR",
+              "TargetSystem": "DDAE",
+              "IdempotencyKey": "SDBR:VarianceAnalysisFeedback:PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+              "Payload": {
+                "FeedbackType": "VarianceAnalysisFeedback",
+                "PlanningRunID": "PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+                "OperatingModelConfigurationID": "DDSOP-OMC-PUBLIC-DEMO-V1",
+                "OperatingModelFingerprint": "sha256:demo-fingerprint",
+                "MasterDataVersionID": "PUBLIC-DEMO-GOLDEN-DATA-V1",
+                "OperationalStateSnapshotID": "PUBLIC-DEMO-GOLDEN-DATA-V1-SNAPSHOT",
+                "OverallStatus": "Green",
+                "ReliabilityStatus": "Green",
+                "SpeedStatus": "Green",
+                "StabilityStatus": "Green",
+                "RecommendedDDSOPReviewTopics": [],
+                "DataCoverageIssues": []
+              }
+            }
+            """);
+        File.WriteAllText(options.ValidationSummaryPath, """
+            {
+              "DemoRunID": "PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6",
+              "FrozenConfiguration": {
+                "OperatingModelConfigurationID": "DDSOP-OMC-PUBLIC-DEMO-V1",
+                "OperatingModelFingerprint": "sha256:demo-fingerprint"
+              },
+              "Labels": [
+                "DemoFixture",
+                "ReviewedEvidence",
+                "Controlled Contract Golden Loop Demo",
+                "MappingConfidence = PublicDemoOnly"
+              ],
+              "MappingConfidence": "PublicDemoOnly",
+              "RunStatus": "Completed",
+              "ValidationStatus": "AcceptedForDemo"
+            }
+            """);
+        var feedbackWorkspace = service.GetWorkspace();
+        var planningFeedback = feedbackWorkspace.Feedback.Single(item => item.FeedbackName == "PlanningRunFeedback");
+        var varianceFeedback = feedbackWorkspace.Feedback.Single(item => item.FeedbackName == "VarianceAnalysisFeedback");
+        var validationSummary = feedbackWorkspace.Feedback.Single(item => item.FeedbackName == "ValidationSummary");
+        AssertEqual("PUBLIC-DEMO-SDBR-RUN-EDE8051B20A6", planningFeedback.PlanningRunID, "public demo page should interpret planning run id");
+        AssertEqual("Completed", planningFeedback.RunStatus, "public demo page should interpret planning run status");
+        AssertEqual("Feasible", planningFeedback.SolverStatus, "public demo page should interpret solver status");
+        AssertEqual("sha256:demo-fingerprint", planningFeedback.OperatingModelFingerprint, "public demo page should interpret frozen fingerprint");
+        AssertEqual("Green", varianceFeedback.OverallStatus, "public demo page should interpret variance overall status");
+        AssertEqual("Green", varianceFeedback.ReliabilityStatus, "public demo page should interpret reliability status");
+        AssertEqual("Green", varianceFeedback.SpeedStatus, "public demo page should interpret speed status");
+        AssertEqual("Green", varianceFeedback.StabilityStatus, "public demo page should interpret stability status");
+        AssertEqual("PublicDemoOnly", validationSummary.MappingConfidence, "public demo page should interpret validation mapping confidence");
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
 static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -1326,17 +1654,29 @@ static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
 
     AssertTrue(program.Contains("AddSingleton<DdsopConfigInboundContractService>", StringComparison.Ordinal), "config contract service should be registered");
     AssertTrue(program.Contains("AddSingleton<DdsopFeedbackInboundLedger>", StringComparison.Ordinal), "feedback ledger should be registered");
+    AssertTrue(program.Contains("AddSingleton<DdsopRuntimePlanningInputContractService>", StringComparison.Ordinal), "runtime planning input service should be registered");
+    AssertTrue(program.Contains("AddSingleton<DdsopRuntimeDeliveryLedger>", StringComparison.Ordinal), "runtime delivery ledger should be registered");
+    AssertTrue(program.Contains("AddSingleton<PublicDemoGoldenLoopService>", StringComparison.Ordinal), "public demo golden loop service should be registered");
     AssertTrue(program.Contains("AddSingleton<ProductionSupplierIdentitySourceInboundLedger>", StringComparison.Ordinal), "supplier identity ledger should be registered");
     AssertTrue(program.Contains("AddSingleton<ProductionInventoryQualityInboundLedger>", StringComparison.Ordinal), "inventory quality ledger should be registered");
     AssertTrue(program.Contains("AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>", StringComparison.Ordinal), "execution evidence ledger should be registered");
     AssertTrue(program.Contains("/api/integration-contracts/ddsop-config-inbound-v1", StringComparison.Ordinal), "config endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/ddsop-feedback-outbound-v1", StringComparison.Ordinal), "feedback endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-runtime-planning-input-v1", StringComparison.Ordinal), "runtime planning input endpoint should be exposed");
+    AssertTrue(program.Contains("/api/integration-contracts/ddsop-runtime-planning-input-v1/{deliveryLedgerCorrelationId}/feedback", StringComparison.Ordinal), "runtime feedback correlation endpoint should be exposed");
+    AssertTrue(program.Contains("/api/public-demo-golden-loop", StringComparison.Ordinal), "public demo golden loop workspace endpoint should be exposed");
+    AssertTrue(program.Contains("/api/public-demo-golden-loop/write-payload", StringComparison.Ordinal), "public demo payload handoff endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/production-supplier-identity-source-v1", StringComparison.Ordinal), "supplier identity endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1", StringComparison.Ordinal), "inventory quality endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1", StringComparison.Ordinal), "execution evidence endpoint should be exposed");
     AssertTrue(!program.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "old scenario optimization endpoint should be removed from main");
     AssertTrue(!program.Contains("ScenarioOptimizationService", StringComparison.Ordinal), "old scenario optimization service should not be registered");
     AssertTrue(!program.Contains("IOptimizationSolver", StringComparison.Ordinal), "solver adapter should not be wired into DDS&OP main");
+}
+
+static void WriteJson(string directory, string fileName, string json)
+{
+    File.WriteAllText(Path.Combine(directory, fileName), json);
 }
 
 static void AssertEqual<T>(T expected, T actual, string label)

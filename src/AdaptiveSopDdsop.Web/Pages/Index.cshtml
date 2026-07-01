@@ -26,6 +26,7 @@
             <a class="nav-item" href="#saved-scenarios-panel" data-help-key="scenarioTrace"><span class="nav-index">10</span><span>场景留痕</span></a>
             <a class="nav-item" href="#master-settings-panel" data-help-key="masterSettings"><span class="nav-index">11</span><span>主设置治理</span></a>
             <a class="nav-item" href="#trace-panel" data-help-key="whiteBoxTrace"><span class="nav-index">12</span><span>白盒追踪</span></a>
+            <a class="nav-item" href="#public-demo-golden-loop-panel" data-help-key="publicDemoGoldenLoop"><span class="nav-index">13</span><span>公开演示闭环</span></a>
         </nav>
         <div class="navigation-footer">
             <span class="service-dot" aria-hidden="true"></span>
@@ -122,6 +123,114 @@
                             <small>Gurobi / OR-Tools 不生成计划，不自动采纳、不保存、不审批。</small>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <section id="public-demo-golden-loop-panel" class="workspace-section" hidden>
+                <div class="panel-heading">
+                    <div>
+                        <span class="panel-kicker">Controlled Contract Golden Loop Demo</span>
+                        <h2>PUBLIC-DEMO-GOLDEN-DATA-V1 公开演示闭环</h2>
+                    </div>
+                    <div class="panel-inline-actions">
+                        <span id="public-demo-package-chip" class="status-chip neutral">等待读取</span>
+                        <button id="refresh-public-demo" class="button secondary" type="button">刷新演示包</button>
+                        <button id="write-public-demo-payload" class="button primary" type="button">生成并写出配置 payload</button>
+                    </div>
+                </div>
+                <div class="readiness-banner">
+                    <div>
+                        <span class="context-label">演示边界</span>
+                        <strong>DemoFixture / ReviewedEvidence / Controlled Contract Golden Loop Demo / MappingConfidence = PublicDemoOnly</strong>
+                        <p>本区只用于文件化公开演示包的受控契约闭环，不代表 ProductionValidated、Business Golden Loop readiness 或生产权威。</p>
+                    </div>
+                </div>
+                <div id="public-demo-kpis" class="rccp-kpis" aria-label="公开演示闭环关键状态"></div>
+                <div class="public-demo-grid">
+                    <section class="public-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">数据包</span><h2>文件化数据包与行数</h2></div>
+                        </div>
+                        <div id="public-demo-package-summary" class="metadata-list"></div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>文件</th><th>角色</th><th>行数</th><th>校验摘要</th></tr></thead>
+                                <tbody id="public-demo-package-file-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="public-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">Reviewed mappings</span><h2>受控候选映射</h2></div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>对象</th><th>边界</th><th>允许用途</th><th>禁止用途</th></tr></thead>
+                                <tbody id="public-demo-mapping-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="public-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">排程治理</span><h2>排程治理与适配器审计</h2></div>
+                            <span id="public-demo-adapter-chip" class="status-chip is-paused">非 DDAE 执行权威</span>
+                        </div>
+                        <div id="public-demo-scheduling-governance" class="metadata-list"></div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>字段</th><th>值</th><th>主责</th><th>DDAE 用途</th><th>禁止用途</th></tr></thead>
+                                <tbody id="public-demo-adapter-metadata-body"></tbody>
+                            </table>
+                        </div>
+                        <div id="public-demo-adapter-boundary-list" class="diagnostics-list"></div>
+                    </section>
+                    <section class="public-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">DDAE -> SDBR</span><h2>DDSOP-CONFIG-INBOUND-V1 payload</h2></div>
+                            <span id="public-demo-handoff-chip" class="status-chip neutral">未写出</span>
+                        </div>
+                        <div id="public-demo-payload-summary" class="metadata-list"></div>
+                        <div class="payload-columns">
+                            <div>
+                                <h3>OperatingModelConfiguration</h3>
+                                <pre id="public-demo-operating-model" class="json-preview"></pre>
+                            </div>
+                            <div>
+                                <h3>SchedulingConfiguration</h3>
+                                <pre id="public-demo-scheduling" class="json-preview"></pre>
+                            </div>
+                            <div>
+                                <h3>DDMRPConfiguration</h3>
+                                <pre id="public-demo-ddmrp" class="json-preview"></pre>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="public-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">SDBR -> DDAE</span><h2>反馈解释与偏差分析</h2></div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>文件</th><th>状态</th><th>MessageID</th><th>Planning Run</th><th>OMC</th><th>冻结指纹</th><th>运行 / 求解</th><th>总体 / 偏差</th><th>映射置信</th><th>解释</th></tr></thead>
+                                <tbody id="public-demo-feedback-body"></tbody>
+                            </table>
+                        </div>
+                        <div id="public-demo-non-claims" class="diagnostics-list"></div>
+                    </section>
+                    <section id="public-demo-business-user-view" class="public-demo-card business-demo-card">
+                        <div class="panel-heading compact-heading">
+                            <div>
+                                <span class="panel-kicker">业务用户演示视图</span>
+                                <h2>从 DDS&OP 治理到 SDBR 评审反馈</h2>
+                            </div>
+                            <span class="status-chip neutral">PublicDemoOnly</span>
+                        </div>
+                        <p class="business-demo-lead">
+                            这部分用业务语言说明同一条公开演示闭环：DDAE 负责批准和发布 DDS&OP 治理参数，SDBR 读取这些受控输入做演示级排程适配，并把结果作为评审反馈返回。
+                        </p>
+                        <div id="public-demo-business-summary" class="business-demo-flow" aria-label="公开演示闭环业务说明"></div>
+                        <div id="public-demo-business-boundary" class="business-demo-boundary" aria-label="公开演示闭环业务边界"></div>
+                    </section>
                 </div>
             </section>
 
