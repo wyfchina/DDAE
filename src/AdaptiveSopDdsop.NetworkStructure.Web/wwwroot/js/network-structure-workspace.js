@@ -360,6 +360,7 @@ async function loadNetworkStructureWorkspaceData(options = {}) {
   }
 
   networkState().networkCapabilities = await networkFetchJson("/api/network-structure-capabilities", "产品能力接口失败");
+  networkState().productDemoProfile = await networkFetchJson("/api/adventureworks-product-demo-v1", "AdventureWorks ProductDemoMode 接口失败");
   networkState().networkScoring = await networkFetchJson(`/api/network-structure-scoring?${query}`, "网络结构评分接口失败");
   networkState().selectedNetworkCandidate = networkValueOr(networkState().networkScoring.selectedCandidateId, null);
   networkState().networkMetrics = await networkFetchJson(`/api/network-metrics?${query}`, "网络指标计算接口失败");
@@ -369,11 +370,115 @@ async function loadNetworkStructureWorkspaceData(options = {}) {
   return {
     data: networkState().data,
     capabilities: networkState().networkCapabilities,
+    productDemoProfile: networkState().productDemoProfile,
     scoring: networkState().networkScoring,
     graph: networkState().networkGraph,
     metrics: networkState().networkMetrics,
     scenarioValidation: networkState().networkScenarioValidation,
   };
+}
+
+function renderNetworkProductDemoProfile(result) {
+  const summary = networkById("network-product-demo-profile-summary");
+  if (!summary) return;
+
+  if (!result) {
+    summary.innerHTML = `<div><dt>ProductDemoMode</dt><dd>未加载</dd></div>`;
+    networkById("network-product-demo-authority-body").innerHTML = networkEmptyRow("未读取到 NetworkScoringAuthority", 6);
+    networkById("network-product-demo-panel-policy-body").innerHTML = networkEmptyRow("未读取到视图策略", 3);
+    networkById("network-product-demo-validation-list").innerHTML = "";
+    return;
+  }
+
+  const profile = result.profile || {};
+  summary.innerHTML = [
+    ["演示档案编号（ProfileID）", profile.profileID || "-"],
+    ["运行模式（Mode）", profile.mode || "-"],
+    ["场景标签（ScenarioLabel）", profile.scenarioLabel || "-"],
+    ["映射置信（MappingConfidence）", profile.mappingConfidence || "-"],
+    ["底层公开数据包（BasePackageID）", profile.basePackageID || "-"],
+    ["演示补全包（DemoAuthorityPackageID）", profile.demoAuthorityPackageID || "-"],
+    ["网络评分演示适配器", profile.networkAdapterVersion || "-"],
+    ["fallback 防护", result.fallbackToStandaloneSampleBlocked ? "禁止回退 NETWORK_STRUCTURE_STANDALONE_SAMPLE" : "未确认"],
+    ["候选边界", result.recommendationOnly ? "recommendation-only" : "未确认"],
+    ["白盒回算", result.externalWhiteBoxRecalculationRequired ? "必须回到外部白盒场景回算" : "未确认"],
+  ].map(([label, value]) => `<div><dt>${networkEscapeHtml(label)}</dt><dd>${networkEscapeHtml(value)}</dd></div>`).join("");
+
+  networkById("network-product-demo-authority-body").innerHTML = networkValueOr(result.networkAuthorityRows, []).map(item => networkRow([
+    networkEscapeHtml(networkProductDemoGroupLabel(item.groupName)),
+    `<strong>${networkEscapeHtml(item.businessObject || "-")}</strong>`,
+    networkEscapeHtml(businessText(item.valueSummary || "-")),
+    `<span class="status-chip neutral" title="来源类型：说明该评分证据来自公开数据、派生计算或 DemoAuthority 显式补全。">${networkEscapeHtml(networkProductDemoSourceClassLabel(item.sourceClass))}</span>`,
+    `<code title="证据编号：用于追踪该候选评分的演示依据。">${networkEscapeHtml(item.evidenceRef || "-")}</code>`,
+    networkEscapeHtml(item.owner || "-"),
+  ])).join("") || networkEmptyRow("未读取到 NetworkScoringAuthority 证据行", 6);
+
+  networkById("network-product-demo-panel-policy-body").innerHTML = networkValueOr(result.panelPolicies, []).map(item => networkRow([
+    `<strong>${networkEscapeHtml(item.displayLabel || item.viewID)}</strong><br><small>${networkEscapeHtml(item.viewID)}</small>`,
+    `<span class="status-chip ${item.handling === "ProductDemoMode" ? "is-valid" : "is-paused"}">${networkEscapeHtml(networkProductDemoHandlingLabel(item.handling))}</span>`,
+    networkEscapeHtml(networkProductDemoPanelPolicyText(item)),
+  ])).join("") || networkEmptyRow("未读取到 ProductDemoMode 视图策略", 3);
+
+  const validations = networkValueOr(result.validation, []);
+  const validationHtml = validations.slice(0, 10).map(item => `
+    <div class="diagnostic-item ${item.status === "通过" ? "" : "is-error"}">
+      <strong>${networkEscapeHtml(item.rule)}</strong>
+      <span>${networkEscapeHtml(item.status)}：${networkEscapeHtml(businessText(item.message))}</span>
+      <small>${networkEscapeHtml(item.evidenceRef || "")}</small>
+    </div>
+  `).join("");
+  const guardHtml = networkValueOr(result.candidateGuards, []).map(item => `
+    <div class="diagnostic-item">
+      <strong>候选保护</strong>
+      <span>${networkEscapeHtml(item)}</span>
+    </div>
+  `).join("");
+  const nonClaimHtml = `
+    <div class="diagnostic-item">
+      <strong>非声明</strong>
+      <span>${networkEscapeHtml(networkValueOr(result.nonClaims, []).join(" "))}</span>
+    </div>`;
+  networkById("network-product-demo-validation-list").innerHTML = `${validationHtml}${guardHtml}${nonClaimHtml}`;
+}
+
+function networkProductDemoSourceClassLabel(sourceClass) {
+  const labels = {
+    AdventureWorks: "AdventureWorks 原始公开数据",
+    DerivedFromAdventureWorks: "由 AdventureWorks 派生",
+    DemoAuthority: "DemoAuthority 显式补全",
+    Missing: "缺失",
+    Placeholder: "占位",
+  };
+  return labels[sourceClass] || sourceClass || "-";
+}
+
+function networkProductDemoPanelPolicyText(item) {
+  if (item.handling === "ProductDemoMode") return "已接入 AdventureWorks 产品演示数据，按 ProductDemoMode 展示。";
+  if (item.handling === "Placeholder") return "本视图尚未接入 AdventureWorks 产品演示数据，当前仅显示占位说明；候选仍需外部治理平台白盒回算，且保持 recommendation-only。";
+  if (item.handling === "SampleModeOnly") return "仅样例模式可见，ProductDemoMode 不允许静默回退。";
+  return item.placeholderText || "-";
+}
+
+function networkProductDemoGroupLabel(groupName) {
+  const labels = {
+    SupplierSourceAssignments: "供应来源分配",
+    SupplierCapacityWindows: "供应能力窗口",
+    LeadTimeProfiles: "提前期档案",
+    VariabilityProfiles: "波动档案",
+    CapacityResourceLoadProxies: "资源负荷代理",
+    ServiceTargets: "服务目标",
+    DemandProxies: "需求代理",
+    BufferProfiles: "缓冲档案",
+    RiskProxies: "风险代理",
+  };
+  return labels[groupName] || groupName || "-";
+}
+
+function networkProductDemoHandlingLabel(handling) {
+  if (handling === "ProductDemoMode") return "ProductDemoMode 展示";
+  if (handling === "Placeholder") return "占位";
+  if (handling === "SampleModeOnly") return "仅样例模式";
+  return handling || "-";
 }
 
 function renderNetworkCapabilities(result) {
@@ -1023,6 +1128,7 @@ function initializeNetworkStructureWorkspace() {
 
 window.NetworkStructureProductWorkspace = {
   initialize: initializeNetworkStructureWorkspace,
+  renderProductDemoProfile: renderNetworkProductDemoProfile,
   renderScoring: renderNetworkStructureScoring,
   renderCapabilities: renderNetworkCapabilities,
   renderGraph: renderNetworkGraph,

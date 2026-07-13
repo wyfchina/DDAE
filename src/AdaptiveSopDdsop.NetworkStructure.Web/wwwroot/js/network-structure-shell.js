@@ -7,6 +7,7 @@ const state = {
   networkGraph: null,
   networkMetrics: null,
   networkCapabilities: null,
+  productDemoProfile: null,
   networkScenarioValidation: null,
   candidateCombinations: null,
   selectedNetworkCandidate: null,
@@ -132,6 +133,7 @@ async function loadNetworkStructureProduct() {
   });
 
   window.NetworkStructureProductWorkspace?.renderScoring(state.networkScoring);
+  window.NetworkStructureProductWorkspace?.renderProductDemoProfile(state.productDemoProfile);
   window.NetworkStructureProductWorkspace?.renderCapabilities(state.networkCapabilities);
   window.NetworkStructureProductWorkspace?.renderMetrics(state.networkMetrics);
   window.NetworkStructureProductWorkspace?.renderScenarioValidation(state.networkScenarioValidation);

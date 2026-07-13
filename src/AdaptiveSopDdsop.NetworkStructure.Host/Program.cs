@@ -12,6 +12,7 @@ builder.Services.AddSingleton<INetworkScoringDataSource>(sp => sp.GetRequiredSer
 builder.Services.AddSingleton<NetworkGraphService>();
 builder.Services.AddSingleton<NetworkMetricsService>();
 builder.Services.AddSingleton<NetworkStructureScoringService>();
+builder.Services.AddSingleton<AdventureWorksProductDemoProfileService>();
 
 var app = builder.Build();
 
@@ -23,6 +24,11 @@ app.MapGet("/", () => Results.Redirect("/network-structure"));
 app.MapGet("/api/network-structure-capabilities", () =>
 {
     return Results.Ok(NetworkStructureProductCapabilityCatalog.CreateStandaloneHost());
+});
+
+app.MapGet("/api/adventureworks-product-demo-v1", (AdventureWorksProductDemoProfileService service) =>
+{
+    return Results.Ok(service.GetWorkspace());
 });
 
 app.MapGet("/api/network-structure-data", (int? horizonWeeks, INetworkStructureProductDataSource dataSource) =>

@@ -143,6 +143,7 @@
                 <div><span class="panel-kicker">白盒重算</span><h2>场景验证</h2></div>
                 <span id="network-scenario-validation-chip" class="status-chip neutral">未加载</span>
             </div>
+            <p class="muted-note">场景验证当前是占位视图：候选仍是 recommendation-only，必须进入外部治理平台做白盒回算后，才可能进入后续方案比较或治理流程。</p>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead><tr><th>候选</th><th>推荐类型</th><th>库存金额变化</th><th>红区周变化</th><th>补货订单变化</th><th>补货数量变化</th><th>RCCP 峰值变化</th><th>RCCP 红区周</th><th>供应缺口变化</th><th>结论</th></tr></thead>
@@ -150,5 +151,41 @@
                 </table>
             </div>
         </section>
+        <section id="network-product-demo-profile-panel" class="network-scoring-block">
+            <div class="panel-heading compact-heading">
+                <div><span class="panel-kicker">ProductDemoMode</span><h2>ADVENTUREWORKS_PRODUCT_DEMO_V1 网络评分档案</h2></div>
+                <span class="status-chip neutral">MappingConfidence = ProductDemoOnly</span>
+            </div>
+            <div class="readiness-banner">
+                <div>
+                    <span class="context-label">候选边界</span>
+                    <strong>候选只作为 recommendation-only，进入外部治理平台后必须白盒回算</strong>
+                    <p>本视图只读取网络评分证据行（NetworkScoringAuthority），不回退独立样例（NETWORK_STRUCTURE_STANDALONE_SAMPLE），不生成 SDBR 可执行指令。</p>
+                </div>
+            </div>
+            <div id="network-product-demo-profile-summary" class="metadata-list"></div>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead><tr><th>证据组</th><th>对象</th><th>摘要</th><th>来源类型</th><th>证据编号</th><th>主责</th></tr></thead>
+                    <tbody id="network-product-demo-authority-body"></tbody>
+                </table>
+            </div>
+            <div class="network-detail-grid">
+                <div>
+                    <h3>视图策略（PanelPolicy）</h3><p class="muted-note">视图策略说明哪些区域已接入产品演示数据，哪些区域仅保留占位；占位不是产品能力缺失。</p>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead><tr><th>视图</th><th>处理方式</th><th>说明</th></tr></thead>
+                            <tbody id="network-product-demo-panel-policy-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div>
+                    <h3>校验与非声明</h3>
+                    <div id="network-product-demo-validation-list" class="diagnostics-list"></div>
+                </div>
+            </div>
+        </section>
+
     </div>
 </section>

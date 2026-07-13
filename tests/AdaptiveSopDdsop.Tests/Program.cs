@@ -43,6 +43,9 @@ var tests = new (string Name, Action Run)[]
     ("Network structure product exposes independent data source boundary", TestNetworkStructureProductExposesIndependentDataSourceBoundary),
     ("Network structure product owns pure network data contracts", TestNetworkStructureProductOwnsPureNetworkDataContracts),
     ("Network structure product exposes standalone host boundary", TestNetworkStructureProductExposesStandaloneHostBoundary),
+    ("Network contract repository path resolver prefers configured root", TestNetworkContractRepositoryPathResolverPrefersConfiguredRoot),
+    ("Network contract repository path resolver discovers sibling repository", TestNetworkContractRepositoryPathResolverDiscoversSiblingRepository),
+    ("AdventureWorks product demo profile exposes Network scoring read model", TestAdventureWorksProductDemoProfileExposesNetworkScoringReadModel),
     ("Scenario workspace exposes complete DDMRP parameter profiles", TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles),
     ("Scenario workspace adapter can map alternate source structures", TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
@@ -932,6 +935,19 @@ static void TestScenarioRunWorkspaceExposesNetworkScoringUi()
     AssertTrue(!indexPage.Contains("<partial name=\"_NetworkStructureWorkspace\" />", StringComparison.Ordinal), "homepage should not mount network structure workspace");
     AssertTrue(!indexPage.Contains("id=\"network-score-candidate-body\"", StringComparison.Ordinal), "homepage should not inline network structure workspace details");
     AssertTrue(networkProductPage.Contains("id=\"network-structure-scoring-panel\"", StringComparison.Ordinal), "network product should expose network structure scoring panel");
+    AssertTrue(networkProductPage.Contains("id=\"network-product-demo-profile-panel\"", StringComparison.Ordinal), "network product should expose AdventureWorks ProductDemoMode panel");
+    AssertTrue(networkProductPage.Contains("ADVENTUREWORKS_PRODUCT_DEMO_V1 网络评分档案", StringComparison.Ordinal), "network product should label the product demo profile");
+    AssertTrue(networkProductPage.Contains("MappingConfidence = ProductDemoOnly", StringComparison.Ordinal), "network product should display product demo mapping confidence");
+    AssertTrue(networkProductPage.Contains("id=\"network-product-demo-authority-body\"", StringComparison.Ordinal), "network product should expose NetworkScoringAuthority rows");
+    AssertTrue(networkProductPage.Contains("recommendation-only", StringComparison.Ordinal), "network product should label candidates as recommendation-only");
+    AssertTrue(networkProductPage.Contains("进入外部治理平台后必须白盒回算", StringComparison.Ordinal), "network ProductDemoMode panel should use neutral external governance wording");
+    AssertTrue(networkProductPage.Contains("场景验证当前是占位视图", StringComparison.Ordinal), "network ProductDemoMode scenario validation placeholder should use business wording");
+    AssertTrue(networkProductPage.Contains("证据编号", StringComparison.Ordinal), "network ProductDemoMode should explain evidence refs with business labels");
+    AssertTrue(networkProductPage.Contains("场景验证当前是占位视图", StringComparison.Ordinal), "network ProductDemoMode scenario validation should remain placeholder with business wording");
+    AssertTrue(!networkProductPage.Contains("进入 DDS&OP 后必须白盒回算", StringComparison.Ordinal), "network ProductDemoMode panel should not hard-code DDS&OP as the only consumer");
+    AssertTrue(!networkProductPage.Contains("返回 DDS&OP 白盒场景回算", StringComparison.Ordinal), "network ProductDemoMode scenario validation should not hard-code DDS&OP as the only consumer");
+    AssertTrue(!networkProductPage.Contains("进入 DDSOP 后必须白盒回算", StringComparison.Ordinal), "network ProductDemoMode panel should not hard-code DDSOP as the only consumer");
+    AssertTrue(networkProductPage.Contains("NETWORK_STRUCTURE_STANDALONE_SAMPLE", StringComparison.Ordinal), "network product should state standalone sample fallback is blocked");
     AssertTrue(networkProductPage.Contains("id=\"network-scoring-kpis\"", StringComparison.Ordinal), "network product should expose network scoring KPIs");
     AssertTrue(networkProductPage.Contains("id=\"network-score-candidate-body\"", StringComparison.Ordinal), "network product should expose network scoring candidate table");
     AssertTrue(networkProductPage.Contains("控制点 / 缓冲点候选", StringComparison.Ordinal), "network product should expose Chinese control point candidate label");
@@ -955,6 +971,9 @@ static void TestScenarioRunWorkspaceExposesNetworkScoringUi()
     AssertTrue(networkProductPage.Contains("库存代价", StringComparison.Ordinal), "network product should expose inventory cost label");
     AssertTrue(networkProductPage.Contains("证据链", StringComparison.Ordinal), "network product should expose evidence chain label");
     AssertTrue(networkScript.Contains("/api/network-metrics?", StringComparison.Ordinal), "network module should fetch network metrics");
+    AssertTrue(networkScript.Contains("/api/adventureworks-product-demo-v1", StringComparison.Ordinal), "network module should fetch AdventureWorks ProductDemoMode profile");
+    AssertTrue(networkScript.Contains("renderNetworkProductDemoProfile", StringComparison.Ordinal), "network module should render the ProductDemoMode profile");
+    AssertTrue(networkScript.Contains("sourceClass", StringComparison.Ordinal), "network module should display source-class-backed evidence");
     AssertTrue(script.Contains("renderNetworkMetrics", StringComparison.Ordinal), "script should render network metrics");
     AssertTrue(script.Contains("data-network-metric-item", StringComparison.Ordinal), "script should switch selected network metric item");
 }
@@ -1521,10 +1540,12 @@ static void TestNetworkStructureProductExposesStandaloneHostBoundary()
     AssertTrue(hostProgram.Contains("NetworkGraphService", StringComparison.Ordinal), "standalone host should register graph service");
     AssertTrue(hostProgram.Contains("NetworkMetricsService", StringComparison.Ordinal), "standalone host should register metrics service");
     AssertTrue(hostProgram.Contains("NetworkStructureScoringService", StringComparison.Ordinal), "standalone host should register scoring service");
+    AssertTrue(hostProgram.Contains("AdventureWorksProductDemoProfileService", StringComparison.Ordinal), "standalone host should register AdventureWorks ProductDemoMode service");
     AssertTrue(hostProgram.Contains("/api/network-structure-data", StringComparison.Ordinal), "standalone host should expose pure network data API");
     AssertTrue(hostProgram.Contains("/api/network-structure-scoring", StringComparison.Ordinal), "standalone host should expose network scoring API");
     AssertTrue(hostProgram.Contains("/api/network-metrics", StringComparison.Ordinal), "standalone host should expose network metrics API");
     AssertTrue(hostProgram.Contains("/api/network-graph", StringComparison.Ordinal), "standalone host should expose network graph API");
+    AssertTrue(hostProgram.Contains("/api/adventureworks-product-demo-v1", StringComparison.Ordinal), "standalone host should expose AdventureWorks ProductDemoMode API");
     AssertTrue(hostProgram.Contains("/api/network-scenario-validation", StringComparison.Ordinal), "standalone host should explicitly expose external validation boundary response");
     AssertTrue(hostProgram.Contains("/api/candidate-action-combinations/select", StringComparison.Ordinal), "standalone host should explicitly expose candidate-combination boundary response");
     AssertTrue(hostProgram.Contains("不执行外部白盒场景重算", StringComparison.Ordinal), "standalone host should state that external white-box recalculation is outside its boundary");
@@ -1546,6 +1567,67 @@ static void TestNetworkStructureProductExposesStandaloneHostBoundary()
     AssertTrue(standaloneDataSource.Contains("SatelliteManufacturingNetworkSeedData.Build", StringComparison.Ordinal), "standalone data source should use network product seed factory");
     AssertTrue(!standaloneDataSource.Contains("AdaptiveSopDdsop.Web", StringComparison.Ordinal), "standalone data source should not import DDS&OP web namespace");
     AssertTrue(!standaloneDataSource.Contains("ScenarioWorkspaceDataSet", StringComparison.Ordinal), "standalone data source should not return DDS&OP workspace data");
+}
+
+static void TestAdventureWorksProductDemoProfileExposesNetworkScoringReadModel()
+{
+    var service = new AdaptiveSopDdsop.NetworkStructure.AdventureWorksProductDemoProfileService();
+
+    var workspace = service.GetWorkspace();
+
+    AssertEqual("ADVENTUREWORKS_PRODUCT_DEMO_V1", workspace.Profile.ProfileID, "product demo profile id");
+    AssertEqual("ProductDemoMode", workspace.Profile.Mode, "product demo mode");
+    AssertEqual("ProductDemoOnly", workspace.Profile.MappingConfidence, "product demo mapping confidence");
+    AssertTrue(workspace.NetworkAuthorityRows.Any(item => item.GroupName == "SupplierSourceAssignments" && item.BusinessObject.Contains("AW-PRODUCT-747", StringComparison.Ordinal)), "network authority should include supplier-source backed product evidence");
+    AssertTrue(workspace.NetworkAuthorityRows.Any(item => item.GroupName == "SupplierCapacityWindows" && item.ValueSummary.Contains("承诺", StringComparison.Ordinal)), "network authority should include supplier capacity window evidence");
+    AssertTrue(workspace.NetworkAuthorityRows.Any(item => item.GroupName == "LeadTimeProfiles" && item.ValueSummary.Contains("12", StringComparison.Ordinal)), "network authority should include lead time profile evidence");
+    AssertTrue(workspace.NetworkAuthorityRows.Any(item => item.GroupName == "CapacityResourceLoadProxies" && item.BusinessObject.Contains("AW-LOCATION-10", StringComparison.Ordinal)), "network authority should include resource-load proxy evidence");
+    AssertTrue(workspace.NetworkAuthorityRows.All(item => !string.IsNullOrWhiteSpace(item.SourceClass) && !string.IsNullOrWhiteSpace(item.EvidenceRef)), "network authority rows should carry source class and evidence references");
+    AssertTrue(workspace.NetworkAuthorityRows.Any(item => item.GroupName == "ServiceTargets" && item.ValueSummary.Contains("0.95", StringComparison.Ordinal) && item.ValueSummary.Contains("流速目标 10 天", StringComparison.Ordinal)), "network service target summary should include demo authority value");
+    AssertTrue(workspace.PanelPolicies.Any(item => item.ViewID == "network-metrics" && item.Handling == "ProductDemoMode"), "network metrics should be approved for ProductDemoMode");
+    AssertTrue(workspace.PanelPolicies.Any(item => item.ViewID == "scenario-validation" && item.Handling == "Placeholder"), "scenario validation should remain placeholder");
+    AssertTrue(workspace.Validation.All(item => item.Status == "通过"), "all required network scoring authority groups should be covered");
+    AssertTrue(workspace.CandidateGuards.Any(item => item.Contains("来源类型", StringComparison.Ordinal) && item.Contains("证据编号", StringComparison.Ordinal)), "candidate guard should require business-labeled source-class evidence");
+    AssertTrue(workspace.FallbackToStandaloneSampleBlocked, "standalone sample fallback should be blocked");
+    AssertTrue(workspace.RecommendationOnly, "network candidates should remain recommendation-only");
+    AssertTrue(workspace.ExternalWhiteBoxRecalculationRequired, "network candidates should require external white-box recalculation");
+    AssertTrue(workspace.NonClaims.Any(item => item.Contains("不声明 ProductionValidated", StringComparison.Ordinal)), "non-claims should include production validation boundary");
+}
+
+static void TestNetworkContractRepositoryPathResolverPrefersConfiguredRoot()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"network-contract-root-{Guid.NewGuid():N}");
+    var configuredRoot = Path.Combine(root, "configured-contract");
+    Directory.CreateDirectory(configuredRoot);
+    try
+    {
+        var resolved = ContractRepositoryPathResolver.Resolve(root, configuredRoot);
+
+        AssertEqual(Path.GetFullPath(configuredRoot), resolved, "configured network contract repository root");
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+static void TestNetworkContractRepositoryPathResolverDiscoversSiblingRepository()
+{
+    var workspace = Path.Combine(Path.GetTempPath(), $"network-contract-sibling-{Guid.NewGuid():N}");
+    var applicationRoot = Path.Combine(workspace, "DDAE-NetworkStructure", "src", "AdaptiveSopDdsop.NetworkStructure.Host");
+    var contractRoot = Path.Combine(workspace, "DDAE_INTERFACE_CONTRACT");
+    Directory.CreateDirectory(applicationRoot);
+    Directory.CreateDirectory(contractRoot);
+    try
+    {
+        var resolved = ContractRepositoryPathResolver.Resolve(applicationRoot, configuredRoot: null);
+
+        AssertEqual(Path.GetFullPath(contractRoot), resolved, "sibling network contract repository root");
+    }
+    finally
+    {
+        Directory.Delete(workspace, recursive: true);
+    }
 }
 
 static void TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles()
