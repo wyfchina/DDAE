@@ -167,7 +167,7 @@ public sealed class PublicDemoGoldenLoopService
             string.Equals(GetString(manifest, "PackageChecksum"), _options.ExpectedPackageChecksum, StringComparison.Ordinal),
             Directory.Exists(_options.PackagePath) && File.Exists(Path.Combine(_options.PackagePath, "manifest.json")),
             packageFiles,
-            BuildReviewedMappings(),
+            BuildReviewedMappings(context),
             context,
             BuildSchedulingAdapterReadModel(),
             payload,
@@ -202,6 +202,7 @@ public sealed class PublicDemoGoldenLoopService
     {
         var packageFrozenAt = GetString(manifest, "PackageFrozenAt") ?? "2026-06-29T16:48:06+08:00";
         var rowCounts = manifest["RowCountsByFile"] as JsonObject ?? new JsonObject();
+        var demoObject = BuildPackageObjectRef();
         var inventoryQuantity = ReadFirstDecimal("item-locations.json", "Quantity", 100m);
         var topOfRed = Math.Max(10m, decimal.Round(inventoryQuantity * 0.35m, 2));
         var topOfYellow = Math.Max(topOfRed, decimal.Round(inventoryQuantity * 0.70m, 2));
@@ -221,8 +222,8 @@ public sealed class PublicDemoGoldenLoopService
             new DdsopScope(
                 new[] { "PUBLIC-DEMO-PLANT" },
                 new[] { "PUBLIC-DEMO-GOLDEN-DATA-V1" },
-                new[] { "WH-ELEC-QA" },
-                new[] { "PART-FPGA-SPACE@WH-ELEC-QA" }),
+                new[] { demoObject.LocationID },
+                new[] { demoObject.ItemLocationID }),
             new DdsopApproval(
                 "ddsop-controlled-demo",
                 approvalAt,
@@ -246,8 +247,8 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopControlPoint(
-                        "CP-WH-ELEC-QA-DEMO",
-                        "WH-ELEC-QA",
+                        $"CP-{demoObject.SafeLocationID}-DEMO",
+                        demoObject.LocationID,
                         "CapacityBuffer",
                         true,
                         "BufferPriorityFirst")
@@ -255,8 +256,8 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopTimeBufferProfile(
-                        "TB-PART-FPGA-SPACE-DEMO",
-                        "Reviewed public demo time buffer for PART-FPGA-SPACE at WH-ELEC-QA.",
+                        $"TB-{demoObject.SafeItemID}-DEMO",
+                        $"公开演示样例物料 {demoObject.ItemID} 在 {demoObject.LocationID} 的受控时间缓冲。",
                         10080,
                         0.33m,
                         0.33m,
@@ -266,16 +267,16 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopTimeBufferAssignment(
-                        "TBA-PART-FPGA-SPACE-DEMO",
-                        "PART-FPGA-SPACE",
+                        $"TBA-{demoObject.SafeItemID}-DEMO",
+                        demoObject.ItemID,
                         "MTS",
-                        "CP-WH-ELEC-QA-DEMO",
-                        "TB-PART-FPGA-SPACE-DEMO")
+                        $"CP-{demoObject.SafeLocationID}-DEMO",
+                        $"TB-{demoObject.SafeItemID}-DEMO")
                 },
                 new[]
                 {
                     new DdsopResourceSetting(
-                        "WH-ELEC-QA",
+                        demoObject.LocationID,
                         "BufferedResource",
                         "Finite",
                         "CAL-PUBLIC-DEMO-8X5",
@@ -284,8 +285,8 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopPartSchedulingSetting(
-                        "PART-FPGA-SPACE",
-                        "ROUTE-PUBLIC-DEMO-PART-FPGA-SPACE",
+                        demoObject.ItemID,
+                        $"ROUTE-PUBLIC-DEMO-{demoObject.SafeItemID}",
                         Array.Empty<string>(),
                         "DemoReviewed")
                 }),
@@ -297,9 +298,9 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopDecouplingPoint(
-                        "PART-FPGA-SPACE",
-                        "WH-ELEC-QA",
-                        "SB-PART-FPGA-SPACE-DEMO",
+                        demoObject.ItemID,
+                        demoObject.LocationID,
+                        $"SB-{demoObject.SafeItemID}-DEMO",
                         10080,
                         1m,
                         1m,
@@ -308,18 +309,18 @@ public sealed class PublicDemoGoldenLoopService
                 new[]
                 {
                     new DdsopStockBufferProfile(
-                        "SB-PART-FPGA-SPACE-DEMO",
+                        $"SB-{demoObject.SafeItemID}-DEMO",
                         topOfRed,
                         topOfYellow,
                         topOfGreen,
-                        "EA")
+                        demoObject.Uom)
                 },
                 new[]
                 {
                     new DdsopPartProfileAssignment(
-                        "PART-FPGA-SPACE",
-                        "WH-ELEC-QA",
-                        "SB-PART-FPGA-SPACE-DEMO")
+                        demoObject.ItemID,
+                        demoObject.LocationID,
+                        $"SB-{demoObject.SafeItemID}-DEMO")
                 },
                 Array.Empty<DdsopAdjustmentFactor>()));
 
@@ -340,8 +341,7 @@ public sealed class PublicDemoGoldenLoopService
     private PublicDemoPackageContext BuildPackageContext(JsonObject manifest)
     {
         var rows = manifest["RowCountsByFile"] as JsonObject ?? new JsonObject();
-        var firstItem = ReadFirstObject("items.json");
-        var firstLocation = ReadFirstObject("locations.json");
+        var demoObject = BuildPackageObjectRef();
         return new PublicDemoPackageContext(
             GetInt(rows, "items.json"),
             GetInt(rows, "locations.json"),
@@ -352,10 +352,10 @@ public sealed class PublicDemoGoldenLoopService
             GetInt(rows, "routings.json"),
             GetInt(rows, "capacities.json"),
             GetInt(rows, "crosswalk.json"),
-            GetString(firstItem, "Name"),
-            GetString(firstLocation, "Name"),
+            demoObject.ItemID,
+            demoObject.LocationID,
             ReadFirstDecimal("item-locations.json", "Quantity", 0m),
-            ReadFirstString("item-locations.json", "QuantityUom", "EA"));
+            demoObject.Uom);
     }
 
     private IReadOnlyList<PublicDemoPackageFileSummary> BuildPackageFileSummaries(JsonObject manifest)
@@ -500,30 +500,33 @@ public sealed class PublicDemoGoldenLoopService
         }
     }
 
-    private IReadOnlyList<PublicDemoReviewedMapping> BuildReviewedMappings()
+    private IReadOnlyList<PublicDemoReviewedMapping> BuildReviewedMappings(PublicDemoPackageContext context)
     {
+        var item = string.IsNullOrWhiteSpace(context.SampleItem) ? "未读取物料" : context.SampleItem;
+        var location = string.IsNullOrWhiteSpace(context.SampleLocation) ? "未读取地点" : context.SampleLocation;
+        var uom = string.IsNullOrWhiteSpace(context.SampleUom) ? "未读取单位" : context.SampleUom;
         return new[]
         {
             new PublicDemoReviewedMapping(
-                "PART-FPGA-SPACE",
-                "Demo item identity only; not production item master authority.",
-                "Controlled Contract Golden Loop Demo",
-                "Not production item master authority; no automatic master-data update."),
+                item,
+                "仅作为公开演示数据包中的物料样例，不代表生产物料主数据权威。",
+                "受控公开演示闭环展示与契约联调说明。",
+                "不得作为生产物料主数据权威；不得自动更新主数据。"),
             new PublicDemoReviewedMapping(
-                "WH-ELEC-QA",
-                "Demo location identity only; not production location or item-location authority.",
-                "Controlled Contract Golden Loop Demo",
-                "Not production location authority; not production inventory authority."),
+                location,
+                "仅作为公开演示数据包中的地点样例，不代表生产地点或物料地点权威。",
+                "受控公开演示闭环展示与契约联调说明。",
+                "不得作为生产地点权威；不得作为生产库存权威。"),
             new PublicDemoReviewedMapping(
-                "EA",
-                "Demo UOM semantics only; not enterprise UOM authority.",
-                "Controlled Contract Golden Loop Demo",
-                "Not enterprise UOM authority."),
+                uom,
+                "仅作为公开演示数据包中的计量单位样例，不代表企业计量单位权威。",
+                "受控公开演示闭环展示与契约联调说明。",
+                "不得作为企业计量单位权威。"),
             new PublicDemoReviewedMapping(
-                "PART-FPGA-SPACE @ WH-ELEC-QA",
-                "Demo item-location context only.",
-                "Controlled Contract Golden Loop Demo",
-                "Not production item-location authority.")
+                $"{item} @ {location}",
+                "仅作为公开演示数据包中的物料地点组合样例。",
+                "受控公开演示闭环展示与契约联调说明。",
+                "不得作为生产物料地点权威；不得自动生成已批准主设置。")
         };
     }
 
@@ -533,7 +536,7 @@ public sealed class PublicDemoGoldenLoopService
             DdsopRuntimePlanningInputContractService.AdventureWorksAdapterProfileID,
             ScenarioLabel,
             MappingConfidence,
-            "SDBR feedback is interpreted as review/governance context only; it cannot mutate approved DDAE operating model, master settings, buffers, lead time, MOQ, order cycle, or supplier-source facts.",
+            "SDBR 反馈仅解释为评审和治理上下文；不能修改 DDAE 已批准运营模型、主设置、缓冲、提前期、MOQ、订货周期或供应来源事实。",
             new[]
             {
                 new PublicDemoSchedulingGovernancePolicy("控制点策略", "发布 DDS&OP 治理意图和冻结证据，不发布可执行工艺路线。", "ControlPoint", "DDAE-SCHEDULING-RULE-V1"),
@@ -560,6 +563,48 @@ public sealed class PublicDemoGoldenLoopService
                 new PublicDemoNonDdaeOwnedExecutionItem("物料可行性权威", "WMS/QMS/SDBR adapter", "当前 active demo 显示为 OmittedForPublicDemo；候选物料证据只可作为未执行/非生产可行性上下文。", "DDAE must not claim active material-feasible scheduling or production material feasibility authority.")
             });
     }
+
+    private PublicDemoObjectRef BuildPackageObjectRef()
+    {
+        var firstItemLocation = ReadFirstObject("item-locations.json");
+        var firstItem = ReadFirstObject("items.json");
+        var firstLocation = ReadFirstObject("locations.json");
+        var itemId = GetString(firstItemLocation, "DemoItemID")
+                     ?? GetString(firstItem, "DemoItemID")
+                     ?? GetString(firstItem, "ItemID")
+                     ?? "PUBLIC-DEMO-ITEM";
+        var locationId = GetString(firstItemLocation, "DemoLocationID")
+                         ?? GetString(firstLocation, "DemoLocationID")
+                         ?? GetString(firstLocation, "LocationID")
+                         ?? "PUBLIC-DEMO-LOCATION";
+        var uom = GetString(firstItemLocation, "QuantityUom")
+                  ?? GetString(firstItem, "Uom")
+                  ?? "EA";
+        return new PublicDemoObjectRef(
+            itemId,
+            locationId,
+            uom,
+            $"{itemId}@{locationId}",
+            NormalizeContractIdToken(itemId),
+            NormalizeContractIdToken(locationId));
+    }
+
+    private static string NormalizeContractIdToken(string value)
+    {
+        var token = new string(value
+            .Select(ch => char.IsLetterOrDigit(ch) ? char.ToUpperInvariant(ch) : '-')
+            .ToArray());
+        token = string.Join("-", token.Split('-', StringSplitOptions.RemoveEmptyEntries));
+        return string.IsNullOrWhiteSpace(token) ? "PUBLIC-DEMO" : token;
+    }
+
+    private sealed record PublicDemoObjectRef(
+        string ItemID,
+        string LocationID,
+        string Uom,
+        string ItemLocationID,
+        string SafeItemID,
+        string SafeLocationID);
 
     private JsonObject ReadJsonObject(string fileName)
     {
@@ -613,7 +658,7 @@ public sealed class PublicDemoGoldenLoopService
             return "non-claims.md 未读取到；页面仍禁止生产验证和 Business Golden Loop readiness 声明。";
         }
 
-        return "公开演示包仅用于 Controlled Contract Golden Loop Demo；不代表生产验证、Business Golden Loop readiness、生产权威或自动主数据更新。";
+        return "公开演示包仅用于受控契约公开演示闭环；不代表生产验证、Business Golden Loop readiness、生产权威或自动主数据更新。";
     }
 
     private static string? GetString(JsonObject obj, string propertyName)

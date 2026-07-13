@@ -16,6 +16,7 @@ builder.Services.AddSingleton<DdsopFeedbackInboundLedger>();
 builder.Services.AddSingleton<DdsopRuntimePlanningInputContractService>();
 builder.Services.AddSingleton<DdsopRuntimeDeliveryLedger>();
 builder.Services.AddSingleton<PublicDemoGoldenLoopService>();
+builder.Services.AddSingleton<AdventureWorksProductDemoProfileService>();
 builder.Services.AddSingleton<ProductionSupplierIdentitySourceInboundLedger>();
 builder.Services.AddSingleton<ProductionInventoryQualityInboundLedger>();
 builder.Services.AddSingleton<SdbrExecutionObjectEvidenceInboundLedger>();
@@ -176,6 +177,11 @@ app.MapGet("/api/integration-contracts/ddsop-feedback-outbound-v1/ledger", (Ddso
 });
 
 app.MapGet("/api/public-demo-golden-loop", (PublicDemoGoldenLoopService service) =>
+{
+    return Results.Ok(service.GetWorkspace());
+});
+
+app.MapGet("/api/adventureworks-product-demo-v1", (AdventureWorksProductDemoProfileService service) =>
 {
     return Results.Ok(service.GetWorkspace());
 });

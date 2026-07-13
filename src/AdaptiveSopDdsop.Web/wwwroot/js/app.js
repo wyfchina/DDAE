@@ -4,6 +4,7 @@ const state = {
   preview: null,
   productFamilyDashboard: null,
   publicDemoGoldenLoop: null,
+  adventureWorksProductDemo: null,
   rccp: null,
   constraints: null,
   supplierCollaboration: null,
@@ -429,7 +430,6 @@ function normalizeWorkspaceFlow() {
   const workspace = byId("workspace");
   const order = [
     "overview-panel",
-    "public-demo-golden-loop-panel",
     "product-family-dashboard-panel",
     "data-readiness-panel",
     "variance-panel",
@@ -441,6 +441,7 @@ function normalizeWorkspaceFlow() {
     "saved-scenarios-panel",
     "master-settings-panel",
     "trace-panel",
+    "public-demo-golden-loop-panel",
   ];
 
   document.querySelector(".schedule-tabs")?.remove();
@@ -2709,6 +2710,7 @@ function renderWorkspace() {
 
   renderKpis(data);
   renderPublicDemoGoldenLoop(state.publicDemoGoldenLoop);
+  renderAdventureWorksProductDemo(state.adventureWorksProductDemo);
   renderProductFamilyDashboard(state.productFamilyDashboard);
   renderReadiness(data);
   renderScenarioTemplates(data);
@@ -2744,14 +2746,19 @@ function renderPublicDemoGoldenLoop(workspace) {
   const packageChip = byId("public-demo-package-chip");
   packageChip.className = `status-chip ${workspace.packageChecksumMatches ? "is-valid" : "is-invalid"}`;
   packageChip.textContent = workspace.packageChecksumMatches ? "数据包校验一致" : "数据包校验不一致";
+  const sampleObject = [
+    workspace.packageContext?.sampleItem,
+    workspace.packageContext?.sampleLocation,
+    workspace.packageContext?.sampleUom,
+  ].filter(Boolean).join(" / ") || "未读取";
 
   byId("public-demo-kpis").innerHTML = [
     ["数据包", workspace.packageAvailable ? "已读取" : "不可用", workspace.packagePath],
-    ["Package checksum", workspace.packageChecksumMatches ? "一致" : "不一致", workspace.expectedPackageChecksum],
-    ["MappingConfidence", workspace.mappingConfidence, "仅用于公开演示"],
-    ["物料 / 地点 / UOM", "PART-FPGA-SPACE / WH-ELEC-QA / EA", "Reviewed candidate mapping"],
-    ["DDAE handoff", workspace.handoff.payloadWritten ? "已写出" : "未写出", workspace.handoff.ddaeToSdbrPayloadPath],
-    ["SDBR feedback", `${workspace.feedback.filter(item => item.exists).length}/${workspace.feedback.length}`, "从约定 handoff 路径读取"],
+    ["数据包校验", workspace.packageChecksumMatches ? "一致" : "不一致", workspace.expectedPackageChecksum],
+    ["映射置信", workspace.mappingConfidence, "仅用于公开演示"],
+    ["物料 / 地点 / 计量单位", sampleObject, "来自公开演示数据包样例"],
+    ["DDAE 交付", workspace.handoff.payloadWritten ? "已写出" : "未写出", workspace.handoff.ddaeToSdbrPayloadPath],
+    ["SDBR 反馈", `${workspace.feedback.filter(item => item.exists).length}/${workspace.feedback.length}`, "从约定交付路径读取"],
   ].map(([label, value, hint]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`).join("");
 
   byId("public-demo-package-summary").innerHTML = [
@@ -2783,6 +2790,120 @@ function renderPublicDemoGoldenLoop(workspace) {
   renderPublicDemoPayload(workspace.payloadPreview, workspace.handoff);
   renderPublicDemoFeedback(workspace.feedback, workspace.nonClaimsSummary);
   renderPublicDemoBusinessUserView(workspace);
+}
+
+function renderAdventureWorksProductDemo(workspace) {
+  if (!workspace) return;
+  const profile = workspace.profile || {};
+  const summary = byId("product-demo-profile-summary");
+  if (!summary) return;
+
+  summary.innerHTML = [
+    ["演示档案编号（ProfileID）", profile.profileID || "-"],
+    ["运行模式（Mode）", profile.mode || "-"],
+    ["场景标签（ScenarioLabel）", profile.scenarioLabel || "-"],
+    ["映射置信", profile.mappingConfidence || "-"],
+    ["底层公开数据包（BasePackageID）", profile.basePackageID || "-"],
+    ["演示补全包（DemoAuthorityPackageID）", profile.demoAuthorityPackageID || "-"],
+    ["DDAE 演示适配器", profile.ddaeAdapterVersion || "-"],
+    ["默认面板策略（PanelPolicy）", productDemoPanelPolicyDefaultLabel(profile.panelPolicyDefault)],
+    ["fallback 防护", workspace.fallbackToCoreSampleBlocked ? "禁止回退 DDAE_CORE_SAMPLE" : "未确认"],
+    ["主设置防护", workspace.feedbackMutationBlocked && workspace.networkCandidateMutationBlocked ? "feedback / candidates 不自动改主设置" : "未确认"],
+  ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+
+  const coveredPanels = (workspace.panelPolicies || [])
+    .filter(item => item.handling === "ProductDemoMode")
+    .map(item => item.displayLabel || item.panelID);
+  const placeholderPanels = (workspace.panelPolicies || [])
+    .filter(item => item.handling === "Placeholder")
+    .map(item => item.displayLabel || item.panelID);
+  byId("product-demo-scope-summary").innerHTML = `
+    <div class="diagnostic-item">
+      <strong>本次产品演示覆盖范围</strong>
+      <span>已接入 ProductDemoMode 的区域：${escapeHtml(coveredPanels.join("、") || "未确认")}。</span>
+      <small>占位区域：${escapeHtml(placeholderPanels.join("、") || "无")}。占位只表示本轮尚未接入 AdventureWorks 产品演示数据，不代表产品能力缺失。</small>
+    </div>
+    <div class="diagnostic-item">
+      <strong>证据术语说明</strong>
+      <span>来源类型表示数据来自 AdventureWorks、派生计算或 DemoAuthority 补全；证据编号用于追踪具体演示依据；面板策略用于防止未适配区域回退旧样例。</span>
+    </div>`;
+
+  byId("product-demo-ddae-authority-body").innerHTML = (workspace.ddaeAuthorityRows || []).map(item => row([
+    escapeHtml(productDemoGroupLabel(item.groupName)),
+    `<strong>${escapeHtml(item.businessObject || "-")}</strong>`,
+    escapeHtml(item.valueSummary || "-"),
+    `<span class="status-chip neutral" title="来源类型：说明该治理值来自公开数据、派生计算或 DemoAuthority 显式补全。">${escapeHtml(productDemoSourceClassLabel(item.sourceClass))}</span>`,
+    `<code title="证据编号：用于追踪该治理值的演示依据。">${escapeHtml(item.evidenceRef || "-")}</code>`,
+    escapeHtml(item.owner || "-"),
+  ])).join("") || emptyRow("未读取到 DDAE DemoAuthority 治理行", 6);
+
+  byId("product-demo-panel-policy-body").innerHTML = (workspace.panelPolicies || []).map(item => row([
+    `<strong>${escapeHtml(item.displayLabel || item.panelID)}</strong><small>${escapeHtml(item.panelID)}</small>`,
+    `<span class="status-chip ${item.handling === "ProductDemoMode" ? "is-valid" : "is-paused"}">${escapeHtml(productDemoHandlingLabel(item.handling))}</span>`,
+    escapeHtml(productDemoPanelPolicyText(item)),
+  ])).join("") || emptyRow("未读取到 ProductDemoMode 面板策略", 3);
+
+  const validations = workspace.validation || [];
+  byId("product-demo-validation-list").innerHTML = validations.slice(0, 8).map(item => `
+    <div class="diagnostic-item ${item.status === "通过" ? "" : "is-error"}">
+      <strong>${escapeHtml(item.rule)}</strong>
+      <span>${escapeHtml(item.status)}：${escapeHtml(item.message)}</span>
+      <small>${escapeHtml(item.evidenceRef || "")}</small>
+    </div>
+  `).join("") + `
+    <div class="diagnostic-item">
+      <strong>非声明</strong>
+      <span>${escapeHtml((workspace.nonClaims || []).join(" "))}</span>
+    </div>`;
+}
+
+function productDemoSourceClassLabel(sourceClass) {
+  const labels = {
+    AdventureWorks: "AdventureWorks 原始公开数据",
+    DerivedFromAdventureWorks: "由 AdventureWorks 派生",
+    DemoAuthority: "DemoAuthority 显式补全",
+    Missing: "缺失",
+    Placeholder: "占位",
+  };
+  return labels[sourceClass] || sourceClass || "-";
+}
+
+function productDemoPanelPolicyDefaultLabel(policy) {
+  if (policy === "Placeholder") return "未适配区域显示占位，不回退旧样例";
+  if (policy === "ProductDemoMode") return "按产品演示模式展示";
+  if (policy === "SampleModeOnly") return "仅样例模式";
+  return policy || "-";
+}
+
+function productDemoPanelPolicyText(item) {
+  if (item.handling === "ProductDemoMode") return "已接入 AdventureWorks 产品演示数据，按 ProductDemoMode 展示。";
+  if (item.handling === "Placeholder") return "本区尚未接入 AdventureWorks 产品演示数据，当前仅显示占位说明；这不代表产品能力缺失。";
+  if (item.handling === "SampleModeOnly") return "仅样例模式可见，ProductDemoMode 不允许静默回退。";
+  return item.placeholderText || "-";
+}
+
+function productDemoGroupLabel(groupName) {
+  const labels = {
+    ServiceTargets: "服务目标",
+    DemandProxies: "需求代理",
+    DDMRPBufferSettings: "DDMRP 缓冲设置",
+    PlanningWindows: "计划窗口",
+    ControlPointGovernance: "控制点治理",
+    ResourceRoleGovernance: "资源角色治理",
+    ReleasePolicies: "释放策略",
+    PriorityPolicies: "优先级策略",
+    ApprovalEvidence: "批准证据",
+    EffectivityEvidence: "生效证据",
+    RuleVersions: "规则版本",
+  };
+  return labels[groupName] || groupName || "-";
+}
+
+function productDemoHandlingLabel(handling) {
+  if (handling === "ProductDemoMode") return "ProductDemoMode 展示";
+  if (handling === "SampleModeOnly") return "仅样例模式";
+  if (handling === "Placeholder") return "占位";
+  return handling || "-";
 }
 
 function renderPublicDemoSchedulingAdapter(adapter) {
@@ -2888,14 +3009,17 @@ function renderPublicDemoBusinessUserView(workspace) {
   const bufferPoint = ddmrp?.decouplingPoints?.[0];
   const policies = adapter?.governancePolicies || [];
   const materialMode = (adapter?.adapterMetadata || []).find(item => item.fieldName === "MaterialConstraintsMode")?.value || "OmittedForPublicDemo";
+  const sampleItem = workspace.packageContext?.sampleItem || "未读取物料";
+  const sampleLocation = workspace.packageContext?.sampleLocation || "未读取地点";
+  const sampleUom = workspace.packageContext?.sampleUom || "未读取单位";
 
   byId("public-demo-business-summary").innerHTML = [
     {
       step: "1",
       title: "当前业务场景",
-      body: "公开演示关注一个关键进口空间级 FPGA 在电子质检库存点的受控可用性。业务上它代表星载电子链路中的关键长周期物料，适合用来说明 DDS&OP 参数发布和 SDBR 评审反馈如何衔接。",
+      body: "公开演示关注同一份文件化数据包中的样例物料、地点和计量单位。业务上它用于说明 DDS&OP 参数发布、受控交付和 SDBR 评审反馈如何衔接，不代表生产主数据权威。",
       trace: [
-        `关键对象：${bufferPoint?.itemID || "PART-FPGA-SPACE"} / ${bufferPoint?.locationID || "WH-ELEC-QA"} / ${bufferPoint?.uom || "EA"}`,
+        `关键对象：${bufferPoint?.itemID || sampleItem} / ${bufferPoint?.locationID || sampleLocation} / ${bufferPoint?.uom || sampleUom}`,
         `映射置信：${workspace.mappingConfidence || "PublicDemoOnly"}`,
       ],
     },
@@ -2906,7 +3030,7 @@ function renderPublicDemoBusinessUserView(workspace) {
       trace: [
         `Operating Model：${operatingModel?.operatingModelConfigurationID || "-"}`,
         `DDMRP：${ddmrp?.ddmrpConfigurationID || "-"}`,
-        `控制点：${controlPoint?.resourceID || "WH-ELEC-QA"}`,
+        `控制点：${controlPoint?.resourceID || sampleLocation}`,
         `治理策略：${policies.map(item => item.policyArea).join("、") || "控制点、资源角色、释放策略、时间缓冲、优先级、计划窗口"}`,
       ],
     },
@@ -2945,7 +3069,7 @@ function renderPublicDemoBusinessUserView(workspace) {
   byId("public-demo-business-boundary").innerHTML = [
     "不是 ProductionValidated。",
     "不是 Business Golden Loop Readiness。",
-    "SDBR feedback 不会自动修改 DDAE 已批准主设置。",
+    "SDBR 反馈不会自动修改 DDAE 已批准主设置。",
     "没有生产级物料可行性声明。",
     "DDAE 不拥有 SDBR 可执行 routing、工序时长、资源日历或工单执行状态。",
   ].map(item => `<span>${escapeHtml(item)}</span>`).join("");
@@ -2961,6 +3085,18 @@ async function loadPublicDemoGoldenLoop() {
 
   state.publicDemoGoldenLoop = await response.json();
   renderPublicDemoGoldenLoop(state.publicDemoGoldenLoop);
+}
+
+async function loadAdventureWorksProductDemo() {
+  const response = await fetch("/api/adventureworks-product-demo-v1", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`AdventureWorks ProductDemoMode 接口失败：${response.status}`);
+  }
+
+  state.adventureWorksProductDemo = await response.json();
+  renderAdventureWorksProductDemo(state.adventureWorksProductDemo);
 }
 
 async function writePublicDemoPayload() {
@@ -3053,6 +3189,7 @@ async function loadWorkspace() {
   }
   state.masterSettings = await masterSettingsResponse.json();
   await loadPublicDemoGoldenLoop();
+  await loadAdventureWorksProductDemo();
   configureFilters(state.data);
   configurePreviewControls(state.data);
   await loadSavedScenarioRuns();
