@@ -12,13 +12,24 @@ public sealed record PublicDemoGoldenLoopOptions(
     string VarianceAnalysisFeedbackPath,
     string ValidationSummaryPath)
 {
-    public static PublicDemoGoldenLoopOptions Default { get; } = new(
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\data\public-demo-golden-data-v1",
-        "20ddd29cb082ba833ff617013257a7270c49b0a6eb1da8b97f5a7240ac900772",
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\data\public-demo-golden-data-v1\handoff\ddae-to-sdbr\ddsop-config-inbound-v1-payload.json",
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\data\public-demo-golden-data-v1\handoff\sdbr-to-ddae\planning-run-feedback.json",
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\data\public-demo-golden-data-v1\handoff\sdbr-to-ddae\variance-analysis-feedback.json",
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\data\public-demo-golden-data-v1\handoff\sdbr-to-ddae\validation-summary.json");
+    public static PublicDemoGoldenLoopOptions Default { get; } = CreateDefault();
+
+    private static PublicDemoGoldenLoopOptions CreateDefault()
+    {
+        var packagePath = Path.Combine(
+            ContractRepositoryPathResolver.ResolveDefault(),
+            "data",
+            "public-demo-golden-data-v1");
+        var handoffPath = Path.Combine(packagePath, "handoff");
+
+        return new PublicDemoGoldenLoopOptions(
+            packagePath,
+            "20ddd29cb082ba833ff617013257a7270c49b0a6eb1da8b97f5a7240ac900772",
+            Path.Combine(handoffPath, "ddae-to-sdbr", "ddsop-config-inbound-v1-payload.json"),
+            Path.Combine(handoffPath, "sdbr-to-ddae", "planning-run-feedback.json"),
+            Path.Combine(handoffPath, "sdbr-to-ddae", "variance-analysis-feedback.json"),
+            Path.Combine(handoffPath, "sdbr-to-ddae", "validation-summary.json"));
+    }
 }
 
 public sealed record PublicDemoGoldenLoopWorkspace(

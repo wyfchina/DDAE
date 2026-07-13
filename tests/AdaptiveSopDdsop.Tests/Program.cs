@@ -51,6 +51,8 @@ var tests = new (string Name, Action Run)[]
     ("DDSOP-FEEDBACK-OUTBOUND-V1 ledger accepts SDBR fixture feedback without governance mutation", TestDdsopFeedbackInboundLedgerAcceptsSdbrFixtures),
     ("DDSOP-RUNTIME-PLANNING-INPUT-V1 generates DDAE-owned runtime package", TestDdsopRuntimePlanningInputGeneratesDdaeOwnedPackage),
     ("AdventureWorks scheduling adapter metadata stays non-DDAE-owned", TestAdventureWorksSchedulingAdapterMetadataStaysNonDdaeOwned),
+    ("Contract repository path resolver prefers configured root", TestContractRepositoryPathResolverPrefersConfiguredRoot),
+    ("Contract repository path resolver discovers sibling repository", TestContractRepositoryPathResolverDiscoversSiblingRepository),
     ("AdventureWorks product demo profile exposes DDAE governance read model", TestAdventureWorksProductDemoProfileExposesDdaeGovernanceReadModel),
     ("DDSOP-RUNTIME-PLANNING-INPUT-V1 correlates feedback through delivery ledger", TestDdsopRuntimePlanningInputCorrelatesFeedback),
     ("PUBLIC-DEMO-GOLDEN-DATA-V1 demo service writes handoff payload without production claims", TestPublicDemoGoldenLoopServiceWritesHandoffPayload),
@@ -1455,6 +1457,42 @@ static void TestAdventureWorksProductDemoProfileExposesDdaeGovernanceReadModel()
     AssertTrue(workspace.FeedbackMutationBlocked, "SDBR feedback should not mutate approved master settings");
     AssertTrue(workspace.NetworkCandidateMutationBlocked, "Network candidates should not mutate approved master settings");
     AssertTrue(workspace.NonClaims.Any(item => item.Contains("不声明 ProductionValidated", StringComparison.Ordinal)), "non-claims should preserve ProductionValidated boundary");
+}
+
+static void TestContractRepositoryPathResolverPrefersConfiguredRoot()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ddae-contract-root-{Guid.NewGuid():N}");
+    var configuredRoot = Path.Combine(root, "configured-contract");
+    Directory.CreateDirectory(configuredRoot);
+    try
+    {
+        var resolved = ContractRepositoryPathResolver.Resolve(root, configuredRoot);
+
+        AssertEqual(Path.GetFullPath(configuredRoot), resolved, "configured contract repository root");
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+static void TestContractRepositoryPathResolverDiscoversSiblingRepository()
+{
+    var workspace = Path.Combine(Path.GetTempPath(), $"ddae-contract-sibling-{Guid.NewGuid():N}");
+    var applicationRoot = Path.Combine(workspace, "DDAE", "src", "AdaptiveSopDdsop.Web");
+    var contractRoot = Path.Combine(workspace, "DDAE_INTERFACE_CONTRACT");
+    Directory.CreateDirectory(applicationRoot);
+    Directory.CreateDirectory(contractRoot);
+    try
+    {
+        var resolved = ContractRepositoryPathResolver.Resolve(applicationRoot, configuredRoot: null);
+
+        AssertEqual(Path.GetFullPath(contractRoot), resolved, "sibling contract repository root");
+    }
+    finally
+    {
+        Directory.Delete(workspace, recursive: true);
+    }
 }
 
 static void TestDdsopRuntimePlanningInputCorrelatesFeedback()

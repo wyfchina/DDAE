@@ -5,7 +5,10 @@ namespace AdaptiveSopDdsop.Web.Domain;
 public sealed record AdventureWorksProductDemoProfileOptions(string ContractPath)
 {
     public static AdventureWorksProductDemoProfileOptions Default { get; } = new(
-        @"D:\Documents\DDAE_INTERFACE_CONTRACT\contracts\adventureworks-product-demo-v1");
+        Path.Combine(
+            ContractRepositoryPathResolver.ResolveDefault(),
+            "contracts",
+            "adventureworks-product-demo-v1"));
 }
 
 public sealed record AdventureWorksProductDemoWorkspace(
