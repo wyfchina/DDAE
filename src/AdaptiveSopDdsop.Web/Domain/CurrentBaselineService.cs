@@ -12,7 +12,34 @@ public sealed record BaselineEvidenceSection(
     string CompletenessStatus,
     int ItemCount,
     string EvidenceLabel,
-    bool IsRequired);
+    bool IsRequired,
+    string? MissingReason = null,
+    IReadOnlyList<BaselineEvidenceItem>? Items = null);
+
+public sealed record BaselineKpiSnapshot(
+    decimal? ServiceLevelPercent,
+    string ServiceWindow,
+    decimal? InventoryValue,
+    decimal? WorkInProcessUnits,
+    decimal? BacklogUnits,
+    decimal? SupplyCoverageWeeks,
+    decimal? PeakResourceLoadPercent,
+    string SourceAuthority,
+    string AsOfUtc,
+    string EvidenceStatus);
+
+public sealed record BaselineAnalysisAvailability(
+    string AnalysisCode,
+    string Status,
+    string Reason);
+
+public sealed record BaselineEvidenceItem(
+    string ItemKey,
+    string Name,
+    string FreshnessStatus,
+    string CompletenessStatus,
+    bool BlocksFreeze,
+    string? MissingReason = null);
 
 public sealed record BaselineTransitItem(string Sku, decimal Quantity, string Status);
 public sealed record BaselineBacklogItem(string Sku, int Week, decimal Quantity, string Status);
@@ -30,7 +57,9 @@ public sealed record CurrentBaselinePayload(
     IReadOnlyList<BaselineResourceAvailability> ResourceAvailability,
     IReadOnlyList<BaselineTemporaryAdjustment> ActiveTemporaryAdjustments,
     IReadOnlyList<MasterSetting> MasterSettings,
-    ScenarioWorkspaceDataSet? PlanningInputs = null);
+    ScenarioWorkspaceDataSet? PlanningInputs = null,
+    BaselineKpiSnapshot? Kpis = null,
+    IReadOnlyList<BaselineAnalysisAvailability>? AnalysisAvailability = null);
 
 public sealed record CurrentBaselineCandidate(
     string CandidateId,
@@ -73,7 +102,8 @@ public sealed record CurrentBaselineAuditEvent(
     int Sequence,
     string EventType,
     string Message,
-    string CreatedAtUtc);
+    string CreatedAtUtc,
+    string? PayloadJson = null);
 
 public interface ICurrentBaselineDataSource
 {
@@ -103,10 +133,10 @@ public sealed class CurrentBaselineService
         }
 
         var candidate = _dataSource.GetCandidate();
-        var missing = candidate.Sections.Where(item => item.IsRequired && item.CompletenessStatus != "Complete").ToList();
-        if (missing.Count > 0)
+        var blockingEvidence = FindEvidenceIssues(candidate.Sections, blockingOnly: true);
+        if (blockingEvidence.Count > 0)
         {
-            throw new ArgumentException($"关键基线证据不完整：{string.Join("、", missing.Select(item => item.SectionCode))}。", nameof(request));
+            throw new ArgumentException($"关键基线证据不完整或已过期：{string.Join("; ", blockingEvidence)}。", nameof(request));
         }
         if (candidate.Payload.PlanningInputs is null)
         {
@@ -131,6 +161,26 @@ public sealed class CurrentBaselineService
             candidate.Sections,
             candidate.Payload,
             candidate.EvidenceLabel);
+        var allEvidenceIssues = FindEvidenceIssues(candidate.Sections, blockingOnly: false);
+        var completeEvidence = candidate.Sections
+            .SelectMany(section => section.Items is { Count: > 0 }
+                ? section.Items
+                    .Where(item => item.FreshnessStatus == "Fresh" && item.CompletenessStatus == "Complete")
+                    .Select(item => $"{section.SectionCode}/{item.ItemKey}")
+                : section.FreshnessStatus == "Fresh" && section.CompletenessStatus == "Complete"
+                    ? new[] { section.SectionCode }
+                    : Array.Empty<string>())
+            .ToList();
+        var auditPayload = JsonSerializer.Serialize(new
+        {
+            candidateId = candidate.CandidateId,
+            snapshotNumber,
+            actor = snapshot.CreatedBy,
+            createdAtUtc = now,
+            completeEvidence,
+            missingEvidence = allEvidenceIssues,
+            result = "Frozen"
+        }, JsonOptions);
 
         using (var command = connection.CreateCommand())
         {
@@ -159,7 +209,9 @@ public sealed class CurrentBaselineService
 
         InsertAudit(connection, transaction, new CurrentBaselineAuditEvent(
             Guid.NewGuid().ToString("N"), snapshotId, 1, "BaselineFrozen",
-            $"基线 {snapshotNumber} 已冻结；冻结后不可修改，只能创建新版本。", now));
+            $"候选 {candidate.CandidateId} 已冻结为 {snapshotNumber}；完整证据 {completeEvidence.Count} 项，缺失或过期证据 {allEvidenceIssues.Count} 项。",
+            now,
+            auditPayload));
         transaction.Commit();
         return snapshot;
     }
@@ -219,7 +271,7 @@ public sealed class CurrentBaselineService
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT event_id, snapshot_id, sequence, event_type, message, created_at_utc
+            SELECT event_id, snapshot_id, sequence, event_type, message, created_at_utc, payload_json
             FROM current_baseline_audit_events
             WHERE snapshot_id = $snapshot_id
             ORDER BY sequence;
@@ -229,7 +281,14 @@ public sealed class CurrentBaselineService
         var results = new List<CurrentBaselineAuditEvent>();
         while (reader.Read())
         {
-            results.Add(new CurrentBaselineAuditEvent(reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), reader.GetString(4), reader.GetString(5)));
+            results.Add(new CurrentBaselineAuditEvent(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
         }
         return results;
     }
@@ -264,6 +323,7 @@ public sealed class CurrentBaselineService
                 event_type TEXT NOT NULL,
                 message TEXT NOT NULL,
                 created_at_utc TEXT NOT NULL,
+                payload_json TEXT NULL,
                 UNIQUE(snapshot_id, sequence),
                 FOREIGN KEY(snapshot_id) REFERENCES current_baseline_snapshots(snapshot_id) ON DELETE RESTRICT
             );
@@ -291,6 +351,7 @@ public sealed class CurrentBaselineService
             END;
             """;
         command.ExecuteNonQuery();
+        EnsureColumn(connection, "current_baseline_audit_events", "payload_json", "TEXT NULL");
     }
 
     private SqliteConnection OpenConnection()
@@ -316,8 +377,8 @@ public sealed class CurrentBaselineService
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO current_baseline_audit_events (event_id, snapshot_id, sequence, event_type, message, created_at_utc)
-            VALUES ($event_id, $snapshot_id, $sequence, $event_type, $message, $created_at_utc);
+            INSERT INTO current_baseline_audit_events (event_id, snapshot_id, sequence, event_type, message, created_at_utc, payload_json)
+            VALUES ($event_id, $snapshot_id, $sequence, $event_type, $message, $created_at_utc, $payload_json);
             """;
         command.Parameters.AddWithValue("$event_id", item.EventId);
         command.Parameters.AddWithValue("$snapshot_id", item.SnapshotId);
@@ -325,6 +386,75 @@ public sealed class CurrentBaselineService
         command.Parameters.AddWithValue("$event_type", item.EventType);
         command.Parameters.AddWithValue("$message", item.Message);
         command.Parameters.AddWithValue("$created_at_utc", item.CreatedAtUtc);
+        command.Parameters.AddWithValue("$payload_json", (object?)item.PayloadJson ?? DBNull.Value);
         command.ExecuteNonQuery();
+    }
+
+    private static IReadOnlyList<string> FindEvidenceIssues(
+        IReadOnlyList<BaselineEvidenceSection> sections,
+        bool blockingOnly)
+    {
+        var issues = new List<string>();
+        foreach (var section in sections)
+        {
+            if (section.Items is { Count: > 0 })
+            {
+                foreach (var item in section.Items)
+                {
+                    var complete = item.FreshnessStatus == "Fresh" && item.CompletenessStatus == "Complete";
+                    if (complete || (blockingOnly && !item.BlocksFreeze))
+                    {
+                        continue;
+                    }
+
+                    var reason = string.IsNullOrWhiteSpace(item.MissingReason)
+                        ? $"Freshness={item.FreshnessStatus},Completeness={item.CompletenessStatus}"
+                        : item.MissingReason;
+                    issues.Add($"{section.SectionCode}/{item.ItemKey}/{reason}");
+                }
+
+                continue;
+            }
+
+            var notApplicable = section.FreshnessStatus == "NotApplicable" && section.CompletenessStatus == "NotApplicable";
+            var completeSection = section.FreshnessStatus == "Fresh" && section.CompletenessStatus == "Complete";
+            if (notApplicable || completeSection || (blockingOnly && !section.IsRequired))
+            {
+                continue;
+            }
+
+            var sectionReason = string.IsNullOrWhiteSpace(section.MissingReason)
+                ? $"Freshness={section.FreshnessStatus},Completeness={section.CompletenessStatus}"
+                : section.MissingReason;
+            issues.Add($"{section.SectionCode}/{sectionReason}");
+        }
+
+        return issues;
+    }
+
+    private static void EnsureColumn(SqliteConnection connection, string tableName, string columnName, string declaration)
+    {
+        using var pragma = connection.CreateCommand();
+        pragma.CommandText = $"PRAGMA table_info({tableName});";
+        using var reader = pragma.ExecuteReader();
+        var exists = false;
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                exists = true;
+                break;
+            }
+        }
+
+        reader.Close();
+        if (exists)
+        {
+            return;
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {declaration};";
+        alter.ExecuteNonQuery();
     }
 }

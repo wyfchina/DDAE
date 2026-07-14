@@ -180,7 +180,11 @@ public sealed class ScenarioRunPreviewService
             SupplierCapacityWindows = data.SupplierCapacityWindows
                 .Where(item => sourceKeys.Contains($"{item.Supplier}|{item.MaterialFamily}") && item.Week <= request.HorizonWeeks)
                 .ToList(),
-            DdmrpParameters = data.DdmrpParameters.Where(item => skuCodes.Contains(item.Sku)).ToList()
+            DdmrpParameters = data.DdmrpParameters.Where(item => skuCodes.Contains(item.Sku)).ToList(),
+            CapacityProtections = data.CapacityProtections,
+            TimeBuffers = data.TimeBuffers,
+            ControlPointProgress = data.ControlPointProgress,
+            TimeBufferProductScopes = data.TimeBufferProductScopes
         };
     }
 

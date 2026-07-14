@@ -21,8 +21,11 @@ var tests = new (string Name, Action Run)[]
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
     ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
+    ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
+    ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
+    ("Current baseline incrementally migrates legacy audit payload evidence", TestCurrentBaselineMigratesLegacyAuditPayloadColumn),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
@@ -657,6 +660,182 @@ static void TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts()
     AssertTrue(failures.Count == 0, string.Join("; ", failures));
 }
 
+static void TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-kpis-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var service = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var candidate = service.GetCandidate();
+        var kpis = candidate.Payload.Kpis;
+
+        AssertTrue(kpis is not null, "candidate should expose meeting snapshot KPIs");
+        AssertTrue(kpis!.ServiceLevelPercent is > 0m and <= 100m, "snapshot service level should be evidence-backed");
+        AssertTrue(!string.IsNullOrWhiteSpace(kpis.ServiceWindow), "snapshot service level should name its statistical window");
+        AssertEqual(
+            validationData.Inventory.Join(validationData.Skus, item => item.Sku, sku => sku.Sku, (item, sku) => item.OnHand * sku.UnitCost).Sum(),
+            kpis.InventoryValue,
+            "snapshot inventory value");
+        AssertEqual(candidate.Payload.WorkInProcess.Sum(item => item.Quantity), kpis.WorkInProcessUnits, "snapshot WIP units");
+        AssertEqual(candidate.Payload.Backlog.Sum(item => item.Quantity), kpis.BacklogUnits, "snapshot backlog units");
+        AssertTrue(kpis.SupplyCoverageWeeks is > 0m, "snapshot supply coverage should be present");
+        AssertTrue(kpis.PeakResourceLoadPercent is > 0m, "snapshot peak resource load should be present");
+        AssertEqual(candidate.AsOfUtc, kpis.AsOfUtc, "snapshot KPI as-of time");
+        AssertEqual("Complete", kpis.EvidenceStatus, "snapshot KPI evidence status");
+
+        var kpiSection = candidate.Sections.Single(item => item.SectionCode == "CURRENT_KPIS");
+        AssertEqual(kpis.SourceAuthority, kpiSection.SourceAuthority, "KPI source authority");
+        AssertEqual(kpis.AsOfUtc, kpiSection.AsOfUtc, "KPI section as-of time");
+        AssertEqual("DemoFixture", kpiSection.EvidenceLabel, "KPI evidence label");
+
+        var frozen = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "meeting snapshot KPIs"));
+        var loaded = service.GetDetail(frozen.SnapshotId)!;
+        AssertEqual(
+            JsonSerializer.Serialize(frozen.Payload.Kpis),
+            JsonSerializer.Serialize(loaded.Payload.Kpis),
+            "frozen KPI JSON round trip");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
+{
+    var databasePaths = new List<string>();
+    string NewDatabasePath(string suffix)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-{suffix}-{Guid.NewGuid():N}.db");
+        databasePaths.Add(path);
+        return path;
+    }
+
+    try
+    {
+        var validationData = SeedData.Create();
+        var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+        var timeBuffer = planningInputs.TimeBuffers!.Single();
+        var progress = planningInputs.ControlPointProgress!.First(item => item.BufferId == timeBuffer.BufferId);
+        var timeSectionCodes = new[] { "TIME_BUFFER_DEFINITIONS", "TIME_BUFFER_PRODUCT_SCOPES", "CONTROL_POINT_PROGRESS" };
+
+        var notApplicableInputs = planningInputs with
+        {
+            TimeBuffers = Array.Empty<TimeBufferDefinition>(),
+            TimeBufferProductScopes = Array.Empty<TimeBufferProductScope>(),
+            ControlPointProgress = Array.Empty<ControlPointProgressFact>()
+        };
+        var notApplicableService = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(notApplicableInputs)),
+            NewDatabasePath("time-na"));
+        var notApplicable = notApplicableService.GetCandidate();
+        AssertTrue(
+            notApplicable.Sections.Where(item => timeSectionCodes.Contains(item.SectionCode, StringComparer.Ordinal)).All(item =>
+                item.FreshnessStatus == "NotApplicable" &&
+                item.CompletenessStatus == "NotApplicable" &&
+                item.Items is { Count: 0 }),
+            "unconfigured time buffers should be explicitly not applicable with no blocking items");
+        AssertEqual(
+            "NotApplicable",
+            notApplicable.Payload.AnalysisAvailability!.Single(item => item.AnalysisCode == "TimeBuffer").Status,
+            "unconfigured time-buffer availability");
+        notApplicableService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "time buffer not applicable"));
+
+        var nonCriticalInputs = planningInputs with
+        {
+            TimeBuffers = new[] { timeBuffer with { IsCritical = false } },
+            ControlPointProgress = new[] { progress with { ObservedDelayDays = null, EvidenceStatus = "EvidenceMissing" } }
+        };
+        var nonCriticalService = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(nonCriticalInputs)),
+            NewDatabasePath("time-noncritical"));
+        var nonCritical = nonCriticalService.GetCandidate();
+        var nonCriticalProgressSection = nonCritical.Sections.Single(item => item.SectionCode == "CONTROL_POINT_PROGRESS");
+        var nonCriticalProgressItem = nonCriticalProgressSection.Items!.Single(item => item.ItemKey == timeBuffer.BufferId);
+        AssertEqual("EvidenceMissing", nonCriticalProgressItem.CompletenessStatus, "noncritical progress completeness");
+        AssertTrue(!nonCriticalProgressItem.BlocksFreeze, "noncritical missing progress must not block freezing");
+        AssertEqual(
+            "EvidenceMissing",
+            nonCritical.Payload.AnalysisAvailability!.Single(item => item.AnalysisCode == "TimeBuffer").Status,
+            "noncritical missing evidence availability");
+
+        var frozen = nonCriticalService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "noncritical missing time evidence"));
+        var loaded = nonCriticalService.GetDetail(frozen.SnapshotId)!;
+        var liveSource = new TrackingScenarioWorkspaceDataSource(validationData);
+        var frozenWorkspace = new ScenarioRunPreviewService(liveSource)
+            .LoadFrozenWorkspaceData(new ScenarioRunPreviewRequest(52), loaded);
+        AssertEqual(0, liveSource.LoadCount, "frozen preview must not call the live scenario source");
+        AssertTrue(
+            frozenWorkspace.ControlPointProgress!.Single(item => item.BufferId == timeBuffer.BufferId).ObservedDelayDays is null,
+            "missing frozen delay evidence must remain null rather than becoming zero");
+        AssertEqual(
+            JsonSerializer.Serialize(loaded.Payload.PlanningInputs!.CapacityProtections),
+            JsonSerializer.Serialize(frozenWorkspace.CapacityProtections),
+            "frozen capacity-protection evidence");
+        AssertEqual(
+            JsonSerializer.Serialize(loaded.Payload.PlanningInputs.TimeBuffers),
+            JsonSerializer.Serialize(frozenWorkspace.TimeBuffers),
+            "frozen time-buffer definitions");
+        AssertEqual(
+            JsonSerializer.Serialize(loaded.Payload.PlanningInputs.TimeBufferProductScopes),
+            JsonSerializer.Serialize(frozenWorkspace.TimeBufferProductScopes),
+            "frozen time-buffer product scopes");
+        AssertEqual(
+            JsonSerializer.Serialize(loaded.Payload.PlanningInputs.ControlPointProgress),
+            JsonSerializer.Serialize(frozenWorkspace.ControlPointProgress),
+            "frozen control-point progress");
+
+        var criticalMissingInputs = nonCriticalInputs with
+        {
+            TimeBuffers = new[] { timeBuffer with { IsCritical = true } }
+        };
+        var criticalMissingService = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(criticalMissingInputs)),
+            NewDatabasePath("time-critical-missing"));
+        var criticalMissingRejected = false;
+        try
+        {
+            criticalMissingService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            criticalMissingRejected =
+                ex.Message.Contains($"CONTROL_POINT_PROGRESS/{timeBuffer.BufferId}", StringComparison.Ordinal) &&
+                ex.Message.Contains("ObservedDelayDays", StringComparison.Ordinal);
+        }
+        AssertTrue(criticalMissingRejected, "critical missing progress should block freezing with section item and reason");
+
+        var criticalStaleInputs = planningInputs with
+        {
+            ControlPointProgress = new[] { progress with { EvidenceStatus = "Stale" } }
+        };
+        var criticalStaleService = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(criticalStaleInputs)),
+            NewDatabasePath("time-critical-stale"));
+        var criticalStaleRejected = false;
+        try
+        {
+            criticalStaleService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            criticalStaleRejected = ex.Message.Contains($"CONTROL_POINT_PROGRESS/{timeBuffer.BufferId}", StringComparison.Ordinal);
+        }
+        AssertTrue(criticalStaleRejected, "critical stale progress should block freezing");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        foreach (var databasePath in databasePaths)
+        {
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
 static void TestCurrentBaselineFreezesCompleteEvidence()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-{Guid.NewGuid():N}.db");
@@ -667,13 +846,25 @@ static void TestCurrentBaselineFreezesCompleteEvidence()
 
         var candidate = service.GetCandidate();
         AssertTrue(candidate.Sections.All(item => item.CompletenessStatus == "Complete"), "seed baseline sections should be complete");
+        AssertTrue(candidate.Sections.All(item => item.FreshnessStatus == "Fresh"), "seed baseline sections should be fresh");
         AssertTrue(candidate.Sections.All(item => item.EvidenceLabel == "DemoFixture"), "seed baseline evidence should remain demo-labelled");
         AssertTrue(candidate.Payload.PlanningInputs is not null, "candidate must freeze the typed planning inputs needed for reproducible recalculation");
 
         var frozen = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "月度例会基线"));
         var loaded = service.GetDetail(frozen.SnapshotId);
         var audit = service.GetAuditEvents(frozen.SnapshotId);
+        string LoadRawPayloadJson()
+        {
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT payload_json FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;";
+            command.Parameters.AddWithValue("$snapshot_id", frozen.SnapshotId);
+            return Convert.ToString(command.ExecuteScalar())!;
+        }
+        var firstPayloadBeforeNextFreeze = LoadRawPayloadJson();
         var nextVersion = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "下一版本"));
+        var firstPayloadAfterNextFreeze = LoadRawPayloadJson();
 
         AssertEqual("Frozen", frozen.Status, "baseline status");
         AssertTrue(loaded is not null, "frozen baseline should be retrievable");
@@ -682,6 +873,14 @@ static void TestCurrentBaselineFreezesCompleteEvidence()
         AssertTrue(nextVersion.SnapshotNumber.EndsWith("-002", StringComparison.Ordinal), "baseline version number should increment");
         AssertTrue(nextVersion.SnapshotId != frozen.SnapshotId, "new freeze should create a new immutable snapshot");
         AssertTrue(audit.Any(item => item.EventType == "BaselineFrozen"), "baseline freeze should be audited");
+        AssertEqual(firstPayloadBeforeNextFreeze, firstPayloadAfterNextFreeze, "later freezes must not rewrite an older payload byte");
+        var frozenAudit = audit.Single(item => item.EventType == "BaselineFrozen");
+        AssertTrue(!string.IsNullOrWhiteSpace(frozenAudit.PayloadJson), "freeze audit should contain structured evidence payload");
+        using var auditDocument = JsonDocument.Parse(frozenAudit.PayloadJson!);
+        AssertEqual(candidate.CandidateId, auditDocument.RootElement.GetProperty("candidateId").GetString(), "freeze audit candidate");
+        AssertEqual(frozen.SnapshotNumber, auditDocument.RootElement.GetProperty("snapshotNumber").GetString(), "freeze audit snapshot number");
+        AssertEqual(frozen.CreatedBy, auditDocument.RootElement.GetProperty("actor").GetString(), "freeze audit actor");
+        AssertEqual("Frozen", auditDocument.RootElement.GetProperty("result").GetString(), "freeze audit result");
 
         var updateBlocked = false;
         var deleteBlocked = false;
@@ -764,6 +963,86 @@ static void TestCurrentBaselineRejectsMissingCriticalEvidence()
             missingPlanningRejected = ex.Message.Contains("类型化计划输入", StringComparison.Ordinal);
         }
         AssertTrue(missingPlanningRejected, "new snapshots without typed planning inputs must not be frozen");
+
+        var staleEvidence = complete with
+        {
+            Sections = complete.Sections
+                .Select(item => item.SectionCode == "WIP" ? item with { FreshnessStatus = "Stale" } : item)
+                .ToList()
+        };
+        var staleEvidenceService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(staleEvidence), databasePath);
+        var staleEvidenceRejected = false;
+        try
+        {
+            staleEvidenceService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            staleEvidenceRejected = ex.Message.Contains("WIP", StringComparison.Ordinal);
+        }
+        AssertTrue(staleEvidenceRejected, "stale required baseline evidence should block freezing");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCurrentBaselineMigratesLegacyAuditPayloadColumn()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-legacy-{Guid.NewGuid():N}.db");
+    try
+    {
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE current_baseline_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    snapshot_number TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    as_of_utc TEXT NOT NULL,
+                    master_setting_version TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    note TEXT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    sections_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    evidence_label TEXT NOT NULL
+                );
+                CREATE TABLE current_baseline_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    UNIQUE(snapshot_id, sequence)
+                );
+                INSERT INTO current_baseline_audit_events (
+                    event_id, snapshot_id, sequence, event_type, message, created_at_utc)
+                VALUES ('LEGACY-EVENT', 'LEGACY-SNAPSHOT', 1, 'BaselineFrozen', 'legacy audit', '2026-06-30T08:00:00.0000000+00:00');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var service = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
+        var legacyAudit = service.GetAuditEvents("LEGACY-SNAPSHOT").Single();
+        AssertTrue(legacyAudit.PayloadJson is null, "legacy audit rows should remain readable with null structured payload");
+
+        using var migratedConnection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        migratedConnection.Open();
+        using var pragma = migratedConnection.CreateCommand();
+        pragma.CommandText = "PRAGMA table_info(current_baseline_audit_events);";
+        using var reader = pragma.ExecuteReader();
+        var columns = new List<string>();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(1));
+        }
+        AssertTrue(columns.Contains("payload_json", StringComparer.Ordinal), "legacy audit table should gain payload_json additively");
     }
     finally
     {
@@ -2899,6 +3178,18 @@ internal sealed class FixedCurrentBaselineDataSource : ICurrentBaselineDataSourc
     }
 
     public CurrentBaselineCandidate GetCandidate() => _candidate;
+}
+
+internal sealed class StaticScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
+{
+    private readonly ScenarioWorkspaceDataSet _data;
+
+    public StaticScenarioWorkspaceDataSource(ScenarioWorkspaceDataSet data)
+    {
+        _data = data;
+    }
+
+    public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request) => _data with { Request = request };
 }
 
 internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDataAdapter<LegacyScenarioSource>
