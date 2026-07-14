@@ -166,7 +166,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         IReadOnlyList<SkuBufferSetting> skus,
         int horizonWeeks)
     {
-        var historyWeeks = Math.Min(12, Math.Max(4, horizonWeeks));
+        var historyWeeks = Math.Min(52, Math.Max(4, horizonWeeks));
         return skus
             .SelectMany(sku => Enumerable.Range(1, historyWeeks).Select(week =>
             {

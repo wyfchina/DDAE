@@ -12,6 +12,15 @@ var tests = new (string Name, Action Run)[]
     ("Planned shutdown creates capacity warning and management review action", TestShutdownScenario),
     ("Baseline data demonstrates red yellow green and over top of green buffer statuses with Chinese names", TestBaselineStatusVarietyAndChineseNames),
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
+    ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
+    ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
+    ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
+    ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
+    ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
+    ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
+    ("Coordination ledger enforces workflow and audits creation status decision and outcome", TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates),
+    ("Coordination ledger rejects invalid direct completion", TestCoordinationLedgerRejectsInvalidDirectCompletion),
+    ("Five-stage navigation preserves independent white-box and public demo validation pages", TestFiveStageNavigationPreservesValidationPages),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
     ("Scenario exceeding AS&OP guardrails is blocked from adoption", TestAsopGuardrailBlocksExcessiveScenario),
     ("Moderate scenario is routed to integrated reconciliation", TestAsopGuardrailRoutesModerateScenario),
@@ -37,6 +46,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
     ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
+    ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
     ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
     ("Scenario preview applies pre-build capacity policy and supplier limits", TestScenarioPreviewAppliesScenarioParameters),
     ("Product RCCP workspace summarizes resources heatmap and detail", TestProductRccpWorkspaceSummarizesResourcesHeatmapAndDetail),
@@ -172,6 +182,484 @@ static void TestConsolidatedRequirementsDataCoverage()
     AssertTrue(data.StrategicRecommendations.Count >= 3, "strategic recommendations should be represented");
     AssertTrue(data.FeasibilityChecks.Count >= 3, "strategic projection feasibility checks should be represented");
     AssertTrue(data.SkillBuffers.Count >= 3, "DDSM skill buffers should be represented");
+}
+
+static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
+{
+    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new HistoryReviewWorkspaceService(source);
+
+    var result = service.GetReview(6);
+    var annual = service.GetReview(12);
+    var expectedWeeks = (int)Math.Ceiling(result.MaximumCumulativeLeadTimeDays / 7m);
+
+    AssertEqual(6, result.TrendMonths, "history trend months");
+    AssertTrue(result.ObservedTrendWeeks >= 26, "six-month history should expose at least 26 weekly observations");
+    AssertEqual(12, annual.TrendMonths, "annual history trend months");
+    AssertTrue(annual.ObservedTrendWeeks >= 52, "twelve-month history should expose at least 52 weekly observations");
+    AssertEqual(expectedWeeks, result.DetailWindowWeeks, "history detail window should follow cumulative lead time");
+    AssertTrue(result.OperatingOutcomes.ServiceLevelPercent > 0, "history should expose operating outcomes");
+    AssertTrue(result.ProtectionRelationships.Any(item => item.ProtectionType == "库存缓冲"), "history should expose inventory protection relationships");
+    AssertTrue(result.ZoneResidence.Any(item => item.ObservedPeriods >= result.DetailWindowWeeks), "history should expose zone residence over the detail window");
+    AssertTrue(result.ZoneResidence.All(item => Math.Abs(item.RedPercent + item.YellowPercent + item.GreenPercent + item.OverTopOfGreenPercent - 100m) <= 0.2m), "zone residence proportions should account for the observed window");
+    AssertTrue(result.ZoneResidence.All(item => item.RedEntryCount >= 0), "history should count entries into the red zone");
+    AssertTrue(result.CapacityProtection.Any(item => item.TheoreticalCapacity >= item.StandardCapacity && item.StandardCapacity >= item.DemonstratedCapacity), "history should distinguish capacity layers");
+    AssertTrue(result.ConstraintExposure.Any(item => item.ExposureType == "场景潜在 CCR"), "history should classify scenario potential CCR exposure");
+}
+
+static void TestCurrentBaselineFreezesCompleteEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedCurrentBaselineDataSource(SeedData.Create());
+        var service = new CurrentBaselineService(source, databasePath);
+
+        var candidate = service.GetCandidate();
+        AssertTrue(candidate.Sections.All(item => item.CompletenessStatus == "Complete"), "seed baseline sections should be complete");
+        AssertTrue(candidate.Sections.All(item => item.EvidenceLabel == "DemoFixture"), "seed baseline evidence should remain demo-labelled");
+        AssertTrue(candidate.Payload.PlanningInputs is not null, "candidate must freeze the typed planning inputs needed for reproducible recalculation");
+
+        var frozen = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "月度例会基线"));
+        var loaded = service.GetDetail(frozen.SnapshotId);
+        var audit = service.GetAuditEvents(frozen.SnapshotId);
+        var nextVersion = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "下一版本"));
+
+        AssertEqual("Frozen", frozen.Status, "baseline status");
+        AssertTrue(loaded is not null, "frozen baseline should be retrievable");
+        AssertEqual(frozen.SnapshotId, loaded!.SnapshotId, "baseline snapshot identity");
+        AssertTrue(service.List(10).Count == 2, "baseline list should contain immutable versions");
+        AssertTrue(nextVersion.SnapshotNumber.EndsWith("-002", StringComparison.Ordinal), "baseline version number should increment");
+        AssertTrue(nextVersion.SnapshotId != frozen.SnapshotId, "new freeze should create a new immutable snapshot");
+        AssertTrue(audit.Any(item => item.EventType == "BaselineFrozen"), "baseline freeze should be audited");
+
+        var updateBlocked = false;
+        var deleteBlocked = false;
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using (var update = connection.CreateCommand())
+            {
+                update.CommandText = "UPDATE current_baseline_snapshots SET status = 'Changed' WHERE snapshot_id = $snapshot_id;";
+                update.Parameters.AddWithValue("$snapshot_id", frozen.SnapshotId);
+                try
+                {
+                    update.ExecuteNonQuery();
+                }
+                catch (Microsoft.Data.Sqlite.SqliteException)
+                {
+                    updateBlocked = true;
+                }
+            }
+            using (var delete = connection.CreateCommand())
+            {
+                delete.CommandText = "DELETE FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;";
+                delete.Parameters.AddWithValue("$snapshot_id", frozen.SnapshotId);
+                try
+                {
+                    delete.ExecuteNonQuery();
+                }
+                catch (Microsoft.Data.Sqlite.SqliteException)
+                {
+                    deleteBlocked = true;
+                }
+            }
+        }
+        AssertTrue(updateBlocked && deleteBlocked, "SQLite must enforce frozen snapshot immutability outside the application service");
+        AssertEqual("Frozen", service.GetDetail(frozen.SnapshotId)!.Status, "blocked direct SQL must not mutate the frozen snapshot");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCurrentBaselineRejectsMissingCriticalEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-{Guid.NewGuid():N}.db");
+    try
+    {
+        var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var incomplete = complete with
+        {
+            Sections = complete.Sections
+                .Select(item => item.SectionCode == "WIP" ? item with { CompletenessStatus = "Missing", ItemCount = 0 } : item)
+                .ToList()
+        };
+        var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(incomplete), databasePath);
+
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", null));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains("WIP", StringComparison.Ordinal);
+        }
+
+        AssertTrue(rejected, "missing critical baseline evidence should block freezing");
+        AssertTrue(service.List(10).Count == 0, "rejected baseline should not be persisted");
+
+        var missingPlanningInputs = complete with { Payload = complete.Payload with { PlanningInputs = null } };
+        var missingPlanningService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(missingPlanningInputs), databasePath);
+        var missingPlanningRejected = false;
+        try
+        {
+            missingPlanningService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", null));
+        }
+        catch (ArgumentException ex)
+        {
+            missingPlanningRejected = ex.Message.Contains("类型化计划输入", StringComparison.Ordinal);
+        }
+        AssertTrue(missingPlanningRejected, "new snapshots without typed planning inputs must not be frozen");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-compare-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "场景比较来源基线"));
+        var previewService = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(validationData));
+        var service = new ScenarioComparisonService(baselineService, previewService);
+        var externalScenario = new ExternalScenarioDefinition(
+            "EXT-SUPPLY-CAPACITY",
+            "需求上升与供应能力风险",
+            new[] { new ExternalDemandChange(null, "精益液压件", 2, 6, 1.35m, "客户需求上升") },
+            new[] { new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.55m, "供应商产出风险") },
+            new[] { new ExternalCapacityLoss("R-MIX", 3, 6, 0.65m, "设备能力损失") },
+            new[] { new ExternalKnownEvent("EVENT-001", "客户促销窗口", 2, 6) });
+        var responses = new[]
+        {
+            new ResponseConfiguration(
+                "RESP-CAPACITY",
+                "临时能力",
+                new ScenarioRunParameterSet(
+                    CapacityAdjustments: Enumerable.Range(3, 4)
+                        .Select(week => new ResourceCapacityAdjustment("R-MIX", week, 1.35m, "临时能力响应"))
+                        .ToList())),
+            new ResponseConfiguration(
+                "RESP-POLICY",
+                "MOQ 与订货周期覆盖",
+                new ScenarioRunParameterSet(
+                    SkuPolicyOverrides: new[] { new SkuPolicyOverride("HYD-100", 80m, 7) }))
+        };
+
+        var result = service.Compare(new ScenarioComparisonRequest(frozen.SnapshotId, externalScenario, responses, 12));
+
+        AssertEqual(frozen.SnapshotId, result.BaselineSnapshotId, "comparison baseline identity");
+        AssertEqual("NO_RESPONSE", result.NoResponse.ResponseId, "comparison should include no-response case");
+        AssertEqual(2, result.ResponseCases.Count, "comparison response case count");
+        AssertTrue(result.AllCases.All(item => item.ExternalScenarioId == externalScenario.ScenarioId), "all cases should share the external scenario");
+        AssertTrue(result.NoResponse.Preview.Request.Parameters is null, "no-response case must not carry enterprise responses");
+        AssertTrue(result.ResponseCases.All(item => item.Preview.Request.Parameters is not null), "response cases should carry response configuration only");
+        AssertTrue(result.AllCases.SelectMany(item => item.Breaches).Select(item => item.ScopeType).Distinct().OrderBy(item => item).SequenceEqual(new[] { "Capacity", "Inventory", "Supply" }), "inventory capacity and supply breach analyses should all be present");
+
+        foreach (var invalidResponses in new[]
+        {
+            new[] { responses[0], responses[0] with { Name = "重复标识" } },
+            new[] { responses[0] with { ResponseId = "NO_RESPONSE" } }
+        })
+        {
+            var rejected = false;
+            try
+            {
+                service.Compare(new ScenarioComparisonRequest(frozen.SnapshotId, externalScenario, invalidResponses, 12));
+            }
+            catch (ArgumentException)
+            {
+                rejected = true;
+            }
+            AssertTrue(rejected, "response IDs must be unique and must not use the reserved NO_RESPONSE ID");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioComparisonUsesFrozenSnapshotValues()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-compare-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var targetDefinition = validationData.Skus.First();
+        var addedDefinition = targetDefinition with { Sku = "LIVE-ONLY-SKU", Name = "冻结后新增对象", Adu = targetDefinition.Adu * 8m };
+        var driftedData = validationData with
+        {
+            Skus = validationData.Skus
+                .Select(item => item.Sku == targetDefinition.Sku ? item with { Adu = item.Adu * 6m, DecoupledLeadTimeDays = item.DecoupledLeadTimeDays + 20 } : item)
+                .Append(addedDefinition)
+                .ToList(),
+            Inventory = validationData.Inventory.Append(new InventoryPosition(addedDefinition.Sku, 50m, 0m, 10m)).ToList(),
+            Demand = validationData.Demand
+                .Select(item => item.Sku == targetDefinition.Sku ? item with { BaselineDemand = item.BaselineDemand * 4m } : item)
+                .Concat(Enumerable.Range(1, 4).Select(week => new WeeklyDemand(addedDefinition.Sku, week, 500m)))
+                .ToList(),
+            ResourceRoutings = validationData.ResourceRoutings
+                .Select(item => item.Sku == targetDefinition.Sku ? item with { CapacityPerUnit = item.CapacityPerUnit * 5m } : item)
+                .Append(new ResourceRouting(addedDefinition.Sku, validationData.Resources.First().Code, 4m))
+                .ToList(),
+            SupplierItemSources = validationData.SupplierItemSources
+                .Append(new SupplierItemSource("LIVE-SUPPLIER", addedDefinition.Sku, addedDefinition.Family, addedDefinition.UnitCost))
+                .ToList()
+        };
+        var liveSource = new TrackingScenarioWorkspaceDataSource(driftedData);
+        var previewService = new ScenarioRunPreviewService(liveSource);
+        var candidate = new SeedCurrentBaselineDataSource(validationData).GetCandidate();
+        var target = candidate.Payload.Inventory.First();
+        var frozenPosition = target with { OnHand = target.OnHand + 10_000m };
+        var frozenCandidate = candidate with
+        {
+            Payload = candidate.Payload with
+            {
+                Inventory = candidate.Payload.Inventory.Select(item => item.Sku == target.Sku ? frozenPosition : item).ToList()
+            }
+        };
+        var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(frozenCandidate), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "冻结库存来源验证"));
+        var comparison = new ScenarioComparisonService(baselineService, previewService).Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            new ExternalScenarioDefinition("EXT-FROZEN-SOURCE", "无额外扰动"),
+            Array.Empty<ResponseConfiguration>(),
+            4));
+        AssertEqual(0, liveSource.LoadCount, "frozen comparison must not call the live workspace data source");
+        var livePreview = previewService.Preview(new ScenarioRunPreviewRequest(4));
+        var expectedStartNetFlow = DdmrpCalculator.CalculateNetFlow(frozenPosition);
+        var frozenStartNetFlow = comparison.NoResponse.Preview.Baseline.Plan.BufferProjections
+            .Single(item => item.Sku == target.Sku && item.Week == 1)
+            .StartNetFlow;
+        var liveStartNetFlow = livePreview.Baseline.Plan.BufferProjections
+            .Single(item => item.Sku == target.Sku && item.Week == 1)
+            .StartNetFlow;
+        var frozenDetail = comparison.NoResponse.Preview.Scenario.BufferTrend.SkuDetails.Single(item => item.Sku == target.Sku);
+        var liveDetail = livePreview.Scenario.BufferTrend.SkuDetails.Single(item => item.Sku == target.Sku);
+        var frozenDemand = comparison.NoResponse.Preview.Scenario.Plan.BufferProjections.Single(item => item.Sku == target.Sku && item.Week == 1).Demand;
+        var liveDemand = livePreview.Scenario.Plan.BufferProjections.Single(item => item.Sku == target.Sku && item.Week == 1).Demand;
+        var expectedDemand = candidate.Payload.PlanningInputs!.Demand.Single(item => item.Sku == target.Sku && item.Week == 1).BaselineDemand;
+
+        AssertEqual(decimal.Round(expectedStartNetFlow, 0), frozenStartNetFlow, "comparison frozen inventory start net flow");
+        AssertTrue(frozenStartNetFlow != liveStartNetFlow, "comparison must not silently reload live inventory after baseline freeze");
+        AssertEqual(targetDefinition.Adu, frozenDetail.Adu, "comparison should use frozen DDMRP parameters");
+        AssertTrue(frozenDetail.Adu != liveDetail.Adu, "live DDMRP drift must not change a frozen comparison");
+        AssertEqual(expectedDemand, frozenDemand, "comparison should use frozen demand inputs");
+        AssertTrue(frozenDemand != liveDemand, "live demand drift must not change a frozen comparison");
+        AssertTrue(comparison.NoResponse.Preview.Scenario.Plan.BufferProjections.All(item => item.Sku != addedDefinition.Sku), "new live SKU must not enter an older frozen snapshot");
+        AssertTrue(livePreview.Scenario.Plan.BufferProjections.Any(item => item.Sku == addedDefinition.Sku), "control preview should expose the live-only SKU");
+        AssertTrue(comparison.NoResponse.Preview.Trace.Any(item => item.Stage == "FrozenBaseline"), "comparison trace should identify frozen baseline recalculation");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestProtectionBreachAnalysisReportsRecovery()
+{
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(4));
+    var sku = preview.Scenario.BufferTrend.WeeklyCells.First().Sku;
+    var resource = preview.Scenario.Constraints.CapacityCells.First().ResourceCode;
+    var supplier = preview.Scenario.Constraints.SupplyCells.First().Supplier;
+    var materialFamily = preview.Scenario.Constraints.SupplyCells.First().MaterialFamily;
+    var buffer = preview.Scenario.BufferTrend with
+    {
+        WeeklyCells = preview.Scenario.BufferTrend.WeeklyCells
+            .Select(item => item.Sku == sku ? item with { Status = item.Week is 2 or 3 ? "Red" : "Green" } : item with { Status = "Green" })
+            .ToList()
+    };
+    var constraints = preview.Scenario.Constraints with
+    {
+        CapacityCells = preview.Scenario.Constraints.CapacityCells
+            .Select(item => item.ResourceCode == resource ? item with { Status = item.Week >= 3 ? "Red" : "Green" } : item with { Status = "Green" })
+            .ToList(),
+        SupplyCells = preview.Scenario.Constraints.SupplyCells
+            .Select(item => item.Supplier == supplier && item.MaterialFamily == materialFamily ? item with { Status = item.Week == 1 ? "Red" : "Green" } : item with { Status = "Green" })
+            .ToList()
+    };
+    var controlled = preview with { Scenario = preview.Scenario with { BufferTrend = buffer, Constraints = constraints } };
+
+    var results = ProtectionBreachAnalyzer.Analyze(controlled.Scenario);
+    var inventory = results.Single(item => item.ScopeType == "Inventory" && item.Target == sku);
+    var capacity = results.Single(item => item.ScopeType == "Capacity" && item.Target == resource);
+    var supply = results.Single(item => item.ScopeType == "Supply" && item.Target == $"{supplier}/{materialFamily}");
+
+    AssertEqual(2, inventory.EarliestRedWeek, "inventory first red week");
+    AssertEqual(2, inventory.ConsecutiveRiskWeeks, "inventory consecutive risk duration");
+    AssertEqual(4, inventory.RecoveryWeek, "inventory recovery week");
+    AssertTrue(capacity.IsUnrecovered && capacity.RecoveryWeek is null, "capacity breach through horizon should be explicitly unrecovered");
+    AssertEqual(2, supply.RecoveryWeek, "supply recovery week");
+
+    var repeatedBuffer = preview.Scenario.BufferTrend with
+    {
+        WeeklyCells = preview.Scenario.BufferTrend.WeeklyCells
+            .Select(item => item.Sku == sku ? item with { Status = item.Week is 1 or 3 or 4 ? "Red" : "Green" } : item with { Status = "Green" })
+            .ToList()
+    };
+    var repeated = ProtectionBreachAnalyzer.Analyze(preview.Scenario with { BufferTrend = repeatedBuffer })
+        .Single(item => item.ScopeType == "Inventory" && item.Target == sku);
+    AssertEqual(1, repeated.EarliestRedWeek, "repeated breach should preserve the earliest red week");
+    AssertEqual(2, repeated.ConsecutiveRiskWeeks, "repeated breach should report the maximum red streak");
+    AssertTrue(repeated.IsUnrecovered && repeated.RecoveryWeek is null, "a final red episode must remain unrecovered even after an earlier recovery");
+}
+
+static void TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-coordination-{Guid.NewGuid():N}.db");
+    try
+    {
+        var service = new CoordinationLedgerService(databasePath);
+        var created = service.Create(new CoordinationItemCreateRequest(
+            "铸件供应风险需要跨部门决策",
+            new[] { "HYD-100", "华东铸件" },
+            "RUN-001",
+            "CHANGE-001",
+            "服务风险上升",
+            "红区周期增加",
+            125000m,
+            "供应连续性",
+            "决定是否启用第二来源",
+            "供应链经理",
+            "2026-07-20",
+            "S&OP 执行层",
+            "2026-07-17",
+            "DDS&OP 计划员"));
+
+        var inProgress = service.UpdateStatus(created.ItemId, new CoordinationStatusUpdateRequest("InProgress", "供应链经理", "已启动评审"));
+        var escalated = service.UpdateStatus(created.ItemId, new CoordinationStatusUpdateRequest("Escalated", "供应链经理", "需要执行委员会裁决"));
+        var resumed = service.UpdateStatus(created.ItemId, new CoordinationStatusUpdateRequest("InProgress", "执行委员会", "已明确决策边界"));
+        var decided = service.RecordDecision(created.ItemId, new CoordinationDecisionUpdateRequest("启用第二来源并限定四周", "兼顾服务与现金风险", "执行委员会"));
+        var outcome = service.RecordOutcome(created.ItemId, new CoordinationOutcomeUpdateRequest("两周后红区次数下降，服务恢复至目标带", "DDS&OP 计划员"));
+        var completed = service.UpdateStatus(created.ItemId, new CoordinationStatusUpdateRequest("Completed", "DDS&OP 计划员", "验证点已通过"));
+        var detail = service.GetDetail(created.ItemId);
+        var audit = service.GetAuditEvents(created.ItemId);
+
+        AssertEqual("Open", created.Status, "coordination initial status");
+        AssertEqual("InProgress", inProgress.Status, "coordination in-progress status");
+        AssertEqual("Escalated", escalated.Status, "coordination escalated status");
+        AssertEqual("InProgress", resumed.Status, "escalated item may resume");
+        AssertEqual("启用第二来源并限定四周", decided.Decision, "coordination decision");
+        AssertTrue(outcome.ActualOutcome?.Contains("服务恢复", StringComparison.Ordinal) == true, "coordination actual outcome");
+        AssertEqual("Completed", completed.Status, "coordination completed status");
+        AssertEqual("RUN-001", detail!.RelatedScenarioRunId, "coordination scenario link");
+        AssertEqual("CHANGE-001", detail.RelatedMasterSettingChangeId, "coordination governance link");
+        AssertTrue(service.List(20).Any(item => item.ItemId == created.ItemId), "coordination list should contain item");
+        AssertTrue(new[] { "CoordinationItemCreated", "StatusChanged", "DecisionRecorded", "OutcomeRecorded" }
+            .All(eventType => audit.Any(item => item.EventType == eventType)), "coordination audit should cover all update types");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCoordinationLedgerRejectsInvalidDirectCompletion()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-coordination-{Guid.NewGuid():N}.db");
+    try
+    {
+        var service = new CoordinationLedgerService(databasePath);
+        var created = service.Create(new CoordinationItemCreateRequest(
+            "能力保护复查",
+            new[] { "R-MIX" },
+            null,
+            null,
+            "服务影响待确认",
+            "库存影响待确认",
+            null,
+            "能力保护",
+            "确认临时能力是否持续",
+            "运营经理",
+            "2026-07-21",
+            "部门层",
+            "2026-07-18",
+            "DDS&OP 计划员"));
+        var rejected = false;
+        try
+        {
+            service.UpdateStatus(created.ItemId, new CoordinationStatusUpdateRequest("Completed", "运营经理", null));
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        AssertTrue(rejected, "Open item must not jump directly to Completed");
+        AssertEqual("Open", service.GetDetail(created.ItemId)!.Status, "invalid transition must not mutate item");
+
+        var missingRejected = false;
+        try
+        {
+            service.RecordDecision("missing-item", new CoordinationDecisionUpdateRequest("决策", "理由", "运营经理"));
+        }
+        catch (KeyNotFoundException)
+        {
+            missingRejected = true;
+        }
+        AssertTrue(missingRejected, "missing coordination item should use the not-found exception path");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestFiveStageNavigationPreservesValidationPages()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    var historyNav = page.IndexOf("href=\"#history-review-panel\"", StringComparison.Ordinal);
+    var baselineNav = page.IndexOf("href=\"#current-baseline-panel\"", StringComparison.Ordinal);
+    var futureNav = page.IndexOf("href=\"#future-scenario-panel\"", StringComparison.Ordinal);
+    var ddomNav = page.IndexOf("href=\"#ddom-decision-panel\"", StringComparison.Ordinal);
+    var coordinationNav = page.IndexOf("href=\"#coordination-panel\"", StringComparison.Ordinal);
+    var validationGroup = page.IndexOf("验证与追踪", StringComparison.Ordinal);
+    var traceNav = page.IndexOf("href=\"#trace-panel\"", StringComparison.Ordinal);
+    var publicDemoNav = page.IndexOf("href=\"#public-demo-golden-loop-panel\"", StringComparison.Ordinal);
+
+    AssertTrue(historyNav >= 0 && historyNav < baselineNav && baselineNav < futureNav && futureNav < ddomNav && ddomNav < coordinationNav, "five primary workspaces should exist in the required order");
+    AssertTrue(coordinationNav < validationGroup && validationGroup < traceNav && traceNav < publicDemoNav, "validation group should follow the five workspaces and public demo should be last");
+    AssertTrue(page.Contains("主业务流程", StringComparison.Ordinal), "sidebar should label primary workflow group");
+    AssertTrue(page.Contains("id=\"history-review-panel\"", StringComparison.Ordinal), "history review workspace should exist");
+    AssertTrue(page.Contains("id=\"current-baseline-panel\"", StringComparison.Ordinal), "current baseline workspace should exist");
+    AssertTrue(page.Contains("id=\"future-scenario-panel\"", StringComparison.Ordinal), "future scenario workspace should exist");
+    AssertTrue(page.Contains("id=\"ddom-decision-panel\"", StringComparison.Ordinal), "DDOM decision workspace should exist");
+    AssertTrue(page.Contains("id=\"coordination-panel\"", StringComparison.Ordinal), "coordination workspace should exist");
+    AssertTrue(page.Contains("id=\"trace-panel\"", StringComparison.Ordinal) && page.Contains("id=\"trace-list\"", StringComparison.Ordinal), "white-box trace page and trace DOM should remain");
+    AssertTrue(page.Contains("id=\"public-demo-golden-loop-panel\"", StringComparison.Ordinal), "public demo page should remain independent");
+    AssertTrue(page.Contains("id=\"refresh-public-demo\"", StringComparison.Ordinal) && page.Contains("id=\"write-public-demo-payload\"", StringComparison.Ordinal), "public demo buttons should remain");
+    AssertTrue(script.Contains("/api/public-demo-golden-loop", StringComparison.Ordinal) && script.Contains("/api/public-demo-golden-loop/write-payload", StringComparison.Ordinal), "public demo API behavior should remain");
+    AssertTrue(script.Contains("/api/history-review", StringComparison.Ordinal), "history UI should load history API");
+    AssertTrue(script.Contains("/api/current-baselines/candidate", StringComparison.Ordinal), "baseline UI should load candidate API");
+    AssertTrue(script.Contains("/api/scenario-runs/compare", StringComparison.Ordinal), "future UI should use scenario comparison API");
+    AssertTrue(script.Contains("/api/coordination-items", StringComparison.Ordinal), "coordination UI should use ledger API");
+    AssertTrue(script.Contains("item.name", StringComparison.Ordinal) && script.Contains("item.sourceAuthority", StringComparison.Ordinal), "baseline evidence UI should use the serialized section field names");
+    AssertTrue(script.Contains("Promise.allSettled", StringComparison.Ordinal), "optional five-stage data loads should be isolated from validation pages");
+    var loadWorkspace = script.IndexOf("async function loadWorkspace()", StringComparison.Ordinal);
+    var coreRender = script.IndexOf("applyFilters();", loadWorkspace, StringComparison.Ordinal);
+    var optionalSettlement = script.IndexOf("fiveStageDataPromise.then", loadWorkspace, StringComparison.Ordinal);
+    AssertTrue(loadWorkspace >= 0 && coreRender > loadWorkspace && coreRender < optionalSettlement, "core and validation pages must render before optional five-stage requests settle");
+    AssertTrue(page.Contains("id=\"governance-owner\"", StringComparison.Ordinal) && page.Contains("id=\"governance-effective-through\"", StringComparison.Ordinal), "DDOM decision workspace should collect governance ownership and expiry metadata");
+    AssertTrue(script.Contains("/api/master-settings/proposals/from-comparison", StringComparison.Ordinal), "DDOM governance proposals should be generated from the frozen comparison endpoint");
+    AssertTrue(!page.Contains("id=\"auto-adopt\"", StringComparison.Ordinal) && !page.Contains("id=\"auto-approve\"", StringComparison.Ordinal) && !page.Contains("id=\"auto-effect\"", StringComparison.Ordinal), "UI must not expose automatic governance operations");
 }
 
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
@@ -1753,6 +2241,16 @@ static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
     AssertTrue(program.Contains("/api/integration-contracts/production-supplier-identity-source-v1", StringComparison.Ordinal), "supplier identity endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1", StringComparison.Ordinal), "inventory quality endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1", StringComparison.Ordinal), "execution evidence endpoint should be exposed");
+    AssertTrue(program.Contains("AddSingleton<HistoryReviewWorkspaceService>", StringComparison.Ordinal), "history review service should be registered");
+    AssertTrue(program.Contains("ICurrentBaselineDataSource, SeedCurrentBaselineDataSource", StringComparison.Ordinal), "current baseline source should be registered");
+    AssertTrue(program.Contains("/api/history-review", StringComparison.Ordinal), "history review endpoint should be exposed");
+    AssertTrue(program.Contains("/api/current-baselines/candidate", StringComparison.Ordinal), "current baseline candidate endpoint should be exposed");
+    AssertTrue(program.Contains("/api/current-baselines/{snapshotId}/audit", StringComparison.Ordinal), "current baseline audit endpoint should be exposed");
+    AssertTrue(program.Contains("/api/scenario-runs/compare", StringComparison.Ordinal), "scenario comparison endpoint should be exposed");
+    AssertTrue(program.Contains("/api/coordination-items/{itemId}/status", StringComparison.Ordinal), "coordination status endpoint should be exposed");
+    AssertTrue(program.Contains("/api/coordination-items/{itemId}/decision", StringComparison.Ordinal), "coordination decision endpoint should be exposed");
+    AssertTrue(program.Contains("/api/coordination-items/{itemId}/outcome", StringComparison.Ordinal), "coordination outcome endpoint should be exposed");
+    AssertTrue(program.Contains("/api/coordination-items/{itemId}/audit", StringComparison.Ordinal), "coordination audit endpoint should be exposed");
     AssertTrue(!program.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "old scenario optimization endpoint should be removed from main");
     AssertTrue(!program.Contains("ScenarioOptimizationService", StringComparison.Ordinal), "old scenario optimization service should not be registered");
     AssertTrue(!program.Contains("IOptimizationSolver", StringComparison.Ordinal), "solver adapter should not be wired into DDS&OP main");
@@ -1803,7 +2301,74 @@ static void DeleteSqliteFiles(string databasePath)
     }
 }
 
+static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-master-settings-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var service = new MasterSettingsGovernanceService(source, new ScenarioRunPreviewService(source), databasePath);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "治理来源基线"));
+        var comparisonService = new ScenarioComparisonService(baselineService, new ScenarioRunPreviewService(source));
+        var comparison = comparisonService.Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            new ExternalScenarioDefinition("RUN-001", "治理来源场景"),
+            new[] { new ResponseConfiguration("RESP-001", "临时能力", new ScenarioRunParameterSet(CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 3, 1.2m, "临时能力") })) },
+            12));
+        var generated = service.ProposeFromFrozenComparison(
+                comparison.ResponseCases.Single(),
+                frozen,
+                new GovernanceDecisionContext(
+                    frozen.SnapshotId,
+                    "RUN-001/RESP-001",
+                    "运营经理",
+                    "执行委员会",
+                    "2026-07-20",
+                    "2026-08-16",
+                    "2026-08-03",
+                    "能力红区减少两周",
+                    "服务未改善或现金占用超过上限"))
+            .Proposals
+            .First();
+
+        AssertEqual(frozen.SnapshotId, generated.SourceBaselineId, "generated proposal source baseline");
+        AssertEqual("RUN-001/RESP-001", generated.SourceScenarioRunId, "generated proposal source scenario");
+        AssertEqual("运营经理", generated.Owner, "generated proposal owner");
+        AssertEqual("执行委员会", generated.Approver, "generated proposal approver");
+        AssertEqual("2026-08-16", generated.EffectiveThrough, "generated proposal expiry");
+
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", generated));
+        var detail = service.GetDetail(saved.ChangeId)!;
+
+        AssertEqual("TemporaryAdjustment", detail.Proposal.ChangeCategory, "governance change category");
+        AssertEqual(frozen.SnapshotId, detail.Proposal.SourceBaselineId, "governance source baseline");
+        AssertEqual("RUN-001/RESP-001", detail.Proposal.SourceScenarioRunId, "governance source scenario");
+        AssertEqual("运营经理", detail.Proposal.Owner, "governance owner");
+        AssertEqual("执行委员会", detail.Proposal.Approver, "governance approver");
+        AssertEqual("Proposed", saved.Status, "saved decision package must remain proposed");
+        AssertTrue(service.GetAuditEvents(saved.ChangeId).All(item => item.EventType != "StatusChanged"), "saving must not auto approve or auto effect the package");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
 internal sealed record LegacyScenarioSource(ValidationData Data);
+
+internal sealed class FixedCurrentBaselineDataSource : ICurrentBaselineDataSource
+{
+    private readonly CurrentBaselineCandidate _candidate;
+
+    public FixedCurrentBaselineDataSource(CurrentBaselineCandidate candidate)
+    {
+        _candidate = candidate;
+    }
+
+    public CurrentBaselineCandidate GetCandidate() => _candidate;
+}
 
 internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDataAdapter<LegacyScenarioSource>
 {

@@ -9,28 +9,64 @@ public sealed class ScenarioRunPreviewService
         _dataSource = dataSource;
     }
 
-    public ScenarioRunPreviewResult Preview(ScenarioRunPreviewRequest request)
+    public ScenarioRunPreviewResult Preview(ScenarioRunPreviewRequest request) => PreviewInternal(request, null);
+
+    public ScenarioRunPreviewResult PreviewAgainstFrozenBaseline(
+        ScenarioRunPreviewRequest request,
+        CurrentBaselineSnapshot frozenBaseline) => PreviewInternal(request, frozenBaseline);
+
+    public ScenarioWorkspaceDataSet LoadFrozenWorkspaceData(
+        ScenarioRunPreviewRequest request,
+        CurrentBaselineSnapshot frozenBaseline)
     {
         var horizonWeeks = Math.Clamp(request.HorizonWeeks <= 0 ? 12 : request.HorizonWeeks, 1, 52);
-        var data = _dataSource.Load(new ScenarioWorkspaceDataRequest(
-            horizonWeeks,
-            new DateOnly(2026, 6, 1),
-            request.SkuFilter,
-            request.FamilyFilter));
+        var planningInputs = frozenBaseline.Payload.PlanningInputs
+            ?? throw new InvalidOperationException("该冻结基线不含完整类型化计划输入，不能用于可复现重算；请从当前候选生成新版本。");
+        var scoped = ScopeFrozenPlanningInputs(
+            planningInputs,
+            new ScenarioWorkspaceDataRequest(
+                horizonWeeks,
+                planningInputs.Request.AnchorDate,
+                request.SkuFilter,
+                request.FamilyFilter));
+        return ApplyFrozenBaseline(scoped, frozenBaseline);
+    }
+
+    private ScenarioRunPreviewResult PreviewInternal(
+        ScenarioRunPreviewRequest request,
+        CurrentBaselineSnapshot? frozenBaseline)
+    {
+        var horizonWeeks = Math.Clamp(request.HorizonWeeks <= 0 ? 12 : request.HorizonWeeks, 1, 52);
+        var data = frozenBaseline is null
+            ? _dataSource.Load(new ScenarioWorkspaceDataRequest(
+                horizonWeeks,
+                new DateOnly(2026, 6, 1),
+                request.SkuFilter,
+                request.FamilyFilter))
+            : LoadFrozenWorkspaceData(request with { HorizonWeeks = horizonWeeks }, frozenBaseline);
         var parameters = MergeTemplateParameters(data, request.TemplateId, request.Parameters);
 
         var baseline = BuildCase("baseline", "基准方案", data, data.Skus, data.Demand, Array.Empty<PrebuildCampaign>(), Array.Empty<ResourceCapacityAdjustment>(), Array.Empty<SupplierCapacityLimit>());
         var scenarioSkus = ApplySkuPolicyOverrides(data.Skus, parameters.SkuPolicyOverrides ?? Array.Empty<SkuPolicyOverride>());
-        var scenarioDemand = ApplyDemandEvents(data, request.TemplateId);
+        var scenarioDemand = ApplyExternalDemandChanges(
+            ApplyDemandEvents(data, request.TemplateId),
+            data.Skus,
+            request.ExternalScenario?.DemandChanges ?? Array.Empty<ExternalDemandChange>());
+        var capacityAdjustments = BuildExternalCapacityAdjustments(request.ExternalScenario)
+            .Concat(parameters.CapacityAdjustments ?? Array.Empty<ResourceCapacityAdjustment>())
+            .ToList();
+        var supplierCapacityLimits = BuildExternalSupplierLimits(data, request.ExternalScenario)
+            .Concat(parameters.SupplierCapacityLimits ?? Array.Empty<SupplierCapacityLimit>())
+            .ToList();
         var scenario = BuildCase(
             "scenario",
-            ScenarioName(data, request.TemplateId),
+            request.ExternalScenario?.Name ?? ScenarioName(data, request.TemplateId),
             data,
             scenarioSkus,
             scenarioDemand,
             parameters.PrebuildCampaigns ?? Array.Empty<PrebuildCampaign>(),
-            parameters.CapacityAdjustments ?? Array.Empty<ResourceCapacityAdjustment>(),
-            parameters.SupplierCapacityLimits ?? Array.Empty<SupplierCapacityLimit>());
+            capacityAdjustments,
+            supplierCapacityLimits);
 
         var bufferTrendComparison = BufferTrendWorkspaceService.Compare(baseline.BufferTrend, scenario.BufferTrend);
         scenario = scenario with
@@ -40,7 +76,14 @@ public sealed class ScenarioRunPreviewService
                 ProductFamilyDashboardService.Compare(baseline.ProductFamilyDashboard, scenario.ProductFamilyDashboard)),
             BufferTrend = BufferTrendWorkspaceService.WithComparison(scenario.BufferTrend, bufferTrendComparison)
         };
-        var trace = BuildAuditTrace(data, request, parameters, baseline, scenario);
+        var trace = BuildAuditTrace(data, request, parameters, baseline, scenario).ToList();
+        if (frozenBaseline is not null)
+        {
+            trace.Insert(0, new ScenarioAuditTrace(
+                "FrozenBaseline",
+                $"使用不可变基线 {frozenBaseline.SnapshotNumber}（截止 {frozenBaseline.AsOfUtc}，主设置 {frozenBaseline.MasterSettingVersion}）重算；未重新读取实时库存、能力或供应承诺。",
+                "Information"));
+        }
 
         return new ScenarioRunPreviewResult(
             request with { HorizonWeeks = horizonWeeks, Parameters = parameters },
@@ -50,6 +93,95 @@ public sealed class ScenarioRunPreviewService
             RccpWorkspaceService.Compare(baseline.Rccp, scenario.Rccp),
             trace,
             IsPersisted: false);
+    }
+
+    private static ScenarioWorkspaceDataSet ApplyFrozenBaseline(
+        ScenarioWorkspaceDataSet data,
+        CurrentBaselineSnapshot frozenBaseline)
+    {
+        var inventory = frozenBaseline.Payload.Inventory
+            .Where(item => data.Skus.Any(sku => sku.Sku == item.Sku))
+            .ToList();
+        var missingInventory = data.Skus
+            .Where(sku => inventory.All(item => item.Sku != sku.Sku))
+            .Select(sku => sku.Sku)
+            .ToList();
+        if (missingInventory.Count > 0)
+        {
+            throw new ArgumentException($"冻结基线缺少库存证据：{string.Join("、", missingInventory)}。", nameof(frozenBaseline));
+        }
+
+        var availability = frozenBaseline.Payload.ResourceAvailability
+            .ToDictionary(item => item.ResourceCode, StringComparer.Ordinal);
+        var resources = data.Resources.Select(resource => availability.TryGetValue(resource.Code, out var frozen)
+            ? resource with { WeeklyAvailableUnits = frozen.AvailableCapacity }
+            : resource).ToList();
+        var missingResources = data.Resources
+            .Where(resource => !availability.ContainsKey(resource.Code))
+            .Select(resource => resource.Code)
+            .ToList();
+        if (missingResources.Count > 0)
+        {
+            throw new ArgumentException($"冻结基线缺少资源能力证据：{string.Join("、", missingResources)}。", nameof(frozenBaseline));
+        }
+
+        var supplierWindows = frozenBaseline.Payload.SupplierCommitments
+            .SelectMany(commitment => Enumerable.Range(1, data.Request.HorizonWeeks)
+                .Select(week => new SupplierCapacityWindow(
+                    commitment.Supplier,
+                    commitment.MaterialFamily,
+                    week,
+                    commitment.Quantity,
+                    commitment.LeadTimeDays,
+                    commitment.RiskStatus)))
+            .ToList();
+        if (supplierWindows.Count == 0)
+        {
+            throw new ArgumentException("冻结基线缺少供应承诺证据。", nameof(frozenBaseline));
+        }
+
+        return data with
+        {
+            Inventory = inventory,
+            Resources = resources,
+            SupplierCapacityWindows = supplierWindows,
+            MasterSettings = frozenBaseline.Payload.MasterSettings
+        };
+    }
+
+    private static ScenarioWorkspaceDataSet ScopeFrozenPlanningInputs(
+        ScenarioWorkspaceDataSet data,
+        ScenarioWorkspaceDataRequest request)
+    {
+        var skus = data.Skus
+            .Where(item => request.SkuFilter is not { Count: > 0 } || request.SkuFilter.Contains(item.Sku, StringComparer.Ordinal))
+            .Where(item => request.FamilyFilter is not { Count: > 0 } || request.FamilyFilter.Contains(item.Family, StringComparer.Ordinal))
+            .ToList();
+        var skuCodes = skus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
+        var familyCodes = skus.Select(item => item.Family).ToHashSet(StringComparer.Ordinal);
+        var routings = data.ResourceRoutings.Where(item => skuCodes.Contains(item.Sku)).ToList();
+        var resourceCodes = routings.Select(item => item.ResourceCode).ToHashSet(StringComparer.Ordinal);
+        var sources = data.SupplierItemSources.Where(item => skuCodes.Contains(item.Sku)).ToList();
+        var sourceKeys = sources.Select(item => $"{item.Supplier}|{item.MaterialFamily}").ToHashSet(StringComparer.Ordinal);
+
+        return data with
+        {
+            Request = request,
+            Families = data.Families.Where(item => familyCodes.Contains(item.Code)).ToList(),
+            Skus = skus,
+            Inventory = data.Inventory.Where(item => skuCodes.Contains(item.Sku)).ToList(),
+            Demand = data.Demand.Where(item => skuCodes.Contains(item.Sku) && item.Week <= request.HorizonWeeks).ToList(),
+            Resources = data.Resources.Where(item => resourceCodes.Contains(item.Code)).ToList(),
+            ResourceRoutings = routings,
+            SupplierItemSources = sources,
+            HistoricalDemand = data.HistoricalDemand.Where(item => skuCodes.Contains(item.Sku)).ToList(),
+            BudgetBenchmarks = data.BudgetBenchmarks.Where(item => familyCodes.Contains(item.Family) && item.Week <= request.HorizonWeeks).ToList(),
+            ResourceCalendar = data.ResourceCalendar.Where(item => resourceCodes.Contains(item.ResourceCode) && item.Week <= request.HorizonWeeks).ToList(),
+            SupplierCapacityWindows = data.SupplierCapacityWindows
+                .Where(item => sourceKeys.Contains($"{item.Supplier}|{item.MaterialFamily}") && item.Week <= request.HorizonWeeks)
+                .ToList(),
+            DdmrpParameters = data.DdmrpParameters.Where(item => skuCodes.Contains(item.Sku)).ToList()
+        };
     }
 
     private static ScenarioRunPreviewCase BuildCase(
@@ -204,6 +336,72 @@ public sealed class ScenarioRunPreviewService
         }).ToList();
     }
 
+    private static IReadOnlyList<WeeklyDemand> ApplyExternalDemandChanges(
+        IReadOnlyList<WeeklyDemand> demand,
+        IReadOnlyList<SkuBufferSetting> skus,
+        IReadOnlyList<ExternalDemandChange> changes)
+    {
+        if (changes.Count == 0)
+        {
+            return demand;
+        }
+
+        var families = skus.ToDictionary(item => item.Sku, item => item.Family, StringComparer.Ordinal);
+        return demand.Select(point =>
+        {
+            var multiplier = changes
+                .Where(item => point.Week >= item.StartWeek && point.Week <= item.EndWeek)
+                .Where(item =>
+                    (string.IsNullOrWhiteSpace(item.Sku) && string.IsNullOrWhiteSpace(item.Family)) ||
+                    item.Sku == point.Sku ||
+                    (!string.IsNullOrWhiteSpace(item.Family) && families.GetValueOrDefault(point.Sku) == item.Family))
+                .Select(item => Math.Max(0m, item.DemandMultiplier))
+                .DefaultIfEmpty(1m)
+                .Aggregate(1m, (current, next) => current * next);
+            return point with { BaselineDemand = decimal.Round(point.BaselineDemand * multiplier, 0) };
+        }).ToList();
+    }
+
+    private static IReadOnlyList<ResourceCapacityAdjustment> BuildExternalCapacityAdjustments(
+        ExternalScenarioDefinition? externalScenario)
+    {
+        return (externalScenario?.CapacityLosses ?? Array.Empty<ExternalCapacityLoss>())
+            .SelectMany(item => Enumerable.Range(
+                    Math.Max(1, item.StartWeek),
+                    Math.Max(0, item.EndWeek - Math.Max(1, item.StartWeek) + 1))
+                .Select(week => new ResourceCapacityAdjustment(
+                    item.ResourceCode,
+                    week,
+                    Math.Max(0m, item.AvailableCapacityMultiplier),
+                    $"外部场景：{item.Reason}")))
+            .ToList();
+    }
+
+    private static IReadOnlyList<SupplierCapacityLimit> BuildExternalSupplierLimits(
+        ScenarioWorkspaceDataSet data,
+        ExternalScenarioDefinition? externalScenario)
+    {
+        return (externalScenario?.SupplyRisks ?? Array.Empty<ExternalSupplyRisk>())
+            .SelectMany(risk => Enumerable.Range(
+                    Math.Max(1, risk.StartWeek),
+                    Math.Max(0, risk.EndWeek - Math.Max(1, risk.StartWeek) + 1))
+                .Select(week =>
+                {
+                    var committed = data.SupplierCapacityWindows
+                        .Where(item => item.Supplier == risk.Supplier && item.MaterialFamily == risk.MaterialFamily && item.Week == week)
+                        .Select(item => item.CommittedCapacity)
+                        .DefaultIfEmpty(0m)
+                        .Last();
+                    return new SupplierCapacityLimit(
+                        risk.Supplier,
+                        risk.MaterialFamily,
+                        week,
+                        week,
+                        decimal.Round(committed * Math.Max(0m, risk.AvailableCapacityMultiplier), 0));
+                }))
+            .ToList();
+    }
+
     private static IReadOnlyList<BudgetComparison> CompareBudget(
         ScenarioWorkspaceDataSet data,
         IReadOnlyList<SkuBufferSetting> skus,
@@ -282,7 +480,7 @@ public sealed class ScenarioRunPreviewService
         ScenarioRunPreviewCase baseline,
         ScenarioRunPreviewCase scenario)
     {
-        return new List<ScenarioAuditTrace>
+        var trace = new List<ScenarioAuditTrace>
         {
             new("Data", $"读取 {data.Skus.Count} 个 SKU、{data.Resources.Count} 个资源、{data.SupplierItemSources.Count} 条供应来源。", "Information"),
             new("Scenario", $"模板 {request.TemplateId ?? "无"}；采纳口径 {request.AdoptionConstraintMode ?? "Balanced"}；提前建库 {parameters.PrebuildCampaigns?.Count ?? 0} 条；产能调整 {parameters.CapacityAdjustments?.Count ?? 0} 条；SKU 策略调整 {parameters.SkuPolicyOverrides?.Count ?? 0} 条。", "Information"),
@@ -290,6 +488,18 @@ public sealed class ScenarioRunPreviewService
             new("Result", $"峰值负荷变化 {scenario.Metrics.PeakLoadPercent - baseline.Metrics.PeakLoadPercent:0.#}pp，供应缺口变化 {scenario.Metrics.SupplyGap - baseline.Metrics.SupplyGap:0}。", scenario.Metrics.SupplyGap > baseline.Metrics.SupplyGap ? "Warning" : "Information"),
             new("Persistence", "本次为预览结果，未保存、未审批、未调用优化求解器。", "Information")
         };
+        if (request.ExternalScenario is not null)
+        {
+            trace.Insert(1, new ScenarioAuditTrace(
+                "ExternalScenario",
+                $"外部场景 {request.ExternalScenario.Name}：需求变化 {request.ExternalScenario.DemandChanges?.Count ?? 0}，供应风险 {request.ExternalScenario.SupplyRisks?.Count ?? 0}，能力损失 {request.ExternalScenario.CapacityLosses?.Count ?? 0}，已知事件 {request.ExternalScenario.KnownEvents?.Count ?? 0}。",
+                "Information"));
+        }
+        trace.Insert(2, new ScenarioAuditTrace(
+            "ResponseConfiguration",
+            $"企业响应：提前建库 {parameters.PrebuildCampaigns?.Count ?? 0}，临时能力 {parameters.CapacityAdjustments?.Count ?? 0}，主参数覆盖 {parameters.SkuPolicyOverrides?.Count ?? 0}，供应响应 {parameters.SupplierCapacityLimits?.Count ?? 0}。",
+            "Information"));
+        return trace;
     }
 
     private static string ScenarioName(ScenarioWorkspaceDataSet data, string? templateId)

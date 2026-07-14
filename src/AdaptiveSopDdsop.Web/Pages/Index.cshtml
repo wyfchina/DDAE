@@ -14,19 +14,15 @@
             </div>
         </div>
         <nav class="nav-list">
-            <a class="nav-item is-active" href="#overview-panel" data-help-key="overview"><span class="nav-index">01</span><span>总览</span></a>
-            <a class="nav-item" href="#product-family-dashboard-panel" data-help-key="productFamilyDashboard"><span class="nav-index">02</span><span>产品族看板</span></a>
-            <a class="nav-item" href="#data-readiness-panel" data-help-key="dataReadiness"><span class="nav-index">03</span><span>数据准备</span></a>
-            <a class="nav-item" href="#variance-panel" data-help-key="exceptions"><span class="nav-index">04</span><span>异常识别</span></a>
-            <a class="nav-item" href="#scenario-run-panel" data-help-key="scenarioRun"><span class="nav-index">05</span><span>场景运行</span></a>
-            <a class="nav-item" href="#scenario-comparison" data-help-key="scenarioComparison"><span class="nav-index">06</span><span>方案比较</span></a>
-            <a class="nav-item" href="#buffer-trend-panel" data-help-key="bufferTrend"><span class="nav-index">07</span><span>缓冲 / 库存趋势</span></a>
-            <a class="nav-item" href="#rccp-panel" data-help-key="rccpConstraint"><span class="nav-index">08</span><span>RCCP 与约束</span></a>
-            <a class="nav-item" href="#projected-supply-panel" data-help-key="supplierDemand"><span class="nav-index">09</span><span>供应商需求</span></a>
-            <a class="nav-item" href="#saved-scenarios-panel" data-help-key="scenarioTrace"><span class="nav-index">10</span><span>场景留痕</span></a>
-            <a class="nav-item" href="#master-settings-panel" data-help-key="masterSettings"><span class="nav-index">11</span><span>主设置治理</span></a>
-            <a class="nav-item" href="#trace-panel" data-help-key="whiteBoxTrace"><span class="nav-index">12</span><span>白盒追踪</span></a>
-            <a class="nav-item" href="#public-demo-golden-loop-panel" data-help-key="publicDemoGoldenLoop"><span class="nav-index">13</span><span>公开演示闭环</span></a>
+            <span class="nav-group-label">主业务流程</span>
+            <a class="nav-item is-active" href="#history-review-panel" data-help-key="historyReview"><span class="nav-index">01</span><span>历史回顾</span></a>
+            <a class="nav-item" href="#current-baseline-panel" data-help-key="currentBaseline"><span class="nav-index">02</span><span>当前状态基线</span></a>
+            <a class="nav-item" href="#future-scenario-panel" data-help-key="futureScenario"><span class="nav-index">03</span><span>未来场景模拟</span></a>
+            <a class="nav-item" href="#ddom-decision-panel" data-help-key="ddomDecision"><span class="nav-index">04</span><span>DDOM 配置与参数决策</span></a>
+            <a class="nav-item" href="#coordination-panel" data-help-key="coordination"><span class="nav-index">05</span><span>问题协调 / 行动 / 决策</span></a>
+            <span class="nav-group-label validation-group">验证与追踪</span>
+            <a class="nav-item" href="#trace-panel" data-help-key="whiteBoxTrace"><span class="nav-index">V1</span><span>白盒追踪</span></a>
+            <a class="nav-item" href="#public-demo-golden-loop-panel" data-help-key="publicDemoGoldenLoop"><span class="nav-index">V2</span><span>公开演示闭环</span></a>
         </nav>
         <div class="navigation-footer">
             <span class="service-dot" aria-hidden="true"></span>
@@ -69,9 +65,9 @@
         <main id="workspace" class="workspace" tabindex="-1">
             <div class="page-heading">
                 <div>
-                    <p class="eyebrow">场景运行工作台</p>
+                    <p class="eyebrow">DDAE 五阶段工作台</p>
                     <h1>需求驱动 S&OP 场景运行工作台</h1>
-                    <p class="page-description">基于卫星制造基础数据，运行非持久化场景预览，比较基准方案与预览方案的影响。</p>
+                    <p class="page-description">从历史证据、冻结基线、未来场景、DDOM 决策到行动验证形成闭环；模拟结果不会自动批准、生效或发布。</p>
                 </div>
                 <span id="route-status" class="status-chip neutral">正在加载</span>
             </div>
@@ -88,6 +84,176 @@
                 <strong>无法读取场景工作台数据</strong>
                 <span id="workspace-error-message">请检查本地服务后刷新。</span>
             </div>
+
+            <section id="history-review-panel" class="workspace-section stage-workspace" hidden>
+                <div class="stage-heading">
+                    <div><span class="stage-number">01</span><p class="panel-kicker">从实际结果建立事实</p><h2>历史回顾</h2></div>
+                    <div class="panel-inline-actions">
+                        <button id="history-range-6" class="button secondary is-selected" type="button">近六个月</button>
+                        <button id="history-range-12" class="button secondary" type="button">近十二个月</button>
+                        <span id="history-evidence-chip" class="status-chip neutral">等待读取</span>
+                    </div>
+                </div>
+                <div id="history-review-kpis" class="rccp-kpis" aria-label="历史经营结果"></div>
+                <div class="stage-grid two-column">
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">控制点—保护关系</span><h2>设计、可用与有效性证据</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>控制点</th><th>保护对象</th><th>保护类型</th><th>设计</th><th>可用</th><th>有效</th><th>证据</th></tr></thead><tbody id="history-protection-body"></tbody></table></div>
+                    </section>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">区域停留时长</span><h2>红黄绿保护带历史</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>SKU</th><th>观察期</th><th>红区</th><th>黄区</th><th>绿区</th><th>连续红区</th><th>恢复周期</th><th>主要原因</th></tr></thead><tbody id="history-zone-body"></tbody></table></div>
+                    </section>
+                </div>
+                <div class="stage-grid two-column">
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">能力分层</span><h2>负荷、阈值与保护消耗</h2></div></div>
+                        <div id="history-capacity-layers" class="capacity-layer-list"></div>
+                    </section>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">约束分类</span><h2>CCR、潜在 CCR、事件与外部约束</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>负荷</th><th>证据</th></tr></thead><tbody id="history-constraint-body"></tbody></table></div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="current-baseline-panel" class="workspace-section stage-workspace" hidden>
+                <div class="stage-heading">
+                    <div><span class="stage-number">02</span><p class="panel-kicker">冻结可追溯的当前事实</p><h2>当前状态基线</h2></div>
+                    <div class="panel-inline-actions">
+                        <button id="refresh-current-baseline" class="button secondary" type="button">刷新候选</button>
+                        <span id="current-baseline-chip" class="status-chip neutral">等待读取</span>
+                    </div>
+                </div>
+                <div class="readiness-banner">
+                    <div><span class="context-label">冻结规则</span><strong>关键证据缺失时禁止冻结；缺失不得按零处理</strong><p>冻结快照不可编辑，只能基于新截止时间生成下一版本。演示适配器数据明确标记 DemoFixture。</p></div>
+                    <div class="baseline-freeze-actions">
+                        <input id="baseline-created-by" type="text" value="DDS&OP 计划员" aria-label="冻结人">
+                        <input id="baseline-note" type="text" placeholder="冻结说明" aria-label="冻结说明">
+                        <button id="freeze-current-baseline" class="button primary" type="button">冻结新版本</button>
+                    </div>
+                </div>
+                <div class="stage-grid two-column">
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">候选证据</span><h2 id="baseline-candidate-title">来源、新鲜度与完整性</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>部分</th><th>来源</th><th>截止时间</th><th>新鲜度</th><th>完整性</th><th>条目</th><th>证据</th></tr></thead><tbody id="baseline-evidence-body"></tbody></table></div>
+                    </section>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">不可变版本</span><h2>已冻结基线</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>编号</th><th>截止时间</th><th>主设置版本</th><th>创建人</th><th>完整度</th><th>状态</th></tr></thead><tbody id="baseline-snapshot-body"></tbody></table></div>
+                        <div id="baseline-audit-list" class="diagnostics-list"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="future-scenario-panel" class="workspace-section stage-workspace" hidden>
+                <div class="stage-heading">
+                    <div><span class="stage-number">03</span><p class="panel-kicker">同源基线，多响应对照</p><h2>未来场景模拟</h2></div>
+                    <span id="future-compare-status" class="status-chip neutral">等待配置</span>
+                </div>
+                <div class="stage-deep-links" aria-label="未来场景深度视图">
+                    <a href="#variance-panel">异常识别</a><a href="#scenario-run-panel">场景运行</a><a href="#buffer-trend-panel">缓冲 / 库存趋势</a><a href="#rccp-panel">RCCP 与约束</a><a href="#projected-supply-panel">供应商需求</a>
+                </div>
+                <div class="scenario-separation-grid">
+                    <section class="stage-card external-scenario-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">外部场景</span><h2>需求、供应、能力损失与已知事件</h2></div></div>
+                        <div class="form-grid compact">
+                            <label><span>冻结基线</span><select id="future-baseline-select"></select></label>
+                            <label><span>场景名称</span><input id="external-scenario-name" type="text" value="需求上升与供应能力风险"></label>
+                            <label><span>需求倍率</span><input id="external-demand-multiplier" type="number" min="0" max="3" step="0.05" value="1.20"></label>
+                            <label><span>能力损失资源</span><select id="external-capacity-resource"></select></label>
+                            <label><span>剩余能力倍率</span><input id="external-capacity-multiplier" type="number" min="0" max="1" step="0.05" value="0.75"></label>
+                            <label><span>供应风险对象</span><select id="external-supplier-risk"></select></label>
+                            <label><span>供应剩余倍率</span><input id="external-supply-multiplier" type="number" min="0" max="1" step="0.05" value="0.70"></label>
+                        </div>
+                    </section>
+                    <section class="stage-card response-scenario-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">响应配置</span><h2>企业可控措施</h2></div></div>
+                        <div class="response-option-list">
+                            <label><input id="response-temporary-capacity" type="checkbox" checked><span><strong>临时能力</strong><small>在风险窗口增加受影响资源能力</small></span></label>
+                            <label><input id="response-policy-cover" type="checkbox" checked><span><strong>MOQ / 订货周期覆盖</strong><small>比较主参数临时覆盖对库存与服务的影响</small></span></label>
+                            <label><input id="response-prebuild" type="checkbox"><span><strong>提前建库</strong><small>在风险前建立保护，不直接生成执行排程</small></span></label>
+                        </div>
+                        <button id="run-scenario-comparison" class="button primary" type="button">比较不采取措施与响应方案</button>
+                        <p class="muted-note">结果由后端白盒服务重算；前端不复制 DDMRP、RCCP 或供应约束公式。</p>
+                    </section>
+                </div>
+                <div id="future-comparison-cards" class="comparison-grid"></div>
+                <section class="stage-card">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">保护击穿</span><h2>最早红色、最大连续红区与最终恢复周期</h2></div></div>
+                    <div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>范围</th><th>对象</th><th>最早红色周</th><th>最大连续风险</th><th>最终恢复周</th><th>受影响产品</th><th>主要原因</th></tr></thead><tbody id="future-breach-body"></tbody></table></div>
+                </section>
+            </section>
+
+            <section id="ddom-decision-panel" class="workspace-section stage-workspace" hidden>
+                <div class="stage-heading"><div><span class="stage-number">04</span><p class="panel-kicker">人工治理，不自动生效</p><h2>DDOM 配置与参数决策</h2></div><span class="status-chip is-paused">人工状态推进</span></div>
+                <div class="decision-category-grid">
+                    <section class="decision-category-card"><span class="category-code">A</span><h3>结构设置</h3><p>控制点、解耦点和保护结构候选。Network 只提供治理建议，必须经 DDAE 白盒场景重算。</p><a class="button secondary" href="@Model.NetworkStructureProductUrl">打开 Network 候选入口</a></section>
+                    <section class="decision-category-card"><span class="category-code">B</span><h3>主参数</h3><p>ADU、DLT、变异、MOQ、订货周期和保护边界，记录来源基线、场景、审批与回滚条件。</p><a class="button secondary" href="#master-settings-panel">查看主设置治理</a></section>
+                    <section class="decision-category-card"><span class="category-code">C</span><h3>临时调整</h3><p>提前建库、临时能力和供应响应；必须有失效日期与复查点，不转化为自动执行排程。</p><a class="button secondary" href="#scenario-run-panel">返回响应配置</a></section>
+                </div>
+                <section class="stage-card governance-context-card">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">变更包上下文</span><h2>责任、有效期、效果与回滚条件</h2></div></div>
+                    <div class="form-grid compact">
+                        <label><span>负责人</span><input id="governance-owner" type="text" value="运营经理"></label>
+                        <label><span>审批人</span><input id="governance-approver" type="text" value="S&amp;OP 执行委员会"></label>
+                        <label><span>生效日期</span><input id="governance-effective-from" type="date" value="2026-07-20"></label>
+                        <label><span>失效日期</span><input id="governance-effective-through" type="date" value="2026-08-16"></label>
+                        <label><span>复查日期</span><input id="governance-review-on" type="date" value="2026-08-03"></label>
+                        <label class="form-wide"><span>预期效果</span><input id="governance-expected-effect" type="text" value="服务、现金与保护能力按白盒场景比较结果改善"></label>
+                        <label class="form-wide"><span>回滚条件</span><input id="governance-rollback-condition" type="text" value="服务未改善、现金超过边界或保护能力恶化时人工回滚"></label>
+                        <label class="form-wide"><span>冻结比较方案</span><select id="governance-response-id"><option value="">请先运行未来场景比较</option></select></label>
+                    </div>
+                    <button id="generate-comparison-master-settings" class="button primary" type="button">从冻结场景比较生成治理建议</button>
+                    <p class="muted-note">来源基线、外部场景和响应方案由后端重新核验；保存后仍为 Proposed，不自动审批或生效。</p>
+                </section>
+                <div class="readiness-banner governance-boundary">
+                    <div><span class="context-label">只读评审证据</span><strong>SDBR 反馈不能修改当前或已批准主设置</strong><p>所有变更包均保持人工提出、评审、批准、生效、失效状态流；不存在自动采纳、自动审批或自动生效。</p></div>
+                </div>
+            </section>
+
+            <section id="coordination-panel" class="workspace-section stage-workspace" hidden>
+                <div class="stage-heading">
+                    <div><span class="stage-number">05</span><p class="panel-kicker">问题—行动—决策—结果</p><h2>问题协调、行动和决策记录</h2></div>
+                    <span id="coordination-status-chip" class="status-chip neutral">等待读取</span>
+                </div>
+                <div class="stage-deep-links" aria-label="协调与留痕深度视图"><a href="#saved-scenarios-panel">场景留痕</a></div>
+                <div class="stage-grid coordination-grid">
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">新事项</span><h2>创建协调问题</h2></div></div>
+                        <div class="form-grid compact">
+                            <label class="form-wide"><span>问题</span><input id="coordination-title" type="text" value="供应风险需要跨部门决策"></label>
+                            <label><span>影响对象</span><input id="coordination-impact-objects" type="text" value="关键 SKU,供应商"></label>
+                            <label><span>负责人</span><input id="coordination-owner" type="text" value="供应链经理"></label>
+                            <label><span>截止日期</span><input id="coordination-due-date" type="date" value="2026-07-20"></label>
+                            <label><span>升级层级</span><input id="coordination-escalation-level" type="text" value="S&OP 执行层"></label>
+                            <label><span>下次验证点</span><input id="coordination-next-review" type="date" value="2026-07-17"></label>
+                            <label class="form-wide"><span>决策要求</span><input id="coordination-decision-required" type="text" value="决定是否启用第二来源或临时能力"></label>
+                        </div>
+                        <button id="create-coordination-item" class="button primary" type="button">创建事项并留痕</button>
+                    </section>
+                    <section class="stage-card coordination-detail-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中事项</span><h2 id="coordination-detail-title">尚未选择</h2></div><span id="coordination-detail-status" class="status-chip neutral">-</span></div>
+                        <div id="coordination-detail-summary" class="metadata-list"></div>
+                        <div class="coordination-status-actions">
+                            <button class="button secondary" type="button" data-coordination-status="InProgress">转为进行中</button>
+                            <button class="button secondary" type="button" data-coordination-status="Escalated">升级</button>
+                            <button class="button secondary" type="button" data-coordination-status="Completed">完成</button>
+                        </div>
+                        <div class="form-grid compact">
+                            <label><span>决策</span><input id="coordination-decision" type="text" placeholder="记录人工决策"></label>
+                            <label><span>理由</span><input id="coordination-rationale" type="text" placeholder="记录权衡依据"></label>
+                            <label class="form-wide"><span>最终实际效果</span><input id="coordination-outcome" type="text" placeholder="在验证点记录实际效果"></label>
+                        </div>
+                        <div class="panel-inline-actions"><button id="record-coordination-decision" class="button secondary" type="button">记录决策</button><button id="record-coordination-outcome" class="button secondary" type="button">记录结果</button></div>
+                        <div id="coordination-audit-list" class="diagnostics-list"></div>
+                    </section>
+                </div>
+                <section class="stage-card">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">事项清单</span><h2>负责人、截止日期与升级状态</h2></div><button id="refresh-coordination-items" class="button secondary" type="button">刷新</button></div>
+                    <div class="table-scroll"><table class="data-table"><thead><tr><th>编号</th><th>问题</th><th>负责人</th><th>截止日期</th><th>升级层级</th><th>下次验证</th><th>场景</th><th>变更包</th><th>状态</th></tr></thead><tbody id="coordination-item-body"></tbody></table></div>
+                </section>
+            </section>
 
             <section id="overview-panel" class="workspace-section" hidden>
                 <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标"></div>

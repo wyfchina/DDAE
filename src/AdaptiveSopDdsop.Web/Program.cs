@@ -10,6 +10,8 @@ builder.Services.AddSingleton<DdmrpCalculator>();
 builder.Services.AddSingleton<DdsopScenarioService>();
 builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
+builder.Services.AddSingleton<HistoryReviewWorkspaceService>();
+builder.Services.AddSingleton<ICurrentBaselineDataSource, SeedCurrentBaselineDataSource>();
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
 builder.Services.AddSingleton<DdsopConfigInboundContractService>();
 builder.Services.AddSingleton<DdsopFeedbackInboundLedger>();
@@ -25,6 +27,21 @@ builder.Services.AddSingleton<ExceptionWorkspaceService>();
 builder.Services.AddSingleton<BufferTrendWorkspaceService>();
 builder.Services.AddSingleton<ConstraintWorkspaceService>();
 builder.Services.AddSingleton<SupplierCollaborationWorkspaceService>();
+builder.Services.AddSingleton(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new CurrentBaselineService(
+        sp.GetRequiredService<ICurrentBaselineDataSource>(),
+        databasePath);
+});
+builder.Services.AddSingleton<ScenarioComparisonService>();
+builder.Services.AddSingleton(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new CoordinationLedgerService(databasePath);
+});
 builder.Services.AddSingleton(sp =>
 {
     var environment = sp.GetRequiredService<IWebHostEnvironment>();
@@ -256,6 +273,60 @@ app.MapGet("/api/supplier-collaboration-workspace", (int? horizonWeeks, Supplier
     return Results.Ok(service.GetBaseline(horizonWeeks.GetValueOrDefault(12)));
 });
 
+app.MapGet("/api/history-review", (int? trendMonths, HistoryReviewWorkspaceService service) =>
+{
+    return Results.Ok(service.GetReview(trendMonths.GetValueOrDefault(6)));
+});
+
+app.MapGet("/api/current-baselines/candidate", (CurrentBaselineService service) =>
+{
+    return Results.Ok(service.GetCandidate());
+});
+
+app.MapPost("/api/current-baselines", (CurrentBaselineFreezeRequest request, CurrentBaselineService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Freeze(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/current-baselines", (int? limit, CurrentBaselineService service) =>
+{
+    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+});
+
+app.MapGet("/api/current-baselines/{snapshotId}", (string snapshotId, CurrentBaselineService service) =>
+{
+    var detail = service.GetDetail(snapshotId);
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+
+app.MapGet("/api/current-baselines/{snapshotId}/audit", (string snapshotId, CurrentBaselineService service) =>
+{
+    return Results.Ok(service.GetAuditEvents(snapshotId));
+});
+
+app.MapPost("/api/scenario-runs/compare", (ScenarioComparisonRequest request, ScenarioComparisonService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Compare(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
 app.MapPost("/api/scenario-runs/preview", (ScenarioRunPreviewRequest request, ScenarioRunPreviewService service) =>
 {
     return Results.Ok(service.Preview(request));
@@ -299,6 +370,40 @@ app.MapPost("/api/master-settings/proposals/from-preview", (ScenarioRunPreviewRe
     return Results.Ok(service.ProposeFromPreview(request));
 });
 
+app.MapPost("/api/master-settings/proposals/from-comparison", (
+    FrozenComparisonGovernanceProposalRequest request,
+    ScenarioComparisonService comparisonService,
+    CurrentBaselineService baselineService,
+    MasterSettingsGovernanceService governanceService) =>
+{
+    try
+    {
+        var baseline = baselineService.GetDetail(request.Comparison.BaselineSnapshotId);
+        if (baseline is null)
+        {
+            return Results.NotFound(new { message = "来源冻结基线不存在。" });
+        }
+        var comparison = comparisonService.Compare(request.Comparison);
+        var selected = comparison.AllCases.FirstOrDefault(item => item.ResponseId == request.ResponseId);
+        if (selected is null)
+        {
+            return Results.BadRequest(new { message = "所选响应方案不属于本次冻结场景比较。" });
+        }
+        return Results.Ok(governanceService.ProposeFromFrozenComparison(
+            selected,
+            baseline,
+            request.GovernanceContext ?? new GovernanceDecisionContext()));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
 app.MapPost("/api/master-settings/changes", (MasterSettingChangeSaveRequest request, MasterSettingsGovernanceService service) =>
 {
     try
@@ -337,6 +442,86 @@ app.MapPost("/api/master-settings/changes/{changeId}/status", (string changeId, 
     {
         return Results.BadRequest(new { message = ex.Message });
     }
+});
+
+app.MapPost("/api/coordination-items", (CoordinationItemCreateRequest request, CoordinationLedgerService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Create(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/coordination-items", (int? limit, CoordinationLedgerService service) =>
+{
+    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+});
+
+app.MapGet("/api/coordination-items/{itemId}", (string itemId, CoordinationLedgerService service) =>
+{
+    var detail = service.GetDetail(itemId);
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+
+app.MapPost("/api/coordination-items/{itemId}/status", (string itemId, CoordinationStatusUpdateRequest request, CoordinationLedgerService service) =>
+{
+    try
+    {
+        return Results.Ok(service.UpdateStatus(itemId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
+app.MapPost("/api/coordination-items/{itemId}/decision", (string itemId, CoordinationDecisionUpdateRequest request, CoordinationLedgerService service) =>
+{
+    try
+    {
+        return Results.Ok(service.RecordDecision(itemId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+});
+
+app.MapPost("/api/coordination-items/{itemId}/outcome", (string itemId, CoordinationOutcomeUpdateRequest request, CoordinationLedgerService service) =>
+{
+    try
+    {
+        return Results.Ok(service.RecordOutcome(itemId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/coordination-items/{itemId}/audit", (string itemId, CoordinationLedgerService service) =>
+{
+    return Results.Ok(service.GetAuditEvents(itemId));
 });
 
 app.Run();

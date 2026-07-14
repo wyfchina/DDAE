@@ -144,13 +144,63 @@ public sealed record ScenarioRunParameterSet(
     IReadOnlyList<SkuPolicyOverride>? SkuPolicyOverrides = null,
     IReadOnlyList<SupplierCapacityLimit>? SupplierCapacityLimits = null);
 
+public sealed record ExternalDemandChange(
+    string? Sku,
+    string? Family,
+    int StartWeek,
+    int EndWeek,
+    decimal DemandMultiplier,
+    string Reason);
+
+public sealed record ExternalSupplyRisk(
+    string Supplier,
+    string MaterialFamily,
+    int StartWeek,
+    int EndWeek,
+    decimal AvailableCapacityMultiplier,
+    string Reason);
+
+public sealed record ExternalCapacityLoss(
+    string ResourceCode,
+    int StartWeek,
+    int EndWeek,
+    decimal AvailableCapacityMultiplier,
+    string Reason);
+
+public sealed record ExternalKnownEvent(
+    string EventId,
+    string Name,
+    int StartWeek,
+    int EndWeek);
+
+public sealed record ExternalScenarioDefinition(
+    string ScenarioId,
+    string Name,
+    IReadOnlyList<ExternalDemandChange>? DemandChanges = null,
+    IReadOnlyList<ExternalSupplyRisk>? SupplyRisks = null,
+    IReadOnlyList<ExternalCapacityLoss>? CapacityLosses = null,
+    IReadOnlyList<ExternalKnownEvent>? KnownEvents = null);
+
+public sealed record GovernanceDecisionContext(
+    string? SourceBaselineId = null,
+    string? SourceScenarioRunId = null,
+    string? Owner = null,
+    string? Approver = null,
+    string? EffectiveFrom = null,
+    string? EffectiveThrough = null,
+    string? ReviewOn = null,
+    string? ExpectedEffect = null,
+    string? RollbackCondition = null);
+
 public sealed record ScenarioRunPreviewRequest(
     int HorizonWeeks = 12,
     string? TemplateId = null,
     IReadOnlyList<string>? SkuFilter = null,
     IReadOnlyList<string>? FamilyFilter = null,
     ScenarioRunParameterSet? Parameters = null,
-    string? AdoptionConstraintMode = null);
+    string? AdoptionConstraintMode = null,
+    ExternalScenarioDefinition? ExternalScenario = null,
+    GovernanceDecisionContext? GovernanceContext = null);
 
 public sealed record ScenarioPreviewMetrics(
     decimal ServiceLevelPercent,
@@ -715,7 +765,16 @@ public sealed record MasterSettingChangeRequest(
     decimal ServiceImpact,
     decimal CashImpact,
     string RiskLevel,
-    IReadOnlyList<string> Rationale);
+    IReadOnlyList<string> Rationale,
+    string? ChangeCategory = null,
+    string? SourceBaselineId = null,
+    string? Owner = null,
+    string? Approver = null,
+    string? EffectiveFrom = null,
+    string? EffectiveThrough = null,
+    string? ReviewOn = null,
+    string? ExpectedEffect = null,
+    string? RollbackCondition = null);
 
 public sealed record MasterSettingChangeSummary(
     string ChangeId,

@@ -72,6 +72,30 @@ public sealed class MasterSettingsGovernanceService
         var safeRequest = request.HorizonWeeks <= 0 ? request with { HorizonWeeks = 12 } : request;
         var preview = _previewService.Preview(safeRequest);
         var data = LoadData(safeRequest);
+        return BuildProposalResponse(safeRequest, preview, data);
+    }
+
+    public MasterSettingProposalResponse ProposeFromFrozenComparison(
+        ScenarioComparisonCase comparisonCase,
+        CurrentBaselineSnapshot frozenBaseline,
+        GovernanceDecisionContext governanceContext)
+    {
+        var context = governanceContext with
+        {
+            SourceBaselineId = frozenBaseline.SnapshotId,
+            SourceScenarioRunId = $"{comparisonCase.ExternalScenarioId}/{comparisonCase.ResponseId}"
+        };
+        var request = comparisonCase.Preview.Request with { GovernanceContext = context };
+        var preview = comparisonCase.Preview with { Request = request };
+        var data = _previewService.LoadFrozenWorkspaceData(request, frozenBaseline);
+        return BuildProposalResponse(request, preview, data);
+    }
+
+    private static MasterSettingProposalResponse BuildProposalResponse(
+        ScenarioRunPreviewRequest safeRequest,
+        ScenarioRunPreviewResult preview,
+        ScenarioWorkspaceDataSet data)
+    {
         var proposals = new List<MasterSettingChangeRequest>();
 
         proposals.AddRange(BuildTemplateActionProposals(data, safeRequest));
@@ -512,8 +536,12 @@ public sealed class MasterSettingsGovernanceService
         string riskLevel,
         string source)
     {
+        var changeCategory = source is "PrebuildCampaign" or "ResourceCapacityAdjustment" or "SupplierCapacityLimit"
+            ? "TemporaryAdjustment"
+            : "MasterParameter";
+        var context = request.GovernanceContext;
         return new MasterSettingChangeRequest(
-            null,
+            context?.SourceScenarioRunId,
             request.TemplateId,
             settingType,
             target,
@@ -525,7 +553,16 @@ public sealed class MasterSettingsGovernanceService
             decimal.Round(serviceImpact, 1),
             decimal.Round(cashImpact, 0),
             riskLevel,
-            new[] { source, "由 Scenario Preview 生成，保存时作为主设置治理记录留痕。" });
+            new[] { source, "由 Scenario Preview 生成，保存时作为主设置治理记录留痕。" },
+            ChangeCategory: changeCategory,
+            SourceBaselineId: context?.SourceBaselineId,
+            Owner: context?.Owner,
+            Approver: context?.Approver,
+            EffectiveFrom: string.IsNullOrWhiteSpace(context?.EffectiveFrom) ? effectiveWindow : context.EffectiveFrom,
+            EffectiveThrough: context?.EffectiveThrough,
+            ReviewOn: string.IsNullOrWhiteSpace(context?.ReviewOn) ? "下一次 DDS&OP 复查点" : context.ReviewOn,
+            ExpectedEffect: string.IsNullOrWhiteSpace(context?.ExpectedEffect) ? $"服务影响 {serviceImpact:0.0}pp；现金影响 {cashImpact:0}" : context.ExpectedEffect,
+            RollbackCondition: string.IsNullOrWhiteSpace(context?.RollbackCondition) ? "实际效果偏离预期或保护能力恶化时人工回滚" : context.RollbackCondition);
     }
 
     private static string SkuCurrentValue(SkuBufferSetting sku)
