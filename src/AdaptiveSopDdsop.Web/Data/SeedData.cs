@@ -16,34 +16,34 @@ public static class SeedData
 
         var skus = new List<SkuBufferSetting>
         {
-            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 18, 8, 1.5m, 4, 80, 820_000m, 210),
-            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 12, 10, 1.6m, 5, 60, 1_180_000m, 160),
-            new("SAT-PROP-003", "电推进模块", "卫星平台", 26, 7, 1.4m, 4, 90, 260_000m, 260),
-            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 10, 12, 1.9m, 6, 45, 1_960_000m, 120),
-            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 7, 14, 2.1m, 6, 35, 2_850_000m, 90),
-            new("AV-COM-201", "星载通信机", "星载电子", 42, 6, 1.4m, 4, 160, 180_000m, 520),
-            new("AV-OBC-202", "星务计算机", "星载电子", 30, 8, 1.7m, 5, 120, 320_000m, 360),
-            new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 16, 16, 2.2m, 6, 80, 540_000m, 180),
-            new("TC-MLI-301", "多层隔热组件", "热控结构", 72, 5, 1.4m, 4, 260, 42_000m, 760),
-            new("TC-RAD-302", "蜂窝散热板", "热控结构", 54, 6, 1.5m, 4, 220, 86_000m, 620),
-            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 24, 11, 1.9m, 5, 100, 420_000m, 240),
-            new("CBL-HAR-402", "星上电缆束套件", "星载电子", 96, 4, 1.2m, 3, 360, 38_000m, 980),
+            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 0.20m, 8, 1.5m, 4, 80, 820_000m, 210),
+            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 0.12m, 10, 1.6m, 5, 60, 1_180_000m, 160),
+            new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 1.4m, 4, 90, 260_000m, 260),
+            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 1.9m, 6, 45, 1_960_000m, 120),
+            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 2.1m, 6, 35, 2_850_000m, 90),
+            new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 1.4m, 4, 160, 180_000m, 520),
+            new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 1.7m, 5, 120, 320_000m, 360),
+            new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 0.18m, 16, 2.2m, 6, 80, 540_000m, 180),
+            new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 1.4m, 4, 260, 42_000m, 760),
+            new("TC-RAD-302", "蜂窝散热板", "热控结构", 2.50m, 6, 1.5m, 4, 220, 86_000m, 620),
+            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 0.60m, 11, 1.9m, 5, 100, 420_000m, 240),
+            new("CBL-HAR-402", "星上电缆束套件", "星载电子", 5.00m, 4, 1.2m, 3, 30, 38_000m, 980),
         }.Select(ApplyDdmrpParameterProfile).ToList();
 
         var inventory = new List<InventoryPosition>
         {
-            new("SAT-BUS-001", 92, 42, 36),
-            new("SAT-BUS-002", 460, 90, 28),
-            new("SAT-PROP-003", 260, 90, 84),
-            new("PAY-EO-101", 280, 24, 42),
-            new("PAY-SAR-102", 74, 14, 28),
-            new("AV-COM-201", 210, 86, 98),
-            new("AV-OBC-202", 238, 56, 74),
-            new("AV-FPGA-203", 126, 18, 82),
-            new("TC-MLI-301", 980, 200, 220),
-            new("TC-RAD-302", 460, 120, 180),
-            new("MECH-DEP-401", 168, 28, 76),
-            new("CBL-HAR-402", 1360, 320, 310),
+            new("SAT-BUS-001", 4, 1, 2),
+            new("SAT-BUS-002", 3, 1, 1),
+            new("SAT-PROP-003", 12, 3, 4),
+            new("PAY-EO-101", 3, 1, 1),
+            new("PAY-SAR-102", 2, 1, 1),
+            new("AV-COM-201", 28, 8, 10),
+            new("AV-OBC-202", 20, 6, 8),
+            new("AV-FPGA-203", 22, 4, 6),
+            new("TC-MLI-301", 75, 20, 24),
+            new("TC-RAD-302", 48, 12, 16),
+            new("MECH-DEP-401", 12, 3, 4),
+            new("CBL-HAR-402", 120, 30, 36),
         };
 
         var demandShape = new[] { 0.72m, 0.92m, 1.18m, 1.48m, 0.80m, 1.05m, 1.32m, 1.62m, 0.76m, 0.98m, 1.24m, 1.52m };
@@ -57,34 +57,75 @@ public static class SeedData
 
         var resources = new List<CapacityResource>
         {
-            new("RES-AIT", "AIT 总装集成大厅", 1380, 1.00m),
-            new("RES-TVAC", "热真空试验舱", 920, 0.85m),
-            new("RES-CLEAN", "洁净载荷装配间", 1180, 0.72m),
-            new("RES-HARNESS", "星上电缆束工位", 1680, 0.68m),
+            new("RES-AIT", "AIT 总装集成大厅", 160, 1.00m),
+            new("RES-TVAC", "热真空试验舱", 96, 1.00m),
+            new("RES-CLEAN", "洁净载荷装配间", 120, 1.00m),
+            new("RES-HARNESS", "星上电缆束工位", 180, 1.00m),
         };
 
-        var resourceRoutings = skus.SelectMany(sku => sku.Family switch
+        var resourceRoutings = skus.SelectMany(sku => sku.Sku switch
         {
-            "星载电子" => new[]
+            "SAT-BUS-001" => new[]
             {
-                new ResourceRouting(sku.Sku, "RES-HARNESS", 0.52m),
-                new ResourceRouting(sku.Sku, "RES-TVAC", 0.20m),
+                new ResourceRouting(sku.Sku, "RES-AIT", 18m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 8m, OperationSequence: 20),
             },
-            "有效载荷" => new[]
+            "SAT-BUS-002" => new[]
             {
-                new ResourceRouting(sku.Sku, "RES-CLEAN", 0.70m),
-                new ResourceRouting(sku.Sku, "RES-TVAC", 0.42m),
+                new ResourceRouting(sku.Sku, "RES-AIT", 22m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 10m, OperationSequence: 20),
             },
-            "热控结构" => new[]
+            "SAT-PROP-003" => new[]
             {
-                new ResourceRouting(sku.Sku, "RES-AIT", 0.30m),
-                new ResourceRouting(sku.Sku, "RES-HARNESS", 0.18m),
+                new ResourceRouting(sku.Sku, "RES-AIT", 8m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 3m, OperationSequence: 20),
             },
-            _ => new[]
+            "PAY-EO-101" => new[]
             {
-                new ResourceRouting(sku.Sku, "RES-AIT", 0.56m),
-                new ResourceRouting(sku.Sku, "RES-TVAC", 0.24m),
-            }
+                new ResourceRouting(sku.Sku, "RES-CLEAN", 30m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 20m, OperationSequence: 20),
+            },
+            "PAY-SAR-102" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-CLEAN", 35m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 25m, OperationSequence: 20),
+            },
+            "AV-COM-201" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 4m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 1m, OperationSequence: 20),
+            },
+            "AV-OBC-202" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 5m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 1m, OperationSequence: 20),
+            },
+            "AV-FPGA-203" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 6m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 1.5m, OperationSequence: 20),
+            },
+            "TC-MLI-301" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-AIT", 3m, OperationSequence: 10, ProtectsCcrResourceCode: "RES-HARNESS"),
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 2m, OperationSequence: 20),
+            },
+            "TC-RAD-302" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-AIT", 1m, OperationSequence: 10, ProtectsCcrResourceCode: "RES-HARNESS"),
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 1.2m, OperationSequence: 20),
+            },
+            "MECH-DEP-401" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-AIT", 4m, OperationSequence: 10, ProtectsCcrResourceCode: "RES-HARNESS"),
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 3m, OperationSequence: 20),
+            },
+            "CBL-HAR-402" => new[]
+            {
+                new ResourceRouting(sku.Sku, "RES-HARNESS", 2.6m, OperationSequence: 10),
+                new ResourceRouting(sku.Sku, "RES-TVAC", 0.5m, OperationSequence: 20),
+            },
+            _ => Array.Empty<ResourceRouting>(),
         }).ToList();
 
         var supplierItemSources = skus.Select(sku =>
@@ -217,9 +258,9 @@ public static class SeedData
                 sku.Family == "星载电子" ? 1_800_000 : 350_000);
         }).Concat(new[]
         {
-            new MasterSetting("MS-DP-001", "Decoupling Point", "星载电子半成品解耦点", "未设置", "设置星载电子半成品 Buffer", "星座批产长期大单", "2027-01 生效", "Proposed", 3.2m, 1_116_500),
-            new MasterSetting("MS-TB-001", "Time Buffer", "进口空间级 FPGA", "保护 8 周", "保护 12 周 + Act/Late 阈值", "出口许可延迟与长交期", "2026-08 至 2026-10", "Reviewed", 2.0m, 2_400_000),
-            new MasterSetting("MS-CB-001", "Capacity Buffer", "热真空试验舱", "保留 5%", "保留 12% + 周末班边界", "试验舱校准与发射窗口叠加", "2026-09 至 2026-12", "Proposed", 2.8m, 3_100_000),
+            new MasterSetting("MS-DP-001", "Decoupling Point", "星载电子半成品库存控制点", "AV-COM-201 / AV-OBC-202", "与关键进口 FPGA 库存控制点保持独立", "星座批产长期大单", "2027-01 生效", "Proposed", 3.2m, 1_116_500),
+            new MasterSetting("MS-TB-001", "Time Buffer", "热真空试验准备控制点", "保护 2 天", "保护 3 天 + Act/Late 阈值", "试验件到位与热真空窗口偏差", "2026-08 至 2026-10", "Reviewed", 2.0m, 2_400_000),
+            new MasterSetting("MS-CB-001", "Capacity Buffer", "AIT 总装集成大厅", "保护起点 80%", "为 RES-HARNESS 保留 20% 上游能力", "HARNESS 当前 CCR 的上游顺序保护", "2026-09 至 2026-12", "Proposed", 2.8m, 3_100_000),
         }).ToList();
 
         var ddomFeedback = Enumerable.Range(1, 18)
@@ -234,7 +275,7 @@ public static class SeedData
         var tacticalOpportunities = new List<TacticalOpportunity>
         {
             new("TO-001", "利用 MLI 超绿缓冲释放现金", "TC-MLI-301 超绿区持续 5 周", 0, 0, -1_800_000, 1.5m, "服务风险低", "Candidate"),
-            new("TO-002", "热真空周末短促试验批", "发射窗口前两周仍有 11% 保护能力", 12_500_000, 3_900_000, 950_000, 2.8m, "需控制加班成本", "Evaluate"),
+            new("TO-002", "热真空周末短促试验批", "发射窗口前两周仍有 11% 未承诺能力余量", 12_500_000, 3_900_000, 950_000, 2.8m, "需控制加班成本", "Evaluate"),
             new("TO-003", "航天复材慢运替代部分空运", "服务风险低且缓冲恢复", 0, 0, -2_600_000, 1.1m, "Late 警报不能超过阈值", "Approved"),
             new("TO-004", "高毛利载荷抢单窗口", "洁净装配间绿区且 SAR 载荷毛利高", 18_000_000, 6_200_000, 1_400_000, 3.4m, "需销售确认客户交付窗口", "Candidate"),
         };
@@ -251,7 +292,7 @@ public static class SeedData
         {
             new("低轨星座长期大单", "2027-01 至 2028-12", 118, 109, 18_600_000, 420, 95, 23_000_000, "有条件可行", "新增星载电子解耦点并批准热真空扩容"),
             new("SAR 小卫星全新系列", "2027-03 至 2028-12", 126, 114, 22_400_000, 510, 138, 31_000_000, "不可行", "先完成 FPGA 国产替代和洁净间扩建"),
-            new("通信客户追加星座批次", "2026-11 至 2027-12", 92, 86, 7_400_000, 160, 0, 4_200_000, "可行", "启用 DAF 1.16 并锁定热真空保护能力"),
+            new("通信客户追加星座批次", "2026-11 至 2027-12", 92, 86, 7_400_000, 160, 0, 4_200_000, "可行", "启用 DAF 1.16 并确认热真空未承诺能力余量"),
             new("不新增资本投资的高服务承诺", "2027-01 至 2028-06", 135, 122, 29_000_000, 620, 210, 46_000_000, "不可行", "必须降低服务承诺或批准固定资产"),
         };
 
@@ -304,12 +345,14 @@ public static class SeedData
             "卫星平台" => 1.03m,
             _ => 1.00m
         };
-        var decouplingPoint = sku.Family switch
+        var decouplingPoint = sku.Sku switch
         {
-            "星载电子" => "星载电子半成品超市",
-            "有效载荷" => "载荷洁净装配前缓冲",
-            "卫星平台" => "平台总装前解耦点",
-            _ => "热控结构件超市"
+            "TC-MLI-301" or "TC-RAD-302" => "热控结构件库存控制点",
+            "AV-COM-201" or "AV-OBC-202" => "星载电子半成品库存控制点",
+            "AV-FPGA-203" => "关键进口 FPGA 库存控制点",
+            "MECH-DEP-401" => "展开机构装配前解耦点",
+            _ when sku.Family == "有效载荷" => "载荷洁净装配前缓冲",
+            _ => "平台总装前解耦点"
         };
         var profile = sku.Family switch
         {

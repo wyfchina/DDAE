@@ -142,7 +142,8 @@ public sealed record ScenarioRunParameterSet(
     IReadOnlyList<PrebuildCampaign>? PrebuildCampaigns = null,
     IReadOnlyList<ResourceCapacityAdjustment>? CapacityAdjustments = null,
     IReadOnlyList<SkuPolicyOverride>? SkuPolicyOverrides = null,
-    IReadOnlyList<SupplierCapacityLimit>? SupplierCapacityLimits = null);
+    IReadOnlyList<SupplierCapacityLimit>? SupplierCapacityLimits = null,
+    IReadOnlyList<TimeBufferResponseAdjustment>? TimeBufferAdjustments = null);
 
 public sealed record ExternalDemandChange(
     string? Sku,
@@ -179,7 +180,8 @@ public sealed record ExternalScenarioDefinition(
     IReadOnlyList<ExternalDemandChange>? DemandChanges = null,
     IReadOnlyList<ExternalSupplyRisk>? SupplyRisks = null,
     IReadOnlyList<ExternalCapacityLoss>? CapacityLosses = null,
-    IReadOnlyList<ExternalKnownEvent>? KnownEvents = null);
+    IReadOnlyList<ExternalKnownEvent>? KnownEvents = null,
+    IReadOnlyList<ExternalTimeDelay>? TimeDelays = null);
 
 public sealed record GovernanceDecisionContext(
     string? SourceBaselineId = null,
@@ -860,7 +862,11 @@ public sealed record ScenarioWorkspaceDataSet(
     IReadOnlyList<ScenarioTemplate> ScenarioTemplates,
     IReadOnlyList<DdmrpParameterProfile> DdmrpParameters,
     IReadOnlyList<MasterSetting> MasterSettings,
-    IReadOnlyList<BusinessGuardrail> Guardrails);
+    IReadOnlyList<BusinessGuardrail> Guardrails,
+    IReadOnlyList<CapacityProtectionDefinition>? CapacityProtections = null,
+    IReadOnlyList<TimeBufferDefinition>? TimeBuffers = null,
+    IReadOnlyList<ControlPointProgressFact>? ControlPointProgress = null,
+    IReadOnlyList<TimeBufferProductScope>? TimeBufferProductScopes = null);
 
 public interface IScenarioWorkspaceDataSource
 {

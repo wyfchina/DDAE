@@ -61,7 +61,82 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                     || item.SettingId.StartsWith("MS-DP", StringComparison.Ordinal)
                     || item.SettingType is "Time Buffer" or "Capacity Buffer")
                 .ToList(),
-            BuildGuardrails());
+            BuildGuardrails(),
+            BuildCapacityProtections(routings),
+            BuildTimeBuffers(),
+            BuildControlPointProgress(),
+            BuildTimeBufferProductScopes(scopedSkus));
+    }
+
+    private static IReadOnlyList<CapacityProtectionDefinition> BuildCapacityProtections(
+        IReadOnlyList<ResourceRouting> routings)
+    {
+        const string upstreamResourceCode = "RES-AIT";
+        const string protectedCcrResourceCode = "RES-HARNESS";
+        var hasCompleteSequenceEvidence = routings
+            .Where(item =>
+                item.ResourceCode == upstreamResourceCode &&
+                item.ProtectsCcrResourceCode == protectedCcrResourceCode &&
+                item.EvidenceStatus == "Complete")
+            .Any(upstream => routings.Any(downstream =>
+                downstream.Sku == upstream.Sku &&
+                downstream.ResourceCode == protectedCcrResourceCode &&
+                downstream.OperationSequence > upstream.OperationSequence &&
+                downstream.EvidenceStatus == "Complete"));
+
+        return hasCompleteSequenceEvidence
+            ? new[]
+            {
+                new CapacityProtectionDefinition(
+                    "CAP-PROT-AIT-HARNESS-001",
+                    upstreamResourceCode,
+                    protectedCcrResourceCode,
+                    20m,
+                    "热控结构件经 AIT 前置工序进入 HARNESS 当前 CCR 的顺序路径",
+                    "Complete")
+            }
+            : Array.Empty<CapacityProtectionDefinition>();
+    }
+
+    private static IReadOnlyList<TimeBufferDefinition> BuildTimeBuffers()
+    {
+        return new[]
+        {
+            new TimeBufferDefinition(
+                "MS-TB-001",
+                "热真空试验准备控制点",
+                "热真空试验",
+                3m,
+                true,
+                "卫星平台与有效载荷的热真空试验准备",
+                "Complete")
+        };
+    }
+
+    private static IReadOnlyList<ControlPointProgressFact> BuildControlPointProgress()
+    {
+        return new[]
+        {
+            new ControlPointProgressFact("MS-TB-001", 1, 0.5m, "试验件按计划进入准备窗口", "Complete"),
+            new ControlPointProgressFact("MS-TB-001", 2, 1.0m, "洁净转运窗口调整", "Complete"),
+            new ControlPointProgressFact("MS-TB-001", 3, 0m, "准备工作恢复计划节奏", "Complete"),
+        };
+    }
+
+    private static IReadOnlyList<TimeBufferProductScope> BuildTimeBufferProductScopes(
+        IReadOnlyList<SkuBufferSetting> skus)
+    {
+        var scopedSkus = skus
+            .Where(item => item.Family is "卫星平台" or "有效载荷")
+            .ToList();
+        return new[]
+        {
+            new TimeBufferProductScope(
+                "MS-TB-001",
+                scopedSkus.Select(item => item.Family).Distinct(StringComparer.Ordinal).OrderBy(item => item, StringComparer.Ordinal).ToList(),
+                scopedSkus.Select(item => item.Sku).OrderBy(item => item, StringComparer.Ordinal).ToList(),
+                "Complete")
+        };
     }
 
     private static IReadOnlyList<DdmrpParameterProfile> BuildDdmrpParameters(IReadOnlyList<SkuBufferSetting> skus)

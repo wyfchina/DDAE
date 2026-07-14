@@ -83,7 +83,10 @@ public sealed record DemandDrivenPlanRun(
 public sealed record ResourceRouting(
     string Sku,
     string ResourceCode,
-    decimal CapacityPerUnit);
+    decimal CapacityPerUnit,
+    int OperationSequence = 1,
+    string? ProtectsCcrResourceCode = null,
+    string EvidenceStatus = "Complete");
 
 public sealed record ResourceCapacityAdjustment(
     string ResourceCode,

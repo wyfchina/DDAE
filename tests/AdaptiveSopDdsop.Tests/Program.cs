@@ -11,6 +11,12 @@ var tests = new (string Name, Action Run)[]
     ("Supply disruption lowers buffer health and creates expedite recommendation", TestSupplyDisruptionScenario),
     ("Planned shutdown creates capacity warning and management review action", TestShutdownScenario),
     ("Baseline data demonstrates red yellow green and over top of green buffer statuses with Chinese names", TestBaselineStatusVarietyAndChineseNames),
+    ("Five-stage internal files do not reference protected contract types or endpoints", TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints),
+    ("Seed scale matches a credible satellite manufacturing demo", TestSeedScaleMatchesSatelliteManufacturingDemo),
+    ("FPGA belongs only to its independent inventory control point", TestFpgaBelongsOnlyToIndependentInventoryControlPoint),
+    ("Three independent inventory control points are explicit", TestThreeIndependentInventoryControlPointsAreExplicit),
+    ("Capacity protection requires sequenced upstream evidence", TestCapacityProtectionRequiresSequencedUpstreamEvidence),
+    ("Capacity protection is not inferred without sequence evidence", TestCapacityProtectionDoesNotInferWithoutSequenceEvidence),
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
@@ -161,6 +167,268 @@ static void TestBaselineStatusVarietyAndChineseNames()
     AssertTrue(statuses.Contains("Green"), "baseline should contain green buffer status");
     AssertTrue(statuses.Contains("OverTopOfGreen"), "baseline should contain over top of green buffer status");
     AssertTrue(result.Skus.Any(sku => ContainsChinese(sku.Name) || ContainsChinese(sku.Family)), "baseline should contain Chinese family or SKU names");
+}
+
+static void TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var boundaryScript = Path.Combine(root, "scripts", "verify-protected-boundaries.ps1");
+    AssertTrue(File.Exists(boundaryScript), "protected-boundary verification script should exist");
+    var boundaryScriptText = File.ReadAllText(boundaryScript);
+    AssertTrue(boundaryScriptText.Contains("[string]$Baseline = \"4e39ec5\"", StringComparison.Ordinal), "boundary script should default to baseline 4e39ec5");
+    AssertTrue(boundaryScriptText.Contains("function Get-BracedBlock([string]$Text, [string]$Signature)", StringComparison.Ordinal), "boundary script should declare deterministic braced-block extraction");
+    AssertTrue(boundaryScriptText.Contains("function Get-DelimitedBlock([string]$Text, [string]$StartMarker, [string]$EndMarker)", StringComparison.Ordinal), "boundary script should declare deterministic delimited-block extraction");
+    AssertTrue(boundaryScriptText.Contains("git diff --exit-code", StringComparison.Ordinal), "boundary script should enforce whole-file equality through git diff --exit-code");
+    var fiveStageFiles = new[]
+    {
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ProtectionPlanningModels.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "Models.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ScenarioWorkspaceData.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedData.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedScenarioWorkspaceDataSource.cs"),
+    };
+    var protectedTokens = new[]
+    {
+        "DdsopConfigInboundContract",
+        "DdsopRuntimePlanningInputContract",
+        "SdbrExecutionObjectEvidenceContract",
+        "PublicDemoGoldenLoopService",
+        "NetworkScore",
+        "network-scoring",
+        "SDBR payload",
+    };
+
+    foreach (var file in fiveStageFiles)
+    {
+        AssertTrue(File.Exists(file), $"five-stage boundary file should exist: {Path.GetFileName(file)}");
+        var text = File.ReadAllText(file);
+        foreach (var token in protectedTokens)
+        {
+            AssertTrue(!text.Contains(token, StringComparison.Ordinal), $"{Path.GetFileName(file)} must not reference protected token '{token}'");
+        }
+    }
+}
+
+static void TestSeedScaleMatchesSatelliteManufacturingDemo()
+{
+    var data = SeedData.Create();
+    var skus = data.Skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    var inventory = data.Inventory.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    var expected = new Dictionary<string, (decimal OnHand, decimal OpenSupply, decimal QualifiedDemand, decimal Adu)>(StringComparer.Ordinal)
+    {
+        ["SAT-BUS-001"] = (4m, 1m, 2m, 0.20m),
+        ["SAT-BUS-002"] = (3m, 1m, 1m, 0.12m),
+        ["SAT-PROP-003"] = (12m, 3m, 4m, 0.80m),
+        ["PAY-EO-101"] = (3m, 1m, 1m, 0.10m),
+        ["PAY-SAR-102"] = (2m, 1m, 1m, 0.08m),
+        ["AV-COM-201"] = (28m, 8m, 10m, 1.20m),
+        ["AV-OBC-202"] = (20m, 6m, 8m, 0.80m),
+        ["AV-FPGA-203"] = (22m, 4m, 6m, 0.18m),
+        ["TC-MLI-301"] = (75m, 20m, 24m, 4.00m),
+        ["TC-RAD-302"] = (48m, 12m, 16m, 2.50m),
+        ["MECH-DEP-401"] = (12m, 3m, 4m, 0.60m),
+        ["CBL-HAR-402"] = (120m, 30m, 36m, 5.00m),
+    };
+
+    var totalInventoryValue = data.Inventory.Sum(item => item.OnHand * skus[item.Sku].UnitCost);
+    AssertTrue(
+        totalInventoryValue is >= 60_000_000m and <= 100_000_000m,
+        $"seed inventory value should be RMB 60-100 million, got {totalInventoryValue:N0}");
+    AssertEqual(61_718_000m, totalInventoryValue, "seed on-hand inventory value");
+
+    AssertEqual(expected.Count, skus.Count, "seed SKU count");
+    AssertEqual(expected.Count, inventory.Count, "seed inventory position count");
+    foreach (var (skuCode, expectedValue) in expected)
+    {
+        var sku = skus[skuCode];
+        var position = inventory[skuCode];
+        AssertEqual(expectedValue.OnHand, position.OnHand, $"{skuCode} on hand");
+        AssertEqual(expectedValue.OpenSupply, position.OpenSupply, $"{skuCode} open supply");
+        AssertEqual(expectedValue.QualifiedDemand, position.QualifiedDemand, $"{skuCode} qualified demand");
+        AssertEqual(expectedValue.Adu, sku.Adu, $"{skuCode} ADU");
+    }
+
+    var expectedWeeklyHours = new Dictionary<string, decimal>(StringComparer.Ordinal)
+    {
+        ["RES-AIT"] = 160m,
+        ["RES-TVAC"] = 96m,
+        ["RES-CLEAN"] = 120m,
+        ["RES-HARNESS"] = 180m,
+    };
+    AssertEqual(expectedWeeklyHours.Count, data.Resources.Count, "standard-hour resource count");
+    foreach (var resource in data.Resources)
+    {
+        AssertEqual(expectedWeeklyHours[resource.Code], resource.WeeklyAvailableUnits, $"{resource.Code} weekly standard hours");
+        AssertEqual(1m, resource.UnitLoad, $"{resource.Code} standard-hour unit load");
+    }
+
+    decimal BaselineLoadPercent(string resourceCode)
+    {
+        var requiredHours = data.ResourceRoutings
+            .Where(item => item.ResourceCode == resourceCode)
+            .Sum(item => skus[item.Sku].Adu * 5m * item.CapacityPerUnit);
+        return requiredHours * 100m / expectedWeeklyHours[resourceCode];
+    }
+
+    var harnessLoad = BaselineLoadPercent("RES-HARNESS");
+    var aitLoad = BaselineLoadPercent("RES-AIT");
+    var tvacLoad = BaselineLoadPercent("RES-TVAC");
+    AssertTrue(harnessLoad is >= 95m and <= 105m, $"HARNESS baseline load should be 95%-105%, got {harnessLoad:0.0}%");
+    AssertTrue(aitLoad is > 80m and <= 100m, $"AIT baseline load should be above its 80% protection start and at most 100%, got {aitLoad:0.0}%");
+    AssertTrue(tvacLoad < 90m, $"TVAC baseline load should remain below 90%, got {tvacLoad:0.0}%");
+
+    var workspace = new SeedScenarioWorkspaceDataSource(data)
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var tvacLossMultiplier = workspace.ResourceCalendar
+        .Where(item => item.ResourceCode == "RES-TVAC")
+        .Min(item => item.CapacityMultiplier);
+    AssertTrue(tvacLoad / tvacLossMultiplier > 100m, "TVAC should exceed 100% only in the built-in capacity-loss scenario");
+}
+
+static void TestFpgaBelongsOnlyToIndependentInventoryControlPoint()
+{
+    var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var fpga = data.Skus.Single(item => item.Sku == "AV-FPGA-203");
+    var masterTimeBuffer = data.MasterSettings.Single(item => item.SettingId == "MS-TB-001");
+
+    AssertTrue(masterTimeBuffer.Target != "进口空间级 FPGA", "FPGA is still configured as the MS-TB-001 Time Buffer");
+    AssertEqual("关键进口 FPGA 库存控制点", fpga.DecouplingPoint, "FPGA decoupling point");
+    AssertTrue(data.Inventory.Any(item => item.Sku == fpga.Sku), "FPGA should retain an inventory position");
+    AssertTrue(
+        data.DdmrpParameters.Any(item => item.Sku == fpga.Sku && item.DecouplingPoint == fpga.DecouplingPoint && item.CompletenessStatus == "Complete"),
+        "FPGA should retain complete inventory-buffer and control-point evidence");
+
+    var timeBuffers = data.TimeBuffers ?? Array.Empty<TimeBufferDefinition>();
+    AssertTrue(timeBuffers.Count > 0, "seed should expose the real time buffer definition");
+    AssertTrue(
+        timeBuffers.Any(item => item.BufferId == "MS-TB-001" && item.ControlPoint == "热真空试验准备控制点" && item.EvidenceStatus == "Complete"),
+        "MS-TB-001 should expose complete heat-vacuum preparation control-point evidence");
+    AssertTrue(
+        timeBuffers.All(item =>
+            !item.ControlPoint.Contains("FPGA", StringComparison.OrdinalIgnoreCase) &&
+            !item.ProtectedActivity.Contains("FPGA", StringComparison.OrdinalIgnoreCase) &&
+            !item.Applicability.Contains("FPGA", StringComparison.OrdinalIgnoreCase)),
+        "FPGA must not appear in a time-buffer definition");
+    var productScopes = data.TimeBufferProductScopes ?? Array.Empty<TimeBufferProductScope>();
+    AssertTrue(productScopes.Count > 0, "time-buffer product scope should be explicit");
+    AssertTrue(
+        productScopes.All(item => item.EvidenceStatus == "Complete" && !item.Skus.Contains(fpga.Sku, StringComparer.Ordinal)),
+        "FPGA must not appear in a time-buffer product scope");
+    var progress = data.ControlPointProgress ?? Array.Empty<ControlPointProgressFact>();
+    AssertTrue(progress.Count > 0, "time-buffer control-point progress should be explicit");
+    AssertTrue(
+        progress.All(item => item.BufferId == "MS-TB-001" && item.EvidenceStatus == "Complete"),
+        "time-buffer control-point progress should carry explicit evidence status");
+    AssertTrue(
+        (data.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>())
+            .All(item => !item.Applicability.Contains(fpga.Sku, StringComparison.OrdinalIgnoreCase)),
+        "FPGA must not appear in a capacity-protection definition");
+    AssertTrue(
+        data.ResourceRoutings.Where(item => item.Sku == fpga.Sku).All(item => item.ProtectsCcrResourceCode is null),
+        "FPGA routings must not claim capacity-protection consumption");
+
+    AssertEqual("热真空试验准备控制点", masterTimeBuffer.Target, "MS-TB-001 target");
+    AssertTrue(!masterTimeBuffer.CurrentValue.Contains("FPGA", StringComparison.OrdinalIgnoreCase), "MS-TB-001 current value must not describe FPGA inventory");
+    AssertTrue(!masterTimeBuffer.ProposedValue.Contains("FPGA", StringComparison.OrdinalIgnoreCase), "MS-TB-001 proposed value must not describe FPGA inventory");
+
+    var responseAdjustment = new TimeBufferResponseAdjustment("MS-TB-001", 5, 6, 1.5m, "增加准备班次");
+    var parameters = new ScenarioRunParameterSet(TimeBufferAdjustments: new[] { responseAdjustment });
+    AssertEqual(responseAdjustment, parameters.TimeBufferAdjustments!.Single(), "time-buffer response adjustment parameter");
+    var externalDelay = new ExternalTimeDelay("MS-TB-001", 5, 6, 2m, "试验件到达延迟");
+    var externalScenario = new ExternalScenarioDefinition("EXT-TIME-001", "时间延迟场景", TimeDelays: new[] { externalDelay });
+    AssertEqual(externalDelay, externalScenario.TimeDelays!.Single(), "external time delay evidence");
+}
+
+static void TestThreeIndependentInventoryControlPointsAreExplicit()
+{
+    var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var expectedMembership = new Dictionary<string, string[]>(StringComparer.Ordinal)
+    {
+        ["热控结构件库存控制点"] = new[] { "TC-MLI-301", "TC-RAD-302" },
+        ["星载电子半成品库存控制点"] = new[] { "AV-COM-201", "AV-OBC-202" },
+        ["关键进口 FPGA 库存控制点"] = new[] { "AV-FPGA-203" },
+    };
+
+    foreach (var (controlPoint, expectedSkus) in expectedMembership)
+    {
+        var actualSkus = data.Skus
+            .Where(item => item.DecouplingPoint == controlPoint)
+            .Select(item => item.Sku)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+        AssertTrue(
+            actualSkus.SequenceEqual(expectedSkus.OrderBy(item => item, StringComparer.Ordinal), StringComparer.Ordinal),
+            $"{controlPoint} membership should be explicit and exclusive");
+        AssertTrue(actualSkus.All(sku => data.Inventory.Any(item => item.Sku == sku)), $"{controlPoint} members should have inventory evidence");
+    }
+
+    AssertTrue(data.Skus.All(item => item.DecouplingPoint != "热控结构件超市"), "seed must not retain the old thermal-structure supermarket name");
+    AssertTrue(data.Skus.All(item => item.DecouplingPoint != "星载电子半成品超市"), "seed must not retain the old avionics supermarket name");
+    AssertTrue(
+        data.Skus.Single(item => item.Sku == "AV-FPGA-203").DecouplingPoint != "星载电子半成品库存控制点",
+        "FPGA must not also belong to the avionics semi-finished inventory control point");
+}
+
+static void TestCapacityProtectionRequiresSequencedUpstreamEvidence()
+{
+    var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var protections = data.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>();
+
+    AssertTrue(
+        data.ResourceRoutings.Any(item => item.OperationSequence > 1 && item.ProtectsCcrResourceCode is not null),
+        "ResourceRouting lacks operation sequence and protected-CCR evidence");
+    AssertEqual(1, protections.Count, "explicit capacity-protection definition count");
+    var protection = protections.Single();
+    AssertEqual("RES-AIT", protection.UpstreamResourceCode, "capacity-protection upstream resource");
+    AssertEqual("RES-HARNESS", protection.ProtectedCcrResourceCode, "capacity-protection CCR");
+    AssertEqual(20m, protection.ReservePercent, "AIT protection reserve percent");
+    AssertEqual("Complete", protection.EvidenceStatus, "capacity-protection evidence status");
+    AssertTrue(protection.UpstreamResourceCode != protection.ProtectedCcrResourceCode, "CCR unused capacity must not protect itself");
+
+    var upstreamEvidence = data.ResourceRoutings
+        .Where(item => item.ResourceCode == protection.UpstreamResourceCode)
+        .Where(item => item.ProtectsCcrResourceCode == protection.ProtectedCcrResourceCode)
+        .Where(item => item.EvidenceStatus == "Complete")
+        .ToList();
+    AssertTrue(upstreamEvidence.Count > 0, "capacity protection requires explicit upstream routing evidence");
+    AssertTrue(
+        upstreamEvidence.All(upstream => data.ResourceRoutings.Any(downstream =>
+            downstream.Sku == upstream.Sku &&
+            downstream.ResourceCode == protection.ProtectedCcrResourceCode &&
+            downstream.OperationSequence > upstream.OperationSequence &&
+            downstream.EvidenceStatus == "Complete")),
+        "capacity protection requires a later protected-CCR operation for the same SKU");
+}
+
+static void TestCapacityProtectionDoesNotInferWithoutSequenceEvidence()
+{
+    var seed = SeedData.Create();
+    var unsequencedSeed = seed with
+    {
+        ResourceRoutings = seed.ResourceRoutings
+            .Select(item => new ResourceRouting(item.Sku, item.ResourceCode, item.CapacityPerUnit))
+            .ToList()
+    };
+    var unsequenced = new SeedScenarioWorkspaceDataSource(unsequencedSeed)
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    AssertEqual(0, (unsequenced.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>()).Count, "unsequenced capacity-protection count");
+
+    var seeded = new SeedScenarioWorkspaceDataSource(seed)
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    AssertTrue(
+        (seeded.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>())
+            .All(item => item.UpstreamResourceCode != "RES-TVAC"),
+        "TVAC spare capacity is an uncommitted margin, not inferred protection");
+    AssertTrue(
+        seed.FeasibilityChecks.All(item => !item.RequiredAction.Contains("热真空保护能力", StringComparison.Ordinal)),
+        "TVAC feasibility guidance must describe uncommitted capacity margin rather than protection capacity");
+    AssertTrue(
+        (seeded.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>())
+            .All(item => item.UpstreamResourceCode != item.ProtectedCcrResourceCode),
+        "CCR unused capacity must never be inferred as its own protection consumption");
 }
 
 static void TestConsolidatedRequirementsDataCoverage()
@@ -1534,7 +1802,7 @@ static void TestScenarioPreviewAppliesScenarioParameters()
     var request = new ScenarioRunPreviewRequest(
         12,
         Parameters: new ScenarioRunParameterSet(
-            PrebuildCampaigns: new[] { new PrebuildCampaign("PB-TEST", "AV-FPGA-203", 1, 6, 8, 300) },
+            PrebuildCampaigns: new[] { new PrebuildCampaign("PB-TEST", "AV-FPGA-203", 1, 6, 8, 1) },
             CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 1, 1.5m, "test capacity relief") },
             SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500, OrderCycleDays: 10) },
             SupplierCapacityLimits: new[] { new SupplierCapacityLimit("Microchip Space", "进口空间级 FPGA", 1, 12, 1) }));
