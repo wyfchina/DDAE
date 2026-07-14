@@ -77,6 +77,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             .Where(item =>
                 item.ResourceCode == upstreamResourceCode &&
                 item.ProtectsCcrResourceCode == protectedCcrResourceCode &&
+                item.OperationSequence > 0 &&
                 item.EvidenceStatus == "Complete")
             .Any(upstream => routings.Any(downstream =>
                 downstream.Sku == upstream.Sku &&

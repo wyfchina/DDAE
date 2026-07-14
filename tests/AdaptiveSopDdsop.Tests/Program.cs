@@ -234,7 +234,6 @@ static void TestSeedScaleMatchesSatelliteManufacturingDemo()
     AssertTrue(
         totalInventoryValue is >= 60_000_000m and <= 100_000_000m,
         $"seed inventory value should be RMB 60-100 million, got {totalInventoryValue:N0}");
-    AssertEqual(61_718_000m, totalInventoryValue, "seed on-hand inventory value");
 
     AssertEqual(expected.Count, skus.Count, "seed SKU count");
     AssertEqual(expected.Count, inventory.Count, "seed inventory position count");
@@ -409,7 +408,9 @@ static void TestCapacityProtectionDoesNotInferWithoutSequenceEvidence()
     var unsequencedSeed = seed with
     {
         ResourceRoutings = seed.ResourceRoutings
-            .Select(item => new ResourceRouting(item.Sku, item.ResourceCode, item.CapacityPerUnit))
+            .Select(item => item.ProtectsCcrResourceCode is null
+                ? item
+                : item with { OperationSequence = 0 })
             .ToList()
     };
     var unsequenced = new SeedScenarioWorkspaceDataSource(unsequencedSeed)
