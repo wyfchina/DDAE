@@ -19,6 +19,8 @@ var tests = new (string Name, Action Run)[]
     ("Capacity protection is not inferred without sequence evidence", TestCapacityProtectionDoesNotInferWithoutSequenceEvidence),
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
+    ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
+    ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
@@ -455,25 +457,204 @@ static void TestConsolidatedRequirementsDataCoverage()
 
 static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
 {
-    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
-    var service = new HistoryReviewWorkspaceService(source);
+    var historySource = new SeedHistoryOperatingFactSource();
+    var scenarioSource = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+    var service = new HistoryReviewWorkspaceService(historySource, scenarioSource);
 
     var result = service.GetReview(6);
     var annual = service.GetReview(12);
     var expectedWeeks = (int)Math.Ceiling(result.MaximumCumulativeLeadTimeDays / 7m);
 
     AssertEqual(6, result.TrendMonths, "history trend months");
-    AssertTrue(result.ObservedTrendWeeks >= 26, "six-month history should expose at least 26 weekly observations");
+    AssertEqual(26, result.ObservedTrendWeeks, "six-month history should expose exactly 26 weekly observations");
     AssertEqual(12, annual.TrendMonths, "annual history trend months");
-    AssertTrue(annual.ObservedTrendWeeks >= 52, "twelve-month history should expose at least 52 weekly observations");
+    AssertEqual(52, annual.ObservedTrendWeeks, "twelve-month history should expose exactly 52 weekly observations");
     AssertEqual(expectedWeeks, result.DetailWindowWeeks, "history detail window should follow cumulative lead time");
-    AssertTrue(result.OperatingOutcomes.ServiceLevelPercent > 0, "history should expose operating outcomes");
+    AssertTrue(result.DetailWindowWeeks < result.ObservedTrendWeeks, "cumulative lead time must not truncate the 26-week operating trend");
+    AssertTrue(result.OperatingOutcomes.ServiceLevelPercent is > 0, "history should expose operating outcomes");
     AssertTrue(result.ProtectionRelationships.Any(item => item.ProtectionType == "库存缓冲"), "history should expose inventory protection relationships");
-    AssertTrue(result.ZoneResidence.Any(item => item.ObservedPeriods >= result.DetailWindowWeeks), "history should expose zone residence over the detail window");
+    AssertTrue(result.ZoneResidence.Any(item => item.ObservedPeriods == result.DetailWindowWeeks), "history should expose zone residence over the detail window");
     AssertTrue(result.ZoneResidence.All(item => Math.Abs(item.RedPercent + item.YellowPercent + item.GreenPercent + item.OverTopOfGreenPercent - 100m) <= 0.2m), "zone residence proportions should account for the observed window");
     AssertTrue(result.ZoneResidence.All(item => item.RedEntryCount >= 0), "history should count entries into the red zone");
-    AssertTrue(result.CapacityProtection.Any(item => item.TheoreticalCapacity >= item.StandardCapacity && item.StandardCapacity >= item.DemonstratedCapacity), "history should distinguish capacity layers");
+    AssertTrue(result.ZoneResidence.All(item => !string.IsNullOrWhiteSpace(item.PrimaryCause)), "buffer residence should retain explicit historical causes");
+    AssertTrue(result.CapacityProtection.Any(item =>
+        item.TheoreticalCapacity is not null &&
+        item.StandardCapacity is not null &&
+        item.DemonstratedCapacity is not null &&
+        item.TheoreticalCapacity >= item.StandardCapacity &&
+        item.StandardCapacity >= item.DemonstratedCapacity), "history should distinguish capacity layers");
+
+    var ait = result.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
+    AssertEqual("RES-HARNESS", ait.ProtectedCcrResourceCode, "AIT protected CCR resource");
+    AssertTrue(ait.PlannedAvailableCapacity is not null && ait.CommittedLoad is not null, "AIT should carry explicit weekly capacity aggregates");
+    var expectedProtection = decimal.Round(ait.PlannedAvailableCapacity!.Value * 0.20m, 1);
+    var expectedProtectionStart = ait.PlannedAvailableCapacity.Value - expectedProtection;
+    var expectedConsumed = decimal.Round(Math.Clamp(ait.CommittedLoad!.Value - expectedProtectionStart, 0m, expectedProtection), 1);
+    var expectedRemaining = decimal.Round(expectedProtection - expectedConsumed, 1);
+    AssertEqual(expectedProtection, ait.ProtectiveCapacity, "AIT protective capacity formula");
+    AssertEqual(expectedConsumed, ait.ConsumedProtection, "AIT consumed protection formula");
+    AssertEqual(expectedRemaining, ait.RemainingProtection, "AIT remaining protection formula");
+
+    var harness = result.CapacityProtection.Single(item => item.ResourceCode == "RES-HARNESS");
+    AssertTrue(harness.ProtectiveCapacity is null && harness.ConsumedProtection is null && harness.RemainingProtection is null, "CCR itself should expose utilization rather than inferred self-protection");
+    var tvac = result.CapacityProtection.Single(item => item.ResourceCode == "RES-TVAC");
+    AssertTrue(tvac.ProtectiveCapacity is null && tvac.ProtectedCcrResourceCode is null, "TVAC must remain a scenario-potential CCR without a protection definition");
+
+    var withoutDefinition = new HistoryReviewWorkspaceService(
+        historySource,
+        new CapacityProtectionRemovingScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    var unprotectedAit = withoutDefinition.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
+    AssertTrue(
+        unprotectedAit.ProtectiveCapacity is null &&
+        unprotectedAit.ConsumedProtection is null &&
+        unprotectedAit.RemainingProtection is null &&
+        unprotectedAit.EvidenceStatus == "EvidenceMissing",
+        "missing protection definitions should not be disguised as zero capacity protection");
+    AssertTrue(withoutDefinition.OperatingOutcomes.RemainingProtectionPercent is null, "missing protection evidence should leave the aggregate percentage empty");
     AssertTrue(result.ConstraintExposure.Any(item => item.ExposureType == "场景潜在 CCR"), "history should classify scenario potential CCR exposure");
+}
+
+static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
+{
+    var historySource = new SeedHistoryOperatingFactSource();
+    var service = new HistoryReviewWorkspaceService(
+        historySource,
+        new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var asOfDate = new DateOnly(2026, 6, 1);
+    var recentFacts = historySource.Load(new HistoryFactRequest(26, asOfDate));
+    var annualFacts = historySource.Load(new HistoryFactRequest(52, asOfDate));
+
+    var recent = service.GetReview(6);
+    var annual = service.GetReview(12);
+    var recentOutcomes = recent.OperatingOutcomes;
+    var annualOutcomes = annual.OperatingOutcomes;
+    var failures = new List<string>();
+
+    if (recentFacts.OperatingFacts.Select(item => item.WeekOffset).Distinct().Count() != 26 ||
+        annualFacts.OperatingFacts.Select(item => item.WeekOffset).Distinct().Count() != 52)
+    {
+        failures.Add("explicit fact source did not return strict 26/52-week operating windows");
+    }
+
+    if (recentFacts.AbnormalCosts.Sum(item => item.CostAmount) != 420_000m ||
+        annualFacts.AbnormalCosts.Sum(item => item.CostAmount) != 1_200_000m)
+    {
+        failures.Add("explicit abnormal-cost events did not total 420,000/1,200,000");
+    }
+
+    if (annualFacts.BufferFacts.Any(item => string.IsNullOrWhiteSpace(item.ExplicitCause)) ||
+        annualFacts.CapacityFacts.Any(item => item.TheoreticalCapacity is null || item.StandardCapacity is null || item.DemonstratedCapacity is null || item.PlannedAvailableCapacity is null || item.CommittedLoad is null))
+    {
+        failures.Add("buffer causes or weekly capacity-layer facts were incomplete");
+    }
+
+    var expectedExposureTypes = new[] { "当前 CCR", "高负荷资源", "场景潜在 CCR", "事件型约束", "外部约束" };
+    if (!expectedExposureTypes.All(type => annualFacts.ConstraintFacts.Any(item => item.ExposureType == type)) ||
+        annualFacts.ConstraintFacts.Where(item => item.ExposureType != "场景潜在 CCR").Any(item => item.SourceKind != "HistoricalFact") ||
+        annualFacts.ConstraintFacts.Where(item => item.ExposureType == "场景潜在 CCR").Any(item => item.SourceKind != "InternalScenarioDefinition"))
+    {
+        failures.Add("explicit constraint facts did not preserve all five source-owned classifications");
+    }
+
+    if (recent.ObservedTrendWeeks != 26 || annual.ObservedTrendWeeks != 52)
+    {
+        failures.Add($"expected strict 26/52-week windows, got {recent.ObservedTrendWeeks}/{annual.ObservedTrendWeeks}");
+    }
+
+    if (recentOutcomes.ServiceLevelPercent is not (>= 96.5m and <= 97.5m) ||
+        annualOutcomes.ServiceLevelPercent is not (>= 95.5m and <= 96.5m))
+    {
+        failures.Add($"service ranges were {recentOutcomes.ServiceLevelPercent:0.0}%/{annualOutcomes.ServiceLevelPercent:0.0}%");
+    }
+
+    if (recentOutcomes.InventoryValue is not (>= 65_000_000m and <= 75_000_000m) ||
+        annualOutcomes.InventoryValue is not (>= 72_000_000m and <= 82_000_000m))
+    {
+        failures.Add($"inventory ranges were {recentOutcomes.InventoryValue:0}/{annualOutcomes.InventoryValue:0}");
+    }
+
+    if (recentOutcomes.WorkInProcessUnits is not (>= 55m and <= 70m) ||
+        annualOutcomes.WorkInProcessUnits is not (>= 65m and <= 80m))
+    {
+        failures.Add($"WIP ranges were {recentOutcomes.WorkInProcessUnits:0.0}/{annualOutcomes.WorkInProcessUnits:0.0}");
+    }
+
+    if (recentOutcomes.AverageFlowTimeDays is not (>= 17m and <= 20m) ||
+        annualOutcomes.AverageFlowTimeDays is not (>= 20m and <= 24m))
+    {
+        failures.Add($"flow-time ranges were {recentOutcomes.AverageFlowTimeDays:0.0}/{annualOutcomes.AverageFlowTimeDays:0.0}");
+    }
+
+    if (recentOutcomes.CashOccupied is not (>= 78_000_000m and <= 90_000_000m) ||
+        annualOutcomes.CashOccupied is not (>= 90_000_000m and <= 105_000_000m))
+    {
+        failures.Add($"cash ranges were {recentOutcomes.CashOccupied:0}/{annualOutcomes.CashOccupied:0}");
+    }
+
+    if (recentOutcomes.ExpediteCost != 420_000m || annualOutcomes.ExpediteCost != 1_200_000m)
+    {
+        failures.Add($"abnormal costs were {recentOutcomes.ExpediteCost:0}/{annualOutcomes.ExpediteCost:0}");
+    }
+
+    if (recentOutcomes.ServiceLevelPercent == annualOutcomes.ServiceLevelPercent &&
+        recentOutcomes.InventoryValue == annualOutcomes.InventoryValue &&
+        recentOutcomes.WorkInProcessUnits == annualOutcomes.WorkInProcessUnits &&
+        recentOutcomes.AverageFlowTimeDays == annualOutcomes.AverageFlowTimeDays &&
+        recentOutcomes.CashOccupied == annualOutcomes.CashOccupied &&
+        recentOutcomes.ExpediteCost == annualOutcomes.ExpediteCost)
+    {
+        failures.Add("all six operating outcomes were identical across the two windows");
+    }
+
+    AssertTrue(failures.Count == 0, string.Join("; ", failures));
+}
+
+static void TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts()
+{
+    var seed = SeedData.Create();
+    var historySource = new SeedHistoryOperatingFactSource();
+    var normalSource = new SeedScenarioWorkspaceDataSource(seed);
+    var poisonedSource = new HistoricalQuantityPoisoningScenarioWorkspaceDataSource(seed);
+    var normal = new HistoryReviewWorkspaceService(historySource, normalSource).GetReview(6);
+    var poisoned = new HistoryReviewWorkspaceService(historySource, poisonedSource).GetReview(6);
+    var factSet = historySource.Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
+    var failures = new List<string>();
+
+    if (normal.OperatingOutcomes.CashOccupied == normal.OperatingOutcomes.InventoryValue)
+    {
+        failures.Add("cash occupied was copied from inventory value");
+    }
+
+    if (normal.OperatingOutcomes.ExpediteCost != factSet.AbnormalCosts.Sum(item => item.CostAmount))
+    {
+        failures.Add($"historical cost {normal.OperatingOutcomes.ExpediteCost:0} did not equal explicit event sum {factSet.AbnormalCosts.Sum(item => item.CostAmount):0}");
+    }
+
+    if (normal.OperatingOutcomes != poisoned.OperatingOutcomes ||
+        !normal.ZoneResidence.SequenceEqual(poisoned.ZoneResidence) ||
+        !normal.CapacityProtection.SequenceEqual(poisoned.CapacityProtection) ||
+        !normal.ConstraintExposure.SequenceEqual(poisoned.ConstraintExposure))
+    {
+        failures.Add("current/future scenario quantities changed explicit historical facts or aggregates");
+    }
+
+    if (normal.EvidenceLabel.Contains("当前占用", StringComparison.Ordinal) ||
+        factSet.EvidenceLabel.Contains("当前占用", StringComparison.Ordinal) ||
+        factSet.SourceAuthority.Contains("当前占用", StringComparison.Ordinal))
+    {
+        failures.Add("history evidence used current-occupation semantics");
+    }
+
+    var missingCash = new HistoryReviewWorkspaceService(
+        new MissingCashHistoryOperatingFactSource(historySource),
+        normalSource).GetReview(6);
+    if (missingCash.OperatingOutcomes.CashOccupied is not null ||
+        missingCash.OperatingOutcomes.EvidenceStatus != "EvidenceMissing")
+    {
+        failures.Add("missing cash facts were disguised as zero or complete evidence");
+    }
+
+    AssertTrue(failures.Count == 0, string.Join("; ", failures));
 }
 
 static void TestCurrentBaselineFreezesCompleteEvidence()
@@ -2626,6 +2807,87 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
 }
 
 internal sealed record LegacyScenarioSource(ValidationData Data);
+
+internal sealed class HistoricalQuantityPoisoningScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
+{
+    private readonly SeedScenarioWorkspaceDataSource _inner;
+
+    public HistoricalQuantityPoisoningScenarioWorkspaceDataSource(ValidationData data)
+    {
+        _inner = new SeedScenarioWorkspaceDataSource(data);
+    }
+
+    public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
+    {
+        var data = _inner.Load(request);
+        return data with
+        {
+            Inventory = data.Inventory
+                .Select(item => item with { OnHand = item.OnHand + 99_000_000m, OpenSupply = item.OpenSupply + 88_000_000m })
+                .ToList(),
+            Demand = data.Demand
+                .Select(item => item with { BaselineDemand = item.BaselineDemand * 100m })
+                .ToList(),
+            HistoricalDemand = data.HistoricalDemand
+                .Select(item => item with { ActualDemand = 9_999_999m, ForecastDemand = 1m, ServiceLevelPercent = 1m, EndingNetFlow = -9_999_999m })
+                .ToList(),
+            Resources = data.Resources
+                .Select(item => item with { WeeklyAvailableUnits = item.WeeklyAvailableUnits * 100m })
+                .ToList(),
+            ResourceCalendar = data.ResourceCalendar
+                .Select(item => item with { CapacityMultiplier = 0.01m, CalendarNote = "future poison" })
+                .ToList(),
+            SupplierCapacityWindows = data.SupplierCapacityWindows
+                .Select(item => item with { CommittedCapacity = 0m, RiskStatus = "Red" })
+                .ToList(),
+            ScenarioTemplates = data.ScenarioTemplates
+                .Select(item => item with
+                {
+                    Actions = item.Actions
+                        .Select(action => action with { Value = 0.01m })
+                        .ToList()
+                })
+                .ToList()
+        };
+    }
+}
+
+internal sealed class CapacityProtectionRemovingScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
+{
+    private readonly SeedScenarioWorkspaceDataSource _inner;
+
+    public CapacityProtectionRemovingScenarioWorkspaceDataSource(ValidationData data)
+    {
+        _inner = new SeedScenarioWorkspaceDataSource(data);
+    }
+
+    public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
+    {
+        var data = _inner.Load(request);
+        return data with { CapacityProtections = Array.Empty<CapacityProtectionDefinition>() };
+    }
+}
+
+internal sealed class MissingCashHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public MissingCashHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with
+        {
+            OperatingFacts = facts.OperatingFacts
+                .Select(item => item with { CashOccupied = null })
+                .ToList()
+        };
+    }
+}
 
 internal sealed class FixedCurrentBaselineDataSource : ICurrentBaselineDataSource
 {

@@ -1,13 +1,14 @@
 namespace AdaptiveSopDdsop.Web.Domain;
 
 public sealed record HistoryOperatingOutcomes(
-    decimal ServiceLevelPercent,
-    decimal InventoryValue,
-    decimal WorkInProcessUnits,
-    decimal AverageFlowTimeDays,
-    decimal CashOccupied,
-    decimal ExpediteCost,
-    decimal RemainingProtectionPercent);
+    decimal? ServiceLevelPercent,
+    decimal? InventoryValue,
+    decimal? WorkInProcessUnits,
+    decimal? AverageFlowTimeDays,
+    decimal? CashOccupied,
+    decimal? ExpediteCost,
+    decimal? RemainingProtectionPercent,
+    string EvidenceStatus);
 
 public sealed record ControlPointProtectionRelationship(
     string ControlPoint,
@@ -38,22 +39,26 @@ public sealed record BufferZoneResidenceSummary(
 public sealed record CapacityProtectionLayer(
     string ResourceCode,
     string ResourceName,
-    decimal TheoreticalCapacity,
-    decimal StandardCapacity,
-    decimal DemonstratedCapacity,
-    decimal PlannedAvailableCapacity,
-    decimal CommittedLoad,
-    decimal ProtectiveCapacity,
-    decimal ConsumedProtection,
-    decimal RemainingProtection,
-    string LossReason);
+    string? ProtectedCcrResourceCode,
+    string RelationshipRole,
+    decimal? TheoreticalCapacity,
+    decimal? StandardCapacity,
+    decimal? DemonstratedCapacity,
+    decimal? PlannedAvailableCapacity,
+    decimal? CommittedLoad,
+    decimal? ProtectiveCapacity,
+    decimal? ConsumedProtection,
+    decimal? RemainingProtection,
+    string LossReason,
+    string EvidenceStatus);
 
 public sealed record ConstraintExposureItem(
     string ExposureType,
     string Target,
     string Status,
-    decimal LoadPercent,
-    string Evidence);
+    decimal? LoadPercent,
+    string Evidence,
+    string EvidenceStatus);
 
 public sealed record HistoryReviewWorkspace(
     int MaximumCumulativeLeadTimeDays,
@@ -69,69 +74,145 @@ public sealed record HistoryReviewWorkspace(
 
 public sealed class HistoryReviewWorkspaceService
 {
-    private readonly IScenarioWorkspaceDataSource _dataSource;
+    private const string Complete = "Complete";
+    private const string EvidenceMissing = "EvidenceMissing";
 
-    public HistoryReviewWorkspaceService(IScenarioWorkspaceDataSource dataSource)
+    private readonly IHistoryOperatingFactSource _historyFactSource;
+    private readonly IScenarioWorkspaceDataSource _scenarioDataSource;
+
+    public HistoryReviewWorkspaceService(
+        IHistoryOperatingFactSource historyFactSource,
+        IScenarioWorkspaceDataSource scenarioDataSource)
     {
-        _dataSource = dataSource;
+        _historyFactSource = historyFactSource;
+        _scenarioDataSource = scenarioDataSource;
     }
 
     public HistoryReviewWorkspace GetReview(int trendMonths = 6)
     {
         var normalizedMonths = trendMonths >= 12 ? 12 : 6;
         var requestedWeeks = normalizedMonths == 12 ? 52 : 26;
-        var data = _dataSource.Load(new ScenarioWorkspaceDataRequest(requestedWeeks, new DateOnly(2026, 6, 1)));
-        var maximumLeadTime = data.DdmrpParameters.Count == 0 ? 7 : data.DdmrpParameters.Max(item => item.DecoupledLeadTimeDays);
+        var asOfDate = new DateOnly(2026, 6, 1);
+        var history = _historyFactSource.Load(new HistoryFactRequest(requestedWeeks, asOfDate));
+        var definitions = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(requestedWeeks, asOfDate));
+        var maximumLeadTime = definitions.DdmrpParameters
+            .Where(item => item.DecoupledLeadTimeDays > 0)
+            .Select(item => item.DecoupledLeadTimeDays)
+            .DefaultIfEmpty(7)
+            .Max();
         var detailWeeks = Math.Clamp((int)Math.Ceiling(maximumLeadTime / 7m), 1, requestedWeeks);
-        var zoneResidence = BuildZoneResidence(data, detailWeeks);
-        var capacity = BuildCapacityProtection(data, detailWeeks);
-        var relationships = BuildProtectionRelationships(data, capacity);
-        var exposure = BuildConstraintExposure(data, capacity);
-
-        var unitCost = data.Skus.ToDictionary(item => item.Sku, item => item.UnitCost, StringComparer.Ordinal);
-        var inventoryValue = data.Inventory.Sum(item => item.OnHand * unitCost.GetValueOrDefault(item.Sku));
-        var wip = data.Inventory.Sum(item => item.OpenSupply);
-        var service = data.HistoricalDemand.Count == 0 ? 0m : decimal.Round(data.HistoricalDemand.Average(item => item.ServiceLevelPercent), 1);
-        var remainingProtection = capacity.Count == 0 || capacity.Sum(item => item.ProtectiveCapacity) == 0
-            ? 0m
-            : decimal.Round(capacity.Sum(item => item.RemainingProtection) * 100m / capacity.Sum(item => item.ProtectiveCapacity), 1);
-        var averageFlowTime = data.DdmrpParameters.Count == 0
-            ? 0m
-            : decimal.Round(data.DdmrpParameters.Average(item => (decimal)item.DecoupledLeadTimeDays), 1);
-        var outcomes = new HistoryOperatingOutcomes(
-            service,
-            decimal.Round(inventoryValue, 0),
-            decimal.Round(wip, 0),
-            averageFlowTime,
-            decimal.Round(inventoryValue, 0),
-            decimal.Round(data.SupplierCapacityWindows.Count(item => item.RiskStatus == "Red") * 2500m, 0),
-            remainingProtection);
+        var zoneResidence = BuildZoneResidence(history.BufferFacts, definitions.DdmrpParameters, detailWeeks);
+        var capacity = BuildCapacityProtection(history.CapacityFacts, definitions);
+        var relationships = BuildProtectionRelationships(definitions, capacity);
+        var exposure = BuildConstraintExposure(history.ConstraintFacts, definitions.Resources);
+        var outcomes = BuildOperatingOutcomes(history, capacity);
+        var observedTrendWeeks = history.OperatingFacts
+            .Select(item => item.WeekOffset)
+            .Distinct()
+            .Count();
 
         return new HistoryReviewWorkspace(
             maximumLeadTime,
             detailWeeks,
             normalizedMonths,
-            data.HistoricalDemand.Select(item => Math.Abs(item.WeekOffset)).DefaultIfEmpty(0).Max(),
+            observedTrendWeeks,
             outcomes,
             relationships,
             zoneResidence,
             capacity,
             exposure,
-            "DemoFixture");
+            $"{history.EvidenceLabel} / SourceAuthority={history.SourceAuthority} / AsOf={history.AsOfUtc}");
     }
 
-    private static IReadOnlyList<BufferZoneResidenceSummary> BuildZoneResidence(ScenarioWorkspaceDataSet data, int detailWeeks)
+    private static HistoryOperatingOutcomes BuildOperatingOutcomes(
+        HistoryFactSet history,
+        IReadOnlyList<CapacityProtectionLayer> capacity)
     {
-        var parameters = data.DdmrpParameters.ToDictionary(item => item.Sku, StringComparer.Ordinal);
-        return data.HistoricalDemand
-            .Where(item => Math.Abs(item.WeekOffset) <= detailWeeks)
-            .GroupBy(item => item.Sku)
+        var service = AverageOrNull(history.OperatingFacts, item => item.ServiceLevelPercent, 1);
+        var inventory = AverageOrNull(history.OperatingFacts, item => item.InventoryValue, 0);
+        var workInProcess = AverageOrNull(history.OperatingFacts, item => item.WorkInProcessUnits, 1);
+        var flowTime = AverageOrNull(history.OperatingFacts, item => item.AverageFlowTimeDays, 1);
+        var cash = AverageOrNull(history.OperatingFacts, item => item.CashOccupied, 0);
+        var costEvents = history.AbnormalCosts
+            .Where(item => item.EvidenceStatus == Complete)
+            .ToList();
+        decimal? abnormalCost = costEvents.Count == 0
+            ? null
+            : decimal.Round(costEvents.Sum(item => item.CostAmount), 0);
+
+        var protectedLayers = capacity
+            .Where(item =>
+                item.RelationshipRole == "UpstreamProtection" &&
+                item.EvidenceStatus == Complete &&
+                item.ProtectiveCapacity is > 0 &&
+                item.RemainingProtection is not null)
+            .ToList();
+        decimal? remainingProtectionPercent = protectedLayers.Count == 0
+            ? null
+            : decimal.Round(
+                protectedLayers.Sum(item => item.RemainingProtection!.Value) * 100m /
+                protectedLayers.Sum(item => item.ProtectiveCapacity!.Value),
+                1);
+
+        var evidenceStatus = new[]
+        {
+            service,
+            inventory,
+            workInProcess,
+            flowTime,
+            cash,
+            abnormalCost,
+            remainingProtectionPercent,
+        }.All(item => item is not null)
+            ? Complete
+            : EvidenceMissing;
+
+        return new HistoryOperatingOutcomes(
+            service,
+            inventory,
+            workInProcess,
+            flowTime,
+            cash,
+            abnormalCost,
+            remainingProtectionPercent,
+            evidenceStatus);
+    }
+
+    private static decimal? AverageOrNull(
+        IReadOnlyList<WeeklyOperatingFact> facts,
+        Func<WeeklyOperatingFact, decimal?> selector,
+        int decimals)
+    {
+        var values = facts
+            .Where(item => item.EvidenceStatus == Complete)
+            .Select(selector)
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
+            .ToList();
+        return values.Count == 0 ? null : decimal.Round(values.Average(), decimals);
+    }
+
+    private static IReadOnlyList<BufferZoneResidenceSummary> BuildZoneResidence(
+        IReadOnlyList<WeeklyBufferFact> facts,
+        IReadOnlyList<DdmrpParameterProfile> parameters,
+        int detailWeeks)
+    {
+        var parameterBySku = parameters.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        return facts
+            .Where(item =>
+                item.WeekOffset < 0 &&
+                Math.Abs(item.WeekOffset) <= detailWeeks &&
+                item.EndingNetFlow is not null &&
+                item.EvidenceStatus == Complete &&
+                parameterBySku.ContainsKey(item.Sku))
+            .GroupBy(item => item.Sku, StringComparer.Ordinal)
             .Select(group =>
             {
-                var parameter = parameters[group.Key];
+                var parameter = parameterBySku[group.Key];
                 var ordered = group.OrderBy(item => item.WeekOffset).ToList();
-                var statuses = ordered.Select(item => Zone(item.EndingNetFlow, parameter)).ToList();
-                var maxRedStreak = MaximumStreak(statuses, "Red");
+                var statuses = ordered
+                    .Select(item => Zone(item.EndingNetFlow!.Value, parameter))
+                    .ToList();
                 var redEntries = Enumerable.Range(0, statuses.Count)
                     .Where(index => statuses[index] == "Red" && (index == 0 || statuses[index - 1] != "Red"))
                     .ToList();
@@ -140,13 +221,18 @@ public sealed class HistoryReviewWorkspaceService
                     ? -1
                     : Enumerable.Range(lastRedEntry + 1, Math.Max(0, statuses.Count - lastRedEntry - 1))
                         .FirstOrDefault(index => statuses[index] is "Green" or "OverTopOfGreen", -1);
-                int? recovery = recoveryIndex < 0 ? null : recoveryIndex - lastRedEntry + 1;
-                var cause = ordered.Any(item => item.ActualDemand > item.ForecastDemand * 1.1m)
-                    ? "需求高于预测"
-                    : "补充与保护能力偏差";
+                int? recovery = recoveryIndex < 0 ? null : recoveryIndex - lastRedEntry;
+                var primaryCause = ordered
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ExplicitCause))
+                    .GroupBy(item => item.ExplicitCause, StringComparer.Ordinal)
+                    .OrderByDescending(causeGroup => causeGroup.Count())
+                    .ThenBy(causeGroup => causeGroup.Key, StringComparer.Ordinal)
+                    .Select(causeGroup => causeGroup.Key)
+                    .FirstOrDefault() ?? "证据缺失";
                 decimal Share(string status) => statuses.Count == 0
                     ? 0m
                     : decimal.Round(statuses.Count(item => item == status) * 100m / statuses.Count, 1);
+
                 return new BufferZoneResidenceSummary(
                     group.Key,
                     parameter.Name,
@@ -160,102 +246,195 @@ public sealed class HistoryReviewWorkspaceService
                     Share("Green"),
                     Share("OverTopOfGreen"),
                     redEntries.Count,
-                    maxRedStreak,
+                    MaximumStreak(statuses, "Red"),
                     recovery,
-                    cause);
+                    primaryCause);
             })
             .OrderByDescending(item => item.RedPeriods)
-            .ThenBy(item => item.Sku)
+            .ThenBy(item => item.Sku, StringComparer.Ordinal)
             .ToList();
     }
 
-    private static IReadOnlyList<CapacityProtectionLayer> BuildCapacityProtection(ScenarioWorkspaceDataSet data, int detailWeeks)
+    private static IReadOnlyList<CapacityProtectionLayer> BuildCapacityProtection(
+        IReadOnlyList<WeeklyCapacityFact> facts,
+        ScenarioWorkspaceDataSet definitions)
     {
-        var demandBySku = data.Demand
-            .Where(item => item.Week <= detailWeeks)
-            .GroupBy(item => item.Sku)
-            .ToDictionary(group => group.Key, group => group.Average(item => item.BaselineDemand), StringComparer.Ordinal);
+        var resourceNames = definitions.Resources
+            .ToDictionary(item => item.Code, item => item.Name, StringComparer.Ordinal);
+        var factGroups = facts
+            .GroupBy(item => item.ResourceCode, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+        var resourceCodes = resourceNames.Keys
+            .Concat(factGroups.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToList();
+        var protectionDefinitions = definitions.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>();
+        var claimedCcrCodes = definitions.ResourceRoutings
+            .Where(item => !string.IsNullOrWhiteSpace(item.ProtectsCcrResourceCode))
+            .Select(item => item.ProtectsCcrResourceCode!)
+            .Concat(protectionDefinitions.Select(item => item.ProtectedCcrResourceCode))
+            .ToHashSet(StringComparer.Ordinal);
 
-        return data.Resources.Select(resource =>
+        return resourceCodes.Select(resourceCode =>
         {
-            var standard = resource.WeeklyAvailableUnits;
-            var theoretical = decimal.Round(standard * 1.10m, 1);
-            var calendar = data.ResourceCalendar.Where(item => item.ResourceCode == resource.Code && item.Week <= detailWeeks).ToList();
-            var demonstrated = decimal.Round(standard * (calendar.Count == 0 ? 1m : calendar.Average(item => Math.Min(item.CapacityMultiplier, 1m))) * 0.97m, 1);
-            var planned = decimal.Round(standard * (calendar.Count == 0 ? 1m : calendar.Average(item => item.CapacityMultiplier)), 1);
-            var committed = data.ResourceRoutings
-                .Where(item => item.ResourceCode == resource.Code)
-                .Sum(item => demandBySku.GetValueOrDefault(item.Sku) * item.CapacityPerUnit);
-            committed = decimal.Round(committed, 1);
-            var protective = decimal.Round(Math.Max(0m, planned - committed * 0.85m), 1);
-            var consumed = decimal.Round(Math.Min(protective, Math.Max(0m, committed - demonstrated * 0.85m)), 1);
-            var remaining = decimal.Round(Math.Max(0m, protective - consumed), 1);
-            var loss = calendar.Any(item => item.CapacityMultiplier < 1m)
-                ? string.Join("；", calendar.Where(item => item.CapacityMultiplier < 1m).Select(item => item.CalendarNote).Distinct())
-                : "无已知能力损失";
-            return new CapacityProtectionLayer(resource.Code, resource.Name, theoretical, standard, demonstrated, planned, committed, protective, consumed, remaining, loss);
+            var resourceFacts = factGroups.GetValueOrDefault(resourceCode) ?? new List<WeeklyCapacityFact>();
+            var theoretical = CapacityAverage(resourceFacts, item => item.TheoreticalCapacity);
+            var standard = CapacityAverage(resourceFacts, item => item.StandardCapacity);
+            var demonstrated = CapacityAverage(resourceFacts, item => item.DemonstratedCapacity);
+            var planned = CapacityAverage(resourceFacts, item => item.PlannedAvailableCapacity);
+            var committed = CapacityAverage(resourceFacts, item => item.CommittedLoad);
+            var lossReason = resourceFacts
+                .Where(item => item.EvidenceStatus == Complete && !string.IsNullOrWhiteSpace(item.LossReason))
+                .Select(item => item.LossReason)
+                .Distinct(StringComparer.Ordinal)
+                .DefaultIfEmpty("证据缺失")
+                .Aggregate((left, right) => $"{left}；{right}");
+            var definition = protectionDefinitions.FirstOrDefault(item => item.UpstreamResourceCode == resourceCode);
+            var routingClaim = definitions.ResourceRoutings
+                .FirstOrDefault(item =>
+                    item.ResourceCode == resourceCode &&
+                    !string.IsNullOrWhiteSpace(item.ProtectsCcrResourceCode));
+            var protectedCcrCode = definition?.ProtectedCcrResourceCode ?? routingClaim?.ProtectsCcrResourceCode;
+            var hasProtectionClaim = definition is not null || routingClaim is not null;
+            var hasCompleteDefinition = definition is not null &&
+                definition.EvidenceStatus == Complete &&
+                HasCompleteSequenceEvidence(definitions.ResourceRoutings, definition);
+            var capacityEvidenceComplete = theoretical is not null &&
+                standard is not null &&
+                demonstrated is not null &&
+                planned is not null &&
+                committed is not null;
+
+            decimal? protective = null;
+            decimal? consumed = null;
+            decimal? remaining = null;
+            if (hasCompleteDefinition && planned is not null && committed is not null)
+            {
+                var reservePercent = Math.Clamp(definition!.ReservePercent, 0m, 100m);
+                protective = decimal.Round(planned.Value * reservePercent / 100m, 1);
+                var protectionStart = planned.Value - protective.Value;
+                consumed = decimal.Round(
+                    Math.Clamp(committed.Value - protectionStart, 0m, protective.Value),
+                    1);
+                remaining = decimal.Round(protective.Value - consumed.Value, 1);
+            }
+
+            var relationshipRole = hasProtectionClaim
+                ? "UpstreamProtection"
+                : claimedCcrCodes.Contains(resourceCode)
+                    ? "CcrUtilization"
+                    : "ObservedResource";
+            var evidenceStatus = capacityEvidenceComplete && (!hasProtectionClaim || hasCompleteDefinition)
+                ? Complete
+                : EvidenceMissing;
+
+            return new CapacityProtectionLayer(
+                resourceCode,
+                resourceNames.GetValueOrDefault(resourceCode, resourceCode),
+                protectedCcrCode,
+                relationshipRole,
+                theoretical,
+                standard,
+                demonstrated,
+                planned,
+                committed,
+                protective,
+                consumed,
+                remaining,
+                lossReason,
+                evidenceStatus);
         }).ToList();
     }
 
+    private static decimal? CapacityAverage(
+        IReadOnlyList<WeeklyCapacityFact> facts,
+        Func<WeeklyCapacityFact, decimal?> selector)
+    {
+        var values = facts
+            .Where(item => item.EvidenceStatus == Complete)
+            .Select(selector)
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
+            .ToList();
+        return values.Count == 0 ? null : decimal.Round(values.Average(), 1);
+    }
+
+    private static bool HasCompleteSequenceEvidence(
+        IReadOnlyList<ResourceRouting> routings,
+        CapacityProtectionDefinition definition)
+    {
+        return routings
+            .Where(item =>
+                item.ResourceCode == definition.UpstreamResourceCode &&
+                item.ProtectsCcrResourceCode == definition.ProtectedCcrResourceCode &&
+                item.OperationSequence > 0 &&
+                item.EvidenceStatus == Complete)
+            .Any(upstream => routings.Any(downstream =>
+                downstream.Sku == upstream.Sku &&
+                downstream.ResourceCode == definition.ProtectedCcrResourceCode &&
+                downstream.OperationSequence > upstream.OperationSequence &&
+                downstream.EvidenceStatus == Complete));
+    }
+
     private static IReadOnlyList<ControlPointProtectionRelationship> BuildProtectionRelationships(
-        ScenarioWorkspaceDataSet data,
+        ScenarioWorkspaceDataSet definitions,
         IReadOnlyList<CapacityProtectionLayer> capacity)
     {
-        var results = data.DdmrpParameters.Select(item => new ControlPointProtectionRelationship(
-            item.DecouplingPoint,
-            item.Sku,
-            "库存缓冲",
-            string.IsNullOrWhiteSpace(item.BufferProfile) ? "证据缺失" : "有保护设计",
-            item.TopOfGreen > 0 ? "保护可用" : "证据缺失",
-            item.CompletenessStatus == "Complete" ? "保护有效" : "待验证",
-            $"{item.BufferProfile} / {item.ParameterStatus}"))
+        var results = definitions.DdmrpParameters
+            .Select(item => new ControlPointProtectionRelationship(
+                item.DecouplingPoint,
+                item.Sku,
+                "库存缓冲",
+                string.IsNullOrWhiteSpace(item.BufferProfile) ? "证据缺失" : "有保护设计",
+                item.TopOfGreen > 0 ? "保护可用" : "证据缺失",
+                item.CompletenessStatus == Complete ? "保护有效" : "待验证",
+                $"{item.BufferProfile} / {item.ParameterStatus} / {item.CompletenessStatus}"))
             .ToList();
 
-        results.AddRange(data.MasterSettings
-            .Where(item => item.SettingType == "Time Buffer")
-            .Select(item => new ControlPointProtectionRelationship(item.Target, item.Target, "时间缓冲", "有保护设计", "保护可用", item.Status == "Effective" ? "保护有效" : "待验证", item.CurrentValue)));
-        results.AddRange(capacity.Select(item => new ControlPointProtectionRelationship(
-            item.ResourceCode,
-            item.ResourceName,
-            "产能保护",
-            item.ProtectiveCapacity > 0 ? "有保护设计" : "证据缺失",
-            item.RemainingProtection > 0 ? "保护可用" : "保护不足",
-            item.CommittedLoad <= item.DemonstratedCapacity ? "保护有效" : "保护被穿透",
-            item.LossReason)));
+        results.AddRange((definitions.TimeBuffers ?? Array.Empty<TimeBufferDefinition>())
+            .Select(item => new ControlPointProtectionRelationship(
+                item.ControlPoint,
+                item.ProtectedActivity,
+                "时间缓冲",
+                item.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
+                item.BufferDays > 0 ? "保护可用" : "证据缺失",
+                item.EvidenceStatus == Complete ? "保护有效" : "待验证",
+                $"{item.BufferDays:0.0} 天 / {item.Applicability} / {item.EvidenceStatus}")));
+
+        var resourceNames = definitions.Resources
+            .ToDictionary(item => item.Code, item => item.Name, StringComparer.Ordinal);
+        results.AddRange(capacity
+            .Where(item => item.RelationshipRole == "UpstreamProtection")
+            .Select(item => new ControlPointProtectionRelationship(
+                item.ResourceCode,
+                item.ProtectedCcrResourceCode is null
+                    ? "证据缺失"
+                    : resourceNames.GetValueOrDefault(item.ProtectedCcrResourceCode, item.ProtectedCcrResourceCode),
+                "产能保护",
+                item.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
+                item.RemainingProtection is > 0 ? "保护可用" : item.RemainingProtection is null ? "证据缺失" : "保护不足",
+                item.CommittedLoad is not null && item.PlannedAvailableCapacity is not null
+                    ? item.CommittedLoad <= item.PlannedAvailableCapacity ? "保护有效" : "保护被穿透"
+                    : "待验证",
+                $"{item.ResourceName} -> {item.ProtectedCcrResourceCode ?? "证据缺失"} / {item.LossReason} / {item.EvidenceStatus}")));
         return results;
     }
 
     private static IReadOnlyList<ConstraintExposureItem> BuildConstraintExposure(
-        ScenarioWorkspaceDataSet data,
-        IReadOnlyList<CapacityProtectionLayer> capacity)
+        IReadOnlyList<HistoryConstraintFact> facts,
+        IReadOnlyList<CapacityResource> resources)
     {
-        var items = capacity.Select(item =>
-        {
-            var load = item.DemonstratedCapacity == 0 ? 0m : decimal.Round(item.CommittedLoad * 100m / item.DemonstratedCapacity, 1);
-            var type = load >= 100m ? "当前 CCR" : load >= 90m ? "高负荷资源" : item.LossReason != "无已知能力损失" ? "事件型约束" : "受保护资源";
-            var status = load >= 100m ? "Red" : load >= 90m ? "Yellow" : "Green";
-            return new ConstraintExposureItem(type, item.ResourceName, status, load, item.LossReason);
-        }).ToList();
-        items.AddRange(data.SupplierCapacityWindows
-            .Where(item => item.RiskStatus is "Red" or "Yellow")
-            .GroupBy(item => new { item.Supplier, item.MaterialFamily, item.RiskStatus })
-            .Select(group => new ConstraintExposureItem("外部约束", $"{group.Key.Supplier} / {group.Key.MaterialFamily}", group.Key.RiskStatus, 0m, "供应承诺与提前期证据")));
-        items.AddRange(data.ScenarioTemplates
-            .SelectMany(template => template.Actions
-                .Where(action => action.ActionType == "CapacityMultiplier" && action.Value < 1m)
-                .Select(action => new { Template = template.Name, Action = action }))
-            .GroupBy(item => item.Action.Target, StringComparer.Ordinal)
-            .Select(group =>
-            {
-                var resourceName = data.Resources.FirstOrDefault(item => item.Code == group.Key)?.Name ?? group.Key;
-                return new ConstraintExposureItem(
-                    "场景潜在 CCR",
-                    resourceName,
-                    "Yellow",
-                    0m,
-                    string.Join("；", group.Select(item => $"{item.Template}：能力倍率 {item.Action.Value:0.00}").Distinct()));
-            }));
-        return items;
+        var resourceNames = resources.ToDictionary(item => item.Code, item => item.Name, StringComparer.Ordinal);
+        return facts
+            .Select(item => new ConstraintExposureItem(
+                item.ExposureType,
+                resourceNames.GetValueOrDefault(item.Target, item.Target),
+                item.Status,
+                item.LoadPercent,
+                item.Evidence,
+                item.EvidenceStatus))
+            .ToList();
     }
 
     private static string Zone(decimal netFlow, DdmrpParameterProfile parameter) => netFlow <= parameter.TopOfRed
@@ -275,6 +454,7 @@ public sealed class HistoryReviewWorkspaceService
             current = value == target ? current + 1 : 0;
             maximum = Math.Max(maximum, current);
         }
+
         return maximum;
     }
 }

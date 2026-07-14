@@ -9,6 +9,7 @@ builder.Services.AddSingleton(SeedData.Create());
 builder.Services.AddSingleton<DdmrpCalculator>();
 builder.Services.AddSingleton<DdsopScenarioService>();
 builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
+builder.Services.AddSingleton<IHistoryOperatingFactSource, SeedHistoryOperatingFactSource>();
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<HistoryReviewWorkspaceService>();
 builder.Services.AddSingleton<ICurrentBaselineDataSource, SeedCurrentBaselineDataSource>();
