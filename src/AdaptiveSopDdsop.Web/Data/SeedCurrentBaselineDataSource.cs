@@ -107,24 +107,50 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         var backlogUnits = backlog.Count == 0
             ? (decimal?)null
             : backlog.Sum(item => item.Quantity);
-        var weeklyDemand = planningInputs.Demand
-            .Where(item => item.Week == 1)
-            .Sum(item => item.BaselineDemand);
-        var supplyUnits = planningInputs.Inventory.Sum(item => item.OnHand + item.OpenSupply);
-        var coverage = weeklyDemand <= 0m ? (decimal?)null : decimal.Round(supplyUnits / weeklyDemand, 1);
-        var resourceLoads = planningInputs.Resources
-            .Where(resource => resource.WeeklyAvailableUnits > 0m)
-            .Select(resource =>
-            {
-                var load = planningInputs.ResourceRoutings
-                    .Where(route => route.ResourceCode == resource.Code)
-                    .Sum(route => planningInputs.Demand
-                        .Where(item => item.Week == 1 && item.Sku == route.Sku)
-                        .Sum(item => item.BaselineDemand) * route.CapacityPerUnit);
-                return decimal.Round(load * 100m / resource.WeeklyAvailableUnits, 1);
-            })
+        var weekOneDemandFacts = planningInputs.Demand
+            .Where(item =>
+                item.Week == 1 &&
+                !string.IsNullOrWhiteSpace(item.Sku) &&
+                item.BaselineDemand >= 0m)
             .ToList();
-        var peakLoad = resourceLoads.Count == 0 ? (decimal?)null : resourceLoads.Max();
+        var weeklyDemand = weekOneDemandFacts.Sum(item => item.BaselineDemand);
+        var supplyUnits = planningInputs.Inventory.Sum(item => item.OnHand + item.OpenSupply);
+        var hasInventoryEvidence = planningInputs.Inventory.Count > 0 &&
+            planningInputs.Inventory.All(item => !string.IsNullOrWhiteSpace(item.Sku));
+        var coverage = !hasInventoryEvidence || weekOneDemandFacts.Count == 0 || weeklyDemand <= 0m
+            ? (decimal?)null
+            : decimal.Round(supplyUnits / weeklyDemand, 1);
+
+        var availableResources = planningInputs.Resources
+            .Where(resource => resource.WeeklyAvailableUnits > 0m)
+            .ToList();
+        var availableResourceCodes = availableResources
+            .Select(resource => resource.Code)
+            .ToHashSet(StringComparer.Ordinal);
+        var skuCodes = planningInputs.Skus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
+        var demandBySku = weekOneDemandFacts
+            .GroupBy(item => item.Sku, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.BaselineDemand), StringComparer.Ordinal);
+        var routings = planningInputs.ResourceRoutings;
+        var hasConsistentLoadEvidence = availableResources.Count > 0 &&
+            availableResourceCodes.Count == availableResources.Count &&
+            routings.Count > 0 &&
+            routings.All(route =>
+                availableResourceCodes.Contains(route.ResourceCode) &&
+                skuCodes.Contains(route.Sku) &&
+                route.CapacityPerUnit > 0m &&
+                route.OperationSequence > 0 &&
+                IsCompleteEvidence(route.EvidenceStatus) &&
+                demandBySku.ContainsKey(route.Sku)) &&
+            availableResources.All(resource => routings.Any(route => route.ResourceCode == resource.Code));
+        var peakLoad = hasConsistentLoadEvidence
+            ? availableResources.Max(resource => decimal.Round(
+                routings
+                    .Where(route => route.ResourceCode == resource.Code)
+                    .Sum(route => demandBySku[route.Sku] * route.CapacityPerUnit) * 100m /
+                resource.WeeklyAvailableUnits,
+                1))
+            : (decimal?)null;
         var evidenceStatus = historicalService.HasValue &&
             !string.IsNullOrWhiteSpace(serviceWindow) &&
             inventoryValue.HasValue &&

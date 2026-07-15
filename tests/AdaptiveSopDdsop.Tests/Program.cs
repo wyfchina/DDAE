@@ -743,7 +743,25 @@ static void TestCurrentBaselineRejectsMissingSnapshotKpiEvidence()
                 {
                     Skus = basePlanningInputs.Skus.Where(item => item.Sku != skuWithoutCost).ToList()
                 },
-                kpis => kpis.InventoryValue)
+                kpis => kpis.InventoryValue),
+            (
+                "empty inventory coverage",
+                baseData,
+                basePlanningInputs with { Inventory = Array.Empty<InventoryPosition>() },
+                kpis => kpis.SupplyCoverageWeeks),
+            (
+                "empty routing peak load",
+                baseData,
+                basePlanningInputs with { ResourceRoutings = Array.Empty<ResourceRouting>() },
+                kpis => kpis.PeakResourceLoadPercent),
+            (
+                "mismatched routed week-1 demand peak load",
+                baseData,
+                basePlanningInputs with
+                {
+                    Demand = new[] { new WeeklyDemand("UNROUTED-SKU", 1, 100m) }
+                },
+                kpis => kpis.PeakResourceLoadPercent)
         };
         var failures = new List<string>();
 
