@@ -22,7 +22,10 @@ var tests = new (string Name, Action Run)[]
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
     ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
+    ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
+    ("Current baseline applies required evidence rules when section items are null or empty", TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
+    ("Mixed time-buffer progress reports the actual missing evidence week", TestMixedTimeBufferProgressReportsActualMissingWeek),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
     ("Current baseline incrementally migrates legacy audit payload evidence", TestCurrentBaselineMigratesLegacyAuditPayloadColumn),
@@ -703,6 +706,163 @@ static void TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf()
     }
 }
 
+static void TestCurrentBaselineRejectsMissingSnapshotKpiEvidence()
+{
+    var databasePaths = new List<string>();
+    try
+    {
+        var baseData = SeedData.Create();
+        var basePlanningInputs = new SeedScenarioWorkspaceDataSource(baseData)
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+        var skuWithoutCost = basePlanningInputs.Inventory.First().Sku;
+        var cases = new List<(
+            string Name,
+            ValidationData Data,
+            ScenarioWorkspaceDataSet PlanningInputs,
+            Func<BaselineKpiSnapshot, decimal?> MissingValue)>
+        {
+            (
+                "empty WIP",
+                baseData with { ResourceRoutings = Array.Empty<ResourceRouting>() },
+                basePlanningInputs,
+                kpis => kpis.WorkInProcessUnits),
+            (
+                "empty backlog",
+                baseData with { Demand = baseData.Demand.Where(item => item.Week != 1).ToList() },
+                basePlanningInputs,
+                kpis => kpis.BacklogUnits),
+            (
+                "missing resource evidence",
+                baseData,
+                basePlanningInputs with { Resources = Array.Empty<CapacityResource>() },
+                kpis => kpis.PeakResourceLoadPercent),
+            (
+                "partial inventory cost mapping",
+                baseData,
+                basePlanningInputs with
+                {
+                    Skus = basePlanningInputs.Skus.Where(item => item.Sku != skuWithoutCost).ToList()
+                },
+                kpis => kpis.InventoryValue)
+        };
+        var failures = new List<string>();
+
+        foreach (var item in cases)
+        {
+            var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-missing-kpi-{Guid.NewGuid():N}.db");
+            databasePaths.Add(databasePath);
+            var service = new CurrentBaselineService(
+                new SeedCurrentBaselineDataSource(item.Data, new StaticScenarioWorkspaceDataSource(item.PlanningInputs)),
+                databasePath);
+            var candidate = service.GetCandidate();
+            var kpis = candidate.Payload.Kpis!;
+            if (item.MissingValue(kpis) is not null)
+            {
+                failures.Add($"{item.Name} was converted to {item.MissingValue(kpis)} instead of null");
+            }
+            if (kpis.EvidenceStatus != "EvidenceMissing")
+            {
+                failures.Add($"{item.Name} left KPI evidence status as {kpis.EvidenceStatus}");
+            }
+
+            var kpiSection = candidate.Sections.Single(section => section.SectionCode == "CURRENT_KPIS");
+            if (!kpiSection.IsRequired || kpiSection.CompletenessStatus != "EvidenceMissing")
+            {
+                failures.Add($"{item.Name} left CURRENT_KPIS freeze-ready");
+            }
+
+            var rejected = false;
+            try
+            {
+                service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", item.Name));
+            }
+            catch (ArgumentException ex)
+            {
+                rejected = ex.Message.Contains("CURRENT_KPIS", StringComparison.Ordinal);
+            }
+            if (!rejected)
+            {
+                failures.Add($"{item.Name} did not block freezing through CURRENT_KPIS");
+            }
+        }
+
+        AssertTrue(failures.Count == 0, string.Join("; ", failures));
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        foreach (var databasePath in databasePaths)
+        {
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
+static void TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems()
+{
+    var databasePaths = new List<string>();
+    try
+    {
+        var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var cases = new List<(
+            string SectionCode,
+            bool IsRequired,
+            IReadOnlyList<BaselineEvidenceItem>? Items,
+            bool ShouldReject)>
+        {
+            ("REQUIRED_NOT_APPLICABLE_NULL", true, null, true),
+            ("REQUIRED_NOT_APPLICABLE_EMPTY", true, Array.Empty<BaselineEvidenceItem>(), true),
+            ("OPTIONAL_NOT_APPLICABLE_NULL", false, null, false),
+            ("OPTIONAL_NOT_APPLICABLE_EMPTY", false, Array.Empty<BaselineEvidenceItem>(), false)
+        };
+        var failures = new List<string>();
+
+        foreach (var item in cases)
+        {
+            var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-empty-items-{Guid.NewGuid():N}.db");
+            databasePaths.Add(databasePath);
+            var section = new BaselineEvidenceSection(
+                item.SectionCode,
+                item.SectionCode,
+                "ReviewFixture",
+                complete.AsOfUtc,
+                "NotApplicable",
+                "NotApplicable",
+                0,
+                "DemoFixture",
+                item.IsRequired,
+                "No evidence applies to this review fixture.",
+                item.Items);
+            var candidate = complete with { Sections = complete.Sections.Append(section).ToList() };
+            var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+            var rejected = false;
+            try
+            {
+                service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", item.SectionCode));
+            }
+            catch (ArgumentException ex)
+            {
+                rejected = ex.Message.Contains(item.SectionCode, StringComparison.Ordinal);
+            }
+
+            if (rejected != item.ShouldReject)
+            {
+                failures.Add($"{item.SectionCode} expected reject={item.ShouldReject} but observed reject={rejected}");
+            }
+        }
+
+        AssertTrue(failures.Count == 0, string.Join("; ", failures));
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        foreach (var databasePath in databasePaths)
+        {
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
 static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
 {
     var databasePaths = new List<string>();
@@ -833,6 +993,58 @@ static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
         {
             DeleteSqliteFiles(databasePath);
         }
+    }
+}
+
+static void TestMixedTimeBufferProgressReportsActualMissingWeek()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-mixed-progress-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+        var definition = planningInputs.TimeBuffers!.Single();
+        var mixedProgress = new[]
+        {
+            new ControlPointProgressFact(definition.BufferId, 1, 0.5m, "on plan", "Complete"),
+            new ControlPointProgressFact(definition.BufferId, 2, 1.5m, "source evidence missing", "EvidenceMissing"),
+            new ControlPointProgressFact(definition.BufferId, 3, 0m, "recovered", "Complete")
+        };
+        var mixedInputs = planningInputs with { ControlPointProgress = mixedProgress };
+        var service = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(mixedInputs)),
+            databasePath);
+        var candidate = service.GetCandidate();
+        var progressItem = candidate.Sections
+            .Single(section => section.SectionCode == "CONTROL_POINT_PROGRESS")
+            .Items!
+            .Single(item => item.ItemKey == definition.BufferId);
+
+        AssertEqual("EvidenceMissing", progressItem.CompletenessStatus, "mixed progress completeness");
+        AssertTrue(
+            progressItem.MissingReason?.Contains("Week 2", StringComparison.Ordinal) == true &&
+            progressItem.MissingReason.Contains("EvidenceMissing", StringComparison.Ordinal),
+            $"mixed progress should report the actual abnormal week and status, got {progressItem.MissingReason}");
+
+        var rejectedWithActualReason = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "mixed progress evidence"));
+        }
+        catch (ArgumentException ex)
+        {
+            rejectedWithActualReason =
+                ex.Message.Contains($"CONTROL_POINT_PROGRESS/{definition.BufferId}", StringComparison.Ordinal) &&
+                ex.Message.Contains("Week 2", StringComparison.Ordinal) &&
+                ex.Message.Contains("EvidenceMissing", StringComparison.Ordinal);
+        }
+        AssertTrue(rejectedWithActualReason, "critical mixed progress should block freezing with section item week and actual missing status");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
     }
 }
 

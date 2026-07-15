@@ -97,13 +97,22 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         var historicalService = planningInputs.HistoricalDemand.Count == 0
             ? (decimal?)null
             : decimal.Round(planningInputs.HistoricalDemand.Average(item => item.ServiceLevelPercent), 1);
-        var inventoryValue = _InventoryValue(planningInputs);
+        var serviceWindow = planningInputs.HistoricalDemand.Count == 0
+            ? string.Empty
+            : $"{planningInputs.HistoricalDemand.Select(item => item.WeekOffset).Distinct().Count()}-week rolling window";
+        var inventoryValue = InventoryValue(planningInputs);
+        var workInProcessUnits = workInProcess.Count == 0
+            ? (decimal?)null
+            : workInProcess.Sum(item => item.Quantity);
+        var backlogUnits = backlog.Count == 0
+            ? (decimal?)null
+            : backlog.Sum(item => item.Quantity);
         var weeklyDemand = planningInputs.Demand
             .Where(item => item.Week == 1)
             .Sum(item => item.BaselineDemand);
         var supplyUnits = planningInputs.Inventory.Sum(item => item.OnHand + item.OpenSupply);
         var coverage = weeklyDemand <= 0m ? (decimal?)null : decimal.Round(supplyUnits / weeklyDemand, 1);
-        var peakLoad = planningInputs.Resources
+        var resourceLoads = planningInputs.Resources
             .Where(resource => resource.WeeklyAvailableUnits > 0m)
             .Select(resource =>
             {
@@ -114,35 +123,51 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                         .Sum(item => item.BaselineDemand) * route.CapacityPerUnit);
                 return decimal.Round(load * 100m / resource.WeeklyAvailableUnits, 1);
             })
-            .DefaultIfEmpty()
-            .Max();
-        var evidenceStatus = new decimal?[] { historicalService, inventoryValue, coverage, peakLoad }.All(item => item.HasValue)
+            .ToList();
+        var peakLoad = resourceLoads.Count == 0 ? (decimal?)null : resourceLoads.Max();
+        var evidenceStatus = historicalService.HasValue &&
+            !string.IsNullOrWhiteSpace(serviceWindow) &&
+            inventoryValue.HasValue &&
+            workInProcessUnits.HasValue &&
+            backlogUnits.HasValue &&
+            coverage.HasValue &&
+            peakLoad.HasValue
             ? "Complete"
             : "EvidenceMissing";
 
         return new BaselineKpiSnapshot(
             historicalService,
-            $"{planningInputs.HistoricalDemand.Select(item => item.WeekOffset).Distinct().Count()}-week rolling window",
+            serviceWindow,
             inventoryValue,
-            workInProcess.Sum(item => item.Quantity),
-            backlog.Sum(item => item.Quantity),
+            workInProcessUnits,
+            backlogUnits,
             coverage,
             peakLoad,
             "DDAE Demo Meeting Snapshot",
             asOf,
             evidenceStatus);
 
-        decimal? _InventoryValue(ScenarioWorkspaceDataSet data)
+        decimal? InventoryValue(ScenarioWorkspaceDataSet data)
         {
             if (data.Inventory.Count == 0 || data.Skus.Count == 0)
             {
                 return null;
             }
 
-            var costs = data.Skus.ToDictionary(item => item.Sku, item => item.UnitCost, StringComparer.Ordinal);
-            return data.Inventory
-                .Where(item => costs.ContainsKey(item.Sku))
-                .Sum(item => item.OnHand * costs[item.Sku]);
+            var costs = data.Skus
+                .GroupBy(item => item.Sku, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Count() == 1 && group.Single().UnitCost > 0m
+                        ? (decimal?)group.Single().UnitCost
+                        : null,
+                    StringComparer.Ordinal);
+            if (data.Inventory.Any(item => !costs.TryGetValue(item.Sku, out var unitCost) || !unitCost.HasValue))
+            {
+                return null;
+            }
+
+            return data.Inventory.Sum(item => item.OnHand * costs[item.Sku]!.Value);
         }
     }
 
@@ -198,21 +223,33 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             var hasValues = facts.Count > 0 && facts.All(item => item.ObservedDelayDays.HasValue);
             var evidenceComplete = facts.Count > 0 && facts.All(item => IsCompleteEvidence(item.EvidenceStatus));
             var completeness = hasValues && evidenceComplete ? "Complete" : "EvidenceMissing";
-            var evidenceStatus = facts.Select(item => item.EvidenceStatus)
-                .FirstOrDefault(item => item is "Stale" or "Expired")
-                ?? facts.FirstOrDefault()?.EvidenceStatus;
+            var aggregateFreshnessStatus = facts
+                .Select(item => item.EvidenceStatus)
+                .FirstOrDefault(item => Freshness(item) != "Fresh");
+            var factIssues = new List<string>();
+            foreach (var fact in facts)
+            {
+                if (!fact.ObservedDelayDays.HasValue)
+                {
+                    factIssues.Add($"Week {fact.Week}: ObservedDelayDays is missing");
+                }
+                if (Freshness(fact.EvidenceStatus) != "Fresh" || !IsCompleteEvidence(fact.EvidenceStatus))
+                {
+                    factIssues.Add($"Week {fact.Week}: EvidenceStatus={fact.EvidenceStatus ?? "Missing"}");
+                }
+            }
             var missingReason = facts.Count == 0
                 ? "Control-point progress evidence is missing"
-                : facts.Any(item => !item.ObservedDelayDays.HasValue)
-                    ? "ObservedDelayDays is missing"
+                : factIssues.Count > 0
+                    ? string.Join("; ", factIssues)
                     : null;
             return new BaselineEvidenceItem(
                 definition.BufferId,
                 $"{definition.ControlPoint} progress",
-                Freshness(evidenceStatus),
+                Freshness(aggregateFreshnessStatus),
                 completeness,
                 definition.IsCritical,
-                EvidenceReason(evidenceStatus, completeness, missingReason));
+                EvidenceReason(aggregateFreshnessStatus, completeness, missingReason));
         }).ToList();
 
         var sections = new[]

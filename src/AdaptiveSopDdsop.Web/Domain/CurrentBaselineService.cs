@@ -418,7 +418,9 @@ public sealed class CurrentBaselineService
 
             var notApplicable = section.FreshnessStatus == "NotApplicable" && section.CompletenessStatus == "NotApplicable";
             var completeSection = section.FreshnessStatus == "Fresh" && section.CompletenessStatus == "Complete";
-            if (notApplicable || completeSection || (blockingOnly && !section.IsRequired))
+            if (completeSection ||
+                (!section.IsRequired && notApplicable) ||
+                (blockingOnly && !section.IsRequired))
             {
                 continue;
             }
