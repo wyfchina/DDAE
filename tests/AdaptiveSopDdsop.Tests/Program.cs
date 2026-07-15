@@ -44,7 +44,14 @@ var tests = new (string Name, Action Run)[]
     ("Time buffer breach reports penetration recovery and unrecovered horizon", TestTimeBufferBreachReportsPenetrationRecoveryAndUnrecoveredHorizon),
     ("Time buffer missing evidence is not reported as zero", TestTimeBufferMissingEvidenceIsNotReportedAsZero),
     ("Time buffer requires explicit product scope evidence", TestTimeBufferRequiresExplicitProductScopeEvidence),
+    ("Time buffer excludes injected FPGA scope evidence", TestTimeBufferExcludesInjectedFpgaScopeEvidence),
+    ("Capacity buffer excludes injected FPGA routing evidence", TestCapacityBufferExcludesInjectedFpgaRoutingEvidence),
+    ("Time buffer expands explicit family-only product scope", TestTimeBufferExpandsExplicitFamilyOnlyProductScope),
+    ("Time buffer rejects unknown family scope evidence", TestTimeBufferRejectsUnknownFamilyScopeEvidence),
+    ("Time buffer thresholds use raw penetration before display rounding", TestTimeBufferThresholdsUseRawPenetrationBeforeDisplayRounding),
     ("Supply risk is not classified as a DDOM buffer", TestSupplyRiskIsNotClassifiedAsDdomBuffer),
+    ("Pure supply risk does not generate buffer governance from preview", TestPureSupplyRiskDoesNotGenerateBufferGovernanceFromPreview),
+    ("Frozen pure supply risk does not generate buffer governance", TestFrozenPureSupplyRiskDoesNotGenerateBufferGovernance),
     ("FPGA never appears in time or capacity buffer results", TestFpgaNeverAppearsInTimeOrCapacityBufferResults),
     ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
     ("Coordination ledger enforces workflow and audits creation status decision and outcome", TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates),
@@ -1922,6 +1929,40 @@ static void TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage()
             AssertEqual(expectedCase.Preview.Scenario.Metrics.ServiceLevelPercent, detail.Result.Scenario.Metrics.ServiceLevelPercent, "saved frozen preview service level");
             AssertEqual(expectedCase.Preview.Scenario.Metrics.AverageInventoryValue, detail.Result.Scenario.Metrics.AverageInventoryValue, "saved frozen preview inventory value");
             AssertEqual(expectedCase.Preview.Request.Parameters is null, detail.Request.Parameters is null, "saved frozen preview should retain only the selected response configuration");
+            var expectedAnalysis = expectedCase.Preview.ProtectionAnalysis;
+            var savedAnalysis = detail.Result.ProtectionAnalysis;
+            AssertTrue(expectedAnalysis is not null && savedAnalysis is not null, "saved frozen preview should retain backend protection analysis");
+            AssertEqual(expectedAnalysis!.Breaches.Count, savedAnalysis!.Breaches.Count, "saved frozen protection breach count");
+            AssertTrue(
+                expectedAnalysis.Breaches.Zip(savedAnalysis.Breaches).All(pair =>
+                    pair.First.ScopeType == pair.Second.ScopeType &&
+                    pair.First.Target == pair.Second.Target &&
+                    pair.First.IsBreached == pair.Second.IsBreached &&
+                    pair.First.EarliestRedWeek == pair.Second.EarliestRedWeek &&
+                    pair.First.ConsecutiveRiskWeeks == pair.Second.ConsecutiveRiskWeeks &&
+                    pair.First.RecoveryWeek == pair.Second.RecoveryWeek &&
+                    pair.First.IsUnrecovered == pair.Second.IsUnrecovered &&
+                    pair.First.AffectedProducts.SequenceEqual(pair.Second.AffectedProducts) &&
+                    pair.First.PrimaryCause == pair.Second.PrimaryCause &&
+                    pair.First.BufferSize == pair.Second.BufferSize &&
+                    pair.First.MaximumPenetrationPercent == pair.Second.MaximumPenetrationPercent &&
+                    pair.First.Unit == pair.Second.Unit &&
+                    pair.First.EvidenceStatus == pair.Second.EvidenceStatus),
+                "saved frozen protection breaches field equality");
+            AssertTrue(expectedAnalysis.TimeBufferProjection.SequenceEqual(savedAnalysis.TimeBufferProjection), "saved frozen time-buffer projection object equality");
+            AssertTrue(expectedAnalysis.CapacityProtectionProjection.SequenceEqual(savedAnalysis.CapacityProtectionProjection), "saved frozen capacity-protection projection object equality");
+            AssertEqual(
+                JsonSerializer.Serialize(expectedAnalysis.Breaches),
+                JsonSerializer.Serialize(savedAnalysis.Breaches),
+                "saved frozen protection breaches JSON equality");
+            AssertEqual(
+                JsonSerializer.Serialize(expectedAnalysis.TimeBufferProjection),
+                JsonSerializer.Serialize(savedAnalysis.TimeBufferProjection),
+                "saved frozen time-buffer projection JSON equality");
+            AssertEqual(
+                JsonSerializer.Serialize(expectedAnalysis.CapacityProtectionProjection),
+                JsonSerializer.Serialize(savedAnalysis.CapacityProtectionProjection),
+                "saved frozen capacity-protection projection JSON equality");
         }
 
         using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
@@ -2230,6 +2271,203 @@ static void TestTimeBufferRequiresExplicitProductScopeEvidence()
         "missing product scope must suppress calculated penetration instead of reporting zero");
 }
 
+static void TestTimeBufferExcludesInjectedFpgaScopeEvidence()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    var validSku = frozenData.TimeBufferProductScopes!.Single().Skus.First();
+    var analyzer = new TimeBufferProtectionAnalyzer();
+    var scenario = new ExternalScenarioDefinition("EXT-TIME-FPGA-INJECTION", "时间范围 FPGA 注入");
+
+    var mixed = analyzer.Analyze(
+        frozenData with
+        {
+            TimeBufferProductScopes = new[]
+            {
+                new TimeBufferProductScope(
+                    definition.BufferId,
+                    Array.Empty<string>(),
+                    new[] { validSku, "AV-FPGA-203" },
+                    "Complete")
+            }
+        },
+        scenario,
+        null,
+        horizonWeeks);
+    var mixedBreach = mixed.Breaches.Single(item => item.Target == definition.BufferId);
+    AssertEqual("Complete", mixedBreach.EvidenceStatus, "mixed explicit time-buffer scope evidence");
+    AssertTrue(
+        mixedBreach.AffectedProducts.SequenceEqual(new[] { validSku }),
+        "time-buffer affected products must discard injected FPGA while retaining explicit valid products");
+
+    var fpgaOnly = analyzer.Analyze(
+        frozenData with
+        {
+            TimeBufferProductScopes = new[]
+            {
+                new TimeBufferProductScope(
+                    definition.BufferId,
+                    Array.Empty<string>(),
+                    new[] { "AV-FPGA-203" },
+                    "Complete")
+            }
+        },
+        scenario,
+        null,
+        horizonWeeks);
+    var fpgaOnlyBreach = fpgaOnly.Breaches.Single(item => item.Target == definition.BufferId);
+    AssertEqual("EvidenceMissing", fpgaOnlyBreach.EvidenceStatus, "FPGA-only time-buffer scope evidence");
+    AssertTrue(fpgaOnlyBreach.AffectedProducts.Count == 0, "FPGA-only time-buffer scope must have no affected products");
+    AssertTrue(
+        fpgaOnly.Projection.All(item => item.DelayDays is null && item.PenetrationPercent is null),
+        "FPGA-only time-buffer scope must not calculate numeric projection values");
+}
+
+static void TestCapacityBufferExcludesInjectedFpgaRoutingEvidence()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(horizonWeeks));
+    var fpgaRoutes = new[]
+    {
+        new ResourceRouting("AV-FPGA-203", "RES-AIT", 1m, 1, "RES-HARNESS", "Complete"),
+        new ResourceRouting("AV-FPGA-203", "RES-HARNESS", 1m, 2, null, "Complete")
+    };
+    var analyzer = new CapacityBufferProtectionAnalyzer();
+
+    var mixed = analyzer.Analyze(
+        frozenData with { ResourceRoutings = frozenData.ResourceRoutings.Concat(fpgaRoutes).ToList() },
+        preview.Scenario,
+        horizonWeeks);
+    var mixedBreach = mixed.Breaches.Single(item => item.Target == "RES-AIT");
+    AssertEqual("Complete", mixedBreach.EvidenceStatus, "mixed capacity-routing evidence");
+    AssertTrue(
+        mixedBreach.AffectedProducts.Count > 0 &&
+        !mixedBreach.AffectedProducts.Contains("AV-FPGA-203", StringComparer.Ordinal),
+        "capacity protection must discard injected FPGA while retaining valid AIT to HARNESS products");
+
+    var fpgaOnly = analyzer.Analyze(
+        frozenData with { ResourceRoutings = fpgaRoutes },
+        preview.Scenario,
+        horizonWeeks);
+    var fpgaOnlyBreach = fpgaOnly.Breaches.Single(item => item.Target == "RES-AIT");
+    AssertEqual("EvidenceMissing", fpgaOnlyBreach.EvidenceStatus, "FPGA-only capacity-routing evidence");
+    AssertTrue(fpgaOnlyBreach.AffectedProducts.Count == 0, "FPGA-only capacity routing must have no affected products");
+    AssertTrue(
+        fpgaOnly.Projection.All(item =>
+            item.PlannedAvailableCapacity is null &&
+            item.CommittedLoad is null &&
+            item.ProtectionCapacity is null &&
+            item.ConsumedProtection is null &&
+            item.RemainingProtection is null),
+        "FPGA-only capacity routing must not calculate numeric protection values");
+}
+
+static void TestTimeBufferExpandsExplicitFamilyOnlyProductScope()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    const string scopedFamily = "卫星平台";
+    var expectedProducts = frozenData.Skus
+        .Where(item => item.Family == scopedFamily && item.Sku != "AV-FPGA-203")
+        .Select(item => item.Sku)
+        .OrderBy(item => item, StringComparer.Ordinal)
+        .ToList();
+    var analysis = new TimeBufferProtectionAnalyzer().Analyze(
+        frozenData with
+        {
+            TimeBufferProductScopes = new[]
+            {
+                new TimeBufferProductScope(
+                    definition.BufferId,
+                    new[] { scopedFamily },
+                    Array.Empty<string>(),
+                    "Complete")
+            }
+        },
+        new ExternalScenarioDefinition("EXT-TIME-FAMILY", "显式产品族时间范围"),
+        null,
+        horizonWeeks);
+    var breach = analysis.Breaches.Single(item => item.Target == definition.BufferId);
+
+    AssertTrue(expectedProducts.Count > 0, "family-only test should use a frozen family with products");
+    AssertEqual("Complete", breach.EvidenceStatus, "family-only time-buffer scope evidence");
+    AssertTrue(
+        breach.AffectedProducts.SequenceEqual(expectedProducts),
+        "family-only time-buffer scope should expand through frozen SKU-family mappings");
+}
+
+static void TestTimeBufferRejectsUnknownFamilyScopeEvidence()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    var explicitValidSku = frozenData.TimeBufferProductScopes!.Single().Skus.First();
+    var analysis = new TimeBufferProtectionAnalyzer().Analyze(
+        frozenData with
+        {
+            TimeBufferProductScopes = new[]
+            {
+                new TimeBufferProductScope(
+                    definition.BufferId,
+                    new[] { "UNKNOWN-FAMILY" },
+                    new[] { explicitValidSku },
+                    "Complete")
+            }
+        },
+        new ExternalScenarioDefinition("EXT-TIME-UNKNOWN-FAMILY", "未知产品族时间范围"),
+        null,
+        horizonWeeks);
+    var breach = analysis.Breaches.Single(item => item.Target == definition.BufferId);
+
+    AssertEqual("EvidenceMissing", breach.EvidenceStatus, "unknown family time-buffer scope evidence");
+    AssertTrue(breach.AffectedProducts.Count == 0, "unknown family evidence must suppress all affected products");
+    AssertTrue(
+        analysis.Projection.All(item => item.DelayDays is null && item.PenetrationPercent is null),
+        "unknown family evidence must suppress calculated time-buffer values");
+}
+
+static void TestTimeBufferThresholdsUseRawPenetrationBeforeDisplayRounding()
+{
+    const int horizonWeeks = 6;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single() with { BufferDays = 100m };
+    var rawPenetrations = new[] { 66.999m, 67m, 67.001m, 99.999m, 100m, 100.001m };
+    frozenData = frozenData with
+    {
+        TimeBuffers = new[] { definition },
+        ControlPointProgress = rawPenetrations
+            .Select((penetration, index) => new ControlPointProgressFact(
+                definition.BufferId,
+                index + 1,
+                penetration,
+                "阈值边界证据",
+                "Complete"))
+            .ToList()
+    };
+
+    var projection = new TimeBufferProtectionAnalyzer().Analyze(
+            frozenData,
+            new ExternalScenarioDefinition("EXT-TIME-THRESHOLDS", "时间缓冲阈值边界"),
+            null,
+            horizonWeeks)
+        .Projection
+        .OrderBy(item => item.Week)
+        .ToList();
+
+    AssertEqual(
+        "Green|Yellow|Yellow|Yellow|Red|Red",
+        string.Join('|', projection.Select(item => item.Status)),
+        "raw time-buffer threshold statuses");
+    AssertEqual(
+        "67.0|67.0|67.0|100.0|100.0|100.0",
+        string.Join('|', projection.Select(item => item.PenetrationPercent!.Value.ToString("0.0"))),
+        "rounded time-buffer penetration display values");
+}
+
 static ScenarioWorkspaceDataSet LoadTask5ProtectionData(int horizonWeeks)
 {
     return new SeedScenarioWorkspaceDataSource(SeedData.Create()).Load(
@@ -2246,6 +2484,103 @@ static void TestSupplyRiskIsNotClassifiedAsDdomBuffer()
     AssertTrue(
         supplyResults.All(item => item.ScopeType == "SupplyRisk"),
         "supplier/material risk must use the SupplyRisk scope instead of a DDOM buffer scope");
+}
+
+static void TestPureSupplyRiskDoesNotGenerateBufferGovernanceFromPreview()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-supply-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var previewService = new ScenarioRunPreviewService(source);
+        var request = new ScenarioRunPreviewRequest(
+            12,
+            ExternalScenario: new ExternalScenarioDefinition(
+                "EXT-SUPPLY-ONLY",
+                "纯供应风险",
+                SupplyRisks: new[]
+                {
+                    new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 1, 12, 0m, "供应承诺中断")
+                }));
+        var preview = previewService.Preview(request);
+        AssertTrue(preview.Scenario.Metrics.SupplyGap > 0m, "pure supply-risk preview should reproduce a supply gap");
+
+        var proposals = new MasterSettingsGovernanceService(source, previewService, databasePath)
+            .ProposeFromPreview(request)
+            .Proposals;
+
+        AssertTrue(
+            proposals.All(item => !IsSupplyGapDerivedBufferProposal(item)),
+            "pure supply risk must not generate a Time/Capacity Buffer governance proposal");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestFrozenPureSupplyRiskDoesNotGenerateBufferGovernance()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-frozen-supply-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var previewService = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "纯供应风险治理边界"));
+        var externalScenario = new ExternalScenarioDefinition(
+            "EXT-FROZEN-SUPPLY-ONLY",
+            "冻结纯供应风险",
+            SupplyRisks: new[]
+            {
+                new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 1, 4, 0m, "供应承诺中断")
+            },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual",
+                null,
+                null,
+                "DDS&OP 计划员",
+                "2026-07-15T08:00:00Z",
+                "2026-07-16",
+                "2026-08-31",
+                "验证纯供应风险不会派生缓冲治理建议",
+                "人工录入：供应风险治理边界"));
+        var comparison = new ScenarioComparisonService(
+                baselineService,
+                previewService,
+                new SeedScenarioAssumptionSource())
+            .Compare(new ScenarioComparisonRequest(
+                frozen.SnapshotId,
+                externalScenario,
+                Array.Empty<ResponseConfiguration>(),
+                4));
+        AssertTrue(comparison.NoResponse.Preview.Scenario.Metrics.SupplyGap > 0m, "frozen pure supply-risk comparison should reproduce a supply gap");
+
+        var proposals = new MasterSettingsGovernanceService(source, previewService, databasePath)
+            .ProposeFromFrozenComparison(
+                comparison.NoResponse,
+                frozen,
+                new GovernanceDecisionContext())
+            .Proposals;
+
+        AssertTrue(
+            proposals.All(item => !IsSupplyGapDerivedBufferProposal(item)),
+            "frozen pure supply risk must not generate a Time/Capacity Buffer governance proposal");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static bool IsSupplyGapDerivedBufferProposal(MasterSettingChangeRequest proposal)
+{
+    return proposal.SettingType is "Time Buffer" or "Capacity Buffer" &&
+        (proposal.Target.Contains("供应缺口", StringComparison.Ordinal) ||
+         proposal.Rationale.Any(reason => reason.Contains("供应缺口", StringComparison.Ordinal)));
 }
 
 static void TestFpgaNeverAppearsInTimeOrCapacityBufferResults()

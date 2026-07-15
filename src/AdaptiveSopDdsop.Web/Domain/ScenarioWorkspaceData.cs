@@ -689,7 +689,8 @@ public sealed record ScenarioRunPreviewResult(
     ScenarioComparisonMetrics Comparison,
     RccpComparison RccpComparison,
     IReadOnlyList<ScenarioAuditTrace> Trace,
-    bool IsPersisted);
+    bool IsPersisted,
+    ProtectionAnalysisResult? ProtectionAnalysis = null);
 
 public sealed record ScenarioRunSaveRequest(
     string Name,

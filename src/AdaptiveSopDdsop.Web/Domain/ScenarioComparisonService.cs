@@ -159,11 +159,12 @@ public sealed class ScenarioComparisonService
             response,
             preview.Scenario,
             horizonWeeks);
+        var analyzedPreview = preview with { ProtectionAnalysis = analysis };
         return new ScenarioComparisonCase(
             responseId,
             name,
             externalScenario.ScenarioId,
-            preview,
+            analyzedPreview,
             analysis.Breaches,
             analysis.TimeBufferProjection,
             analysis.CapacityProtectionProjection);

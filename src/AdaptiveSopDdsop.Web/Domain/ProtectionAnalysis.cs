@@ -1,5 +1,13 @@
 namespace AdaptiveSopDdsop.Web.Domain;
 
+internal static class ProtectionProductEligibility
+{
+    internal const string InventoryOnlyFpgaSku = "AV-FPGA-203";
+
+    internal static bool IsEligible(string sku) =>
+        !string.Equals(sku, InventoryOnlyFpgaSku, StringComparison.Ordinal);
+}
+
 public sealed record ProtectionBreachResult(
     string ScopeType,
     string Target,
@@ -164,6 +172,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
         {
             var matchingScopes = scopeRows.Where(item => item.BufferId == definition.BufferId).ToList();
             var productScope = matchingScopes.Count == 1 ? matchingScopes[0] : null;
+            var productResolution = ResolveAffectedProducts(frozenData, productScope);
             var progressByWeek = progressRows
                 .Where(item => item.BufferId == definition.BufferId && item.Week >= 1 && item.Week <= horizon)
                 .GroupBy(item => item.Week)
@@ -173,9 +182,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
                 facts.Count == 1 &&
                 facts[0].ObservedDelayDays.HasValue &&
                 facts[0].EvidenceStatus == "Complete");
-            var scopeComplete = productScope is not null &&
-                productScope.EvidenceStatus == "Complete" &&
-                productScope.Skus.Count > 0;
+            var scopeComplete = productResolution.EvidenceComplete;
             var evidenceComplete = definition.EvidenceStatus == "Complete" &&
                 definition.BufferDays > 0m &&
                 progressComplete &&
@@ -194,7 +201,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
                         null,
                         "EvidenceMissing",
                         "EvidenceMissing",
-                        MissingTimeEvidenceCause(definition, productScope, progressByWeek, week)));
+                        MissingTimeEvidenceCause(definition, scopeComplete, progressByWeek, week)));
                 }
 
                 breaches.Add(new ProtectionBreachResult(
@@ -224,13 +231,15 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
                     var recoveredDays = (response?.TimeBufferAdjustments ?? Array.Empty<TimeBufferResponseAdjustment>())
                         .Where(item => item.BufferId == definition.BufferId && week >= item.StartWeek && week <= item.EndWeek)
                         .Sum(item => item.RecoveredDays);
-                    var netDelay = decimal.Round(
-                        Math.Max(0m, progress.ObservedDelayDays!.Value + scenarioDelay - recoveredDays),
-                        1);
-                    var penetration = decimal.Round(netDelay * 100m / definition.BufferDays, 1);
-                    var status = penetration >= 100m
+                    var rawNetDelay = Math.Max(
+                        0m,
+                        progress.ObservedDelayDays!.Value + scenarioDelay - recoveredDays);
+                    var rawPenetration = rawNetDelay * 100m / definition.BufferDays;
+                    var netDelay = decimal.Round(rawNetDelay, 1);
+                    var penetration = decimal.Round(rawPenetration, 1);
+                    var status = rawPenetration >= 100m
                         ? "Red"
-                        : penetration >= 67m
+                        : rawPenetration >= 67m
                             ? "Yellow"
                             : "Green";
                     return new TimeBufferProjectionPoint(
@@ -252,10 +261,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
                 "TimeBuffer",
                 definition.BufferId,
                 bufferProjection.Select(item => (item.Week, item.Status)),
-                productScope!.Skus
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(item => item, StringComparer.Ordinal)
-                    .ToList(),
+                productResolution.AffectedProducts,
                 "控制点净延迟侵入时间缓冲红区",
                 definition.BufferDays,
                 maximumPenetration,
@@ -270,7 +276,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
 
     private static string MissingTimeEvidenceCause(
         TimeBufferDefinition definition,
-        TimeBufferProductScope? productScope,
+        bool scopeComplete,
         IReadOnlyDictionary<int, List<ControlPointProgressFact>> progressByWeek,
         int week)
     {
@@ -278,7 +284,7 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
         {
             return "时间缓冲定义证据缺失";
         }
-        if (productScope is null || productScope.EvidenceStatus != "Complete" || productScope.Skus.Count == 0)
+        if (!scopeComplete)
         {
             return "时间缓冲产品范围证据缺失";
         }
@@ -289,6 +295,41 @@ public sealed class TimeBufferProtectionAnalyzer : ITimeBufferProtectionAnalyzer
         return facts[0].EvidenceStatus == "Complete" && facts[0].ObservedDelayDays.HasValue
             ? "其他周控制点进展证据缺失"
             : $"第 {week} 周控制点进展证据缺失";
+    }
+
+    private static (bool EvidenceComplete, IReadOnlyList<string> AffectedProducts) ResolveAffectedProducts(
+        ScenarioWorkspaceDataSet frozenData,
+        TimeBufferProductScope? productScope)
+    {
+        if (productScope is null || productScope.EvidenceStatus != "Complete")
+        {
+            return (false, Array.Empty<string>());
+        }
+
+        var knownSkus = frozenData.Skus
+            .Select(item => item.Sku)
+            .ToHashSet(StringComparer.Ordinal);
+        var knownFamilies = frozenData.Skus
+            .Select(item => item.Family)
+            .ToHashSet(StringComparer.Ordinal);
+        if (productScope.Skus.Any(item => !knownSkus.Contains(item)) ||
+            productScope.ProductFamilies.Any(item => !knownFamilies.Contains(item)))
+        {
+            return (false, Array.Empty<string>());
+        }
+
+        var scopedFamilies = productScope.ProductFamilies.ToHashSet(StringComparer.Ordinal);
+        var affectedProducts = productScope.Skus
+            .Concat(frozenData.Skus
+                .Where(item => scopedFamilies.Contains(item.Family))
+                .Select(item => item.Sku))
+            .Where(ProtectionProductEligibility.IsEligible)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToList();
+        return affectedProducts.Count > 0
+            ? (true, affectedProducts)
+            : (false, Array.Empty<string>());
     }
 
     private static string BuildTimeCause(
@@ -446,6 +487,7 @@ public sealed class CapacityBufferProtectionAnalyzer : ICapacityBufferProtection
                 downstream.OperationSequence > upstream.OperationSequence &&
                 downstream.EvidenceStatus == "Complete"))
             .Select(item => item.Sku)
+            .Where(ProtectionProductEligibility.IsEligible)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(item => item, StringComparer.Ordinal)
             .ToList();

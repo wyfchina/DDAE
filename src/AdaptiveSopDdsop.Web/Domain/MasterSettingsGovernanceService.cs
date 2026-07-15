@@ -451,22 +451,6 @@ public sealed class MasterSettingsGovernanceService
             }
         }
 
-        if (preview.Scenario.Metrics.SupplyGap > 0)
-        {
-            yield return BuildProposal(
-                preview.Request,
-                "Time Buffer",
-                "供应缺口保护窗口",
-                "按当前供应承诺执行",
-                "增加供应保护提前期、Act/Late 阈值和替代供应策略",
-                $"预览供应缺口 {preview.Scenario.Metrics.SupplyGap:0.#}。",
-                "缺口周之前",
-                1.8m,
-                preview.Scenario.Metrics.SupplyGap * 1000m,
-                "Red",
-                "SystemSuggested");
-        }
-
         foreach (var resource in preview.Scenario.Rccp.ResourceSummaries.Where(item => item.Status == "Red").Take(2))
         {
             yield return BuildProposal(
