@@ -84,10 +84,13 @@ var tests = new (string Name, Action Run)[]
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
     ("Manual governance change requires baseline and allows no scenario", TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario),
+    ("Manual governance change with scenario requires validated saved run", TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun),
     ("Scenario-derived governance change requires baseline and scenario", TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario),
     ("Unlinked historical records remain explicitly unlinked", TestUnlinkedHistoricalRecordsRemainExplicitlyUnlinked),
     ("Scenario change and coordination links are queryable both directions", TestScenarioChangeAndCoordinationLinksAreQueryableBothDirections),
     ("Baseline references expose runs changes and actions", TestBaselineReferencesExposeRunsChangesAndActions),
+    ("Baseline references return all links beyond public page limit", TestBaselineReferencesReturnAllLinksBeyondPublicPageLimit),
+    ("Lineage filters use indexable parameterized equality predicates", TestLineageFiltersUseIndexableParameterizedEqualityPredicates),
     ("Coordination outcome does not advance governance status", TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus),
     ("Lineage endpoints expose read-only filters and validate saved comparison runs", TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonRuns),
     ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
@@ -3653,6 +3656,64 @@ static void TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario()
     }
 }
 
+static void TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-manual-run-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validRun = new ScenarioRunSummary(
+            "RUN-MANUAL-SAVED", "SR-20260715-0200", "手工变更来源 run", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
+            "2026-07-15T08:00:00Z", 12, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
+            "BASELINE-MANUAL-RUN", "EXT-MANUAL-RUN", "RESP-MANUAL-RUN");
+        var unsavedRun = validRun with { RunId = "RUN-MANUAL-DRAFT", Status = "Draft" };
+        var mismatchedBaselineRun = validRun with { RunId = "RUN-MANUAL-WRONG-BASELINE", BaselineSnapshotId = "BASELINE-OTHER" };
+        var missingResponseRun = validRun with { RunId = "RUN-MANUAL-NO-RESPONSE", ResponseId = null };
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var preview = new ScenarioRunPreviewService(source);
+        var service = new MasterSettingsGovernanceService(
+            source,
+            preview,
+            new FixedScenarioRunLineageReader(validRun, unsavedRun, mismatchedBaselineRun, missingResponseRun),
+            databasePath);
+        var proposal = service.ProposeFromPreview(new ScenarioRunPreviewRequest(
+                12,
+                Parameters: new ScenarioRunParameterSet(
+                    SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500) })))
+            .Proposals
+            .First();
+
+        MasterSettingChangeRequest Manual(string runId) => proposal with
+        {
+            CreationMethod = "Manual",
+            SourceBaselineId = validRun.BaselineSnapshotId,
+            SourceScenarioRunId = runId
+        };
+
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual("RUN-MANUAL-MISSING"))),
+            "manual change with unknown run");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(unsavedRun.RunId))),
+            "manual change with non-saved run");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(mismatchedBaselineRun.RunId))),
+            "manual change with mismatched run baseline");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(missingResponseRun.RunId))),
+            "manual change with run missing frozen-comparison response");
+
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(validRun.RunId)));
+        AssertEqual("Manual", saved.Summary.CreationMethod, "validated manual change creation method");
+        AssertEqual(validRun.RunId, saved.Summary.SourceScenarioRunId, "validated manual change run lineage");
+        AssertEqual(validRun.BaselineSnapshotId, saved.Summary.SourceBaselineId, "validated manual change baseline lineage");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
 static void TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-derived-governance-{Guid.NewGuid():N}.db");
@@ -3928,6 +3989,95 @@ static void TestBaselineReferencesExposeRunsChangesAndActions()
     }
 }
 
+static void TestBaselineReferencesReturnAllLinksBeyondPublicPageLimit()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-complete-baseline-references-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "超过公开分页上限的完整引用"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparisonService, databasePath);
+        var comparisonRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            comparisonRequest, "RESP-LINEAGE-A", "完整血缘模板 run", null, "DDS&OP 计划员"));
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "完整血缘模板 change");
+        var coordination = new CoordinationLedgerService(databasePath);
+        var item = CreateLineageCoordinationItem(coordination, "完整血缘模板 item", savedRun.RunId, change.ChangeId);
+        CloneLineageRows(databasePath, savedRun.RunId, change.ChangeId, item.ItemId, 200);
+        var query = new BaselineLineageQueryService(runs, governance, coordination);
+
+        var result = query.Get(frozen.SnapshotId);
+
+        AssertEqual(201, result.ScenarioRuns.Count, "baseline references must not truncate scenario runs at public API limit");
+        AssertEqual(201, result.MasterSettingChanges.Count, "baseline references must not truncate changes at public API limit");
+        AssertEqual(201, result.CoordinationItems.Count, "baseline references must not truncate coordination at public API limit");
+        AssertEqual(200, runs.List(500, frozen.SnapshotId, null).Count, "public scenario-run API limit must remain 200");
+        AssertEqual(200, governance.ListChanges(500, frozen.SnapshotId, null).Count, "public governance API limit must remain 200");
+        AssertEqual(200, coordination.List(500, savedRun.RunId, change.ChangeId).Count, "public coordination API limit must remain 200");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestLineageFiltersUseIndexableParameterizedEqualityPredicates()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var cases = new[]
+    {
+        (
+            FileName: "ScenarioRunPersistenceService.cs",
+            Filters: new[]
+            {
+                (Variable: "baselineFilter", Parameter: "$baseline_snapshot_id", Predicate: "baseline_snapshot_id = $baseline_snapshot_id"),
+                (Variable: "externalScenarioFilter", Parameter: "$external_scenario_id", Predicate: "external_scenario_id = $external_scenario_id")
+            }),
+        (
+            FileName: "MasterSettingsGovernanceService.cs",
+            Filters: new[]
+            {
+                (Variable: "baselineFilter", Parameter: "$source_baseline_id", Predicate: "source_baseline_id = $source_baseline_id"),
+                (Variable: "scenarioRunFilter", Parameter: "$source_scenario_run_id", Predicate: "source_scenario_run_id = $source_scenario_run_id")
+            }),
+        (
+            FileName: "CoordinationLedgerService.cs",
+            Filters: new[]
+            {
+                (Variable: "scenarioRunFilter", Parameter: "$related_scenario_run_id", Predicate: "related_scenario_run_id = $related_scenario_run_id"),
+                (Variable: "masterSettingChangeFilter", Parameter: "$related_master_setting_change_id", Predicate: "related_master_setting_change_id = $related_master_setting_change_id")
+            })
+    };
+
+    foreach (var testCase in cases)
+    {
+        var path = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", testCase.FileName);
+        var source = File.ReadAllText(path);
+        AssertTrue(!source.Contains(" IS NULL OR ", StringComparison.Ordinal),
+            $"{testCase.FileName} must not hide lineage equality behind nullable OR predicates");
+        AssertTrue(source.Contains("string.Join(\" AND \", predicates)", StringComparison.Ordinal),
+            $"{testCase.FileName} should compose only the active fixed predicate fragments");
+
+        foreach (var filter in testCase.Filters)
+        {
+            AssertTrue(source.Contains($"if ({filter.Variable} is not null)", StringComparison.Ordinal),
+                $"{testCase.FileName} should include {filter.Predicate} only when its filter is present");
+            AssertTrue(source.Contains($"predicates.Add(\"{filter.Predicate}\")", StringComparison.Ordinal),
+                $"{testCase.FileName} should use the fixed equality predicate {filter.Predicate}");
+            AssertTrue(source.Contains($"AddWithValue(\"{filter.Parameter}\", {filter.Variable})", StringComparison.Ordinal),
+                $"{testCase.FileName} should bind {filter.Parameter} as a parameter value");
+            AssertTrue(!source.Contains($"{{{filter.Variable}}}", StringComparison.Ordinal),
+                $"{testCase.FileName} must not interpolate user-controlled filter values into SQL");
+        }
+    }
+}
+
 static void TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-non-automation-{Guid.NewGuid():N}.db");
@@ -4149,6 +4299,100 @@ static CoordinationItem CreateLineageCoordinationItem(
         "L1",
         "2026-08-07",
         "DDS&OP 计划员"));
+}
+
+static void CloneLineageRows(
+    string databasePath,
+    string templateRunId,
+    string templateChangeId,
+    string templateItemId,
+    int cloneCount)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var transaction = connection.BeginTransaction();
+
+    using var cloneRun = connection.CreateCommand();
+    cloneRun.Transaction = transaction;
+    cloneRun.CommandText = """
+        INSERT INTO scenario_runs (
+            run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
+            horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
+            service_level_percent, flow_index, average_inventory_value, peak_load_percent,
+            supply_gap, red_sku_count, replenishment_order_count,
+            baseline_snapshot_id, external_scenario_id, response_id)
+        SELECT
+            $new_run_id, $new_run_number, name, description, created_by, status, approval_status, created_at_utc,
+            horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
+            service_level_percent, flow_index, average_inventory_value, peak_load_percent,
+            supply_gap, red_sku_count, replenishment_order_count,
+            baseline_snapshot_id, external_scenario_id, response_id
+        FROM scenario_runs
+        WHERE run_id = $template_run_id;
+        """;
+    cloneRun.Parameters.AddWithValue("$new_run_id", string.Empty);
+    cloneRun.Parameters.AddWithValue("$new_run_number", string.Empty);
+    cloneRun.Parameters.AddWithValue("$template_run_id", templateRunId);
+
+    using var cloneChange = connection.CreateCommand();
+    cloneChange.Transaction = transaction;
+    cloneChange.CommandText = """
+        INSERT INTO master_setting_changes (
+            change_id, change_number, source_scenario_run_id, source_template_id,
+            setting_type, target, current_value, proposed_value, trigger, effective_window,
+            status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
+            source_baseline_id, creation_method, proposal_json, impact_json)
+        SELECT
+            $new_change_id, $new_change_number, $source_run_id, source_template_id,
+            setting_type, target, current_value, proposed_value, trigger, effective_window,
+            status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
+            source_baseline_id, creation_method, proposal_json, impact_json
+        FROM master_setting_changes
+        WHERE change_id = $template_change_id;
+        """;
+    cloneChange.Parameters.AddWithValue("$new_change_id", string.Empty);
+    cloneChange.Parameters.AddWithValue("$new_change_number", string.Empty);
+    cloneChange.Parameters.AddWithValue("$source_run_id", templateRunId);
+    cloneChange.Parameters.AddWithValue("$template_change_id", templateChangeId);
+
+    using var cloneItem = connection.CreateCommand();
+    cloneItem.Transaction = transaction;
+    cloneItem.CommandText = """
+        INSERT INTO coordination_items (
+            item_id, item_number, title, impact_objects_json, related_scenario_run_id,
+            related_master_setting_change_id, service_impact, inventory_impact, cash_impact,
+            risk_impact, decision_required, owner, due_date, escalation_level, next_review_date,
+            status, decision, decision_rationale, actual_outcome, created_by, created_at_utc, updated_at_utc)
+        SELECT
+            $new_item_id, $new_item_number, title, impact_objects_json, $related_run_id,
+            $related_change_id, service_impact, inventory_impact, cash_impact,
+            risk_impact, decision_required, owner, due_date, escalation_level, next_review_date,
+            status, decision, decision_rationale, actual_outcome, created_by, created_at_utc, updated_at_utc
+        FROM coordination_items
+        WHERE item_id = $template_item_id;
+        """;
+    cloneItem.Parameters.AddWithValue("$new_item_id", string.Empty);
+    cloneItem.Parameters.AddWithValue("$new_item_number", string.Empty);
+    cloneItem.Parameters.AddWithValue("$related_run_id", templateRunId);
+    cloneItem.Parameters.AddWithValue("$related_change_id", templateChangeId);
+    cloneItem.Parameters.AddWithValue("$template_item_id", templateItemId);
+
+    for (var index = 1; index <= cloneCount; index++)
+    {
+        cloneRun.Parameters["$new_run_id"].Value = $"RUN-LINEAGE-CLONE-{index:0000}";
+        cloneRun.Parameters["$new_run_number"].Value = $"SR-CLONE-{index:0000}";
+        cloneRun.ExecuteNonQuery();
+
+        cloneChange.Parameters["$new_change_id"].Value = $"CHANGE-LINEAGE-CLONE-{index:0000}";
+        cloneChange.Parameters["$new_change_number"].Value = $"MSG-CLONE-{index:0000}";
+        cloneChange.ExecuteNonQuery();
+
+        cloneItem.Parameters["$new_item_id"].Value = $"ITEM-LINEAGE-CLONE-{index:0000}";
+        cloneItem.Parameters["$new_item_number"].Value = $"ISSUE-CLONE-{index:0000}";
+        cloneItem.ExecuteNonQuery();
+    }
+
+    transaction.Commit();
 }
 
 static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()

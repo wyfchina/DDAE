@@ -35,11 +35,11 @@ public sealed class BaselineLineageQueryService : IBaselineLineageQueryService
         }
 
         var normalizedBaselineId = baselineSnapshotId.Trim();
-        var runs = _scenarioRuns.List(200, normalizedBaselineId, null);
-        var changes = _masterSettingsGovernance.ListChanges(200, normalizedBaselineId, null);
+        var runs = _scenarioRuns.ListByLineage(normalizedBaselineId, null);
+        var changes = _masterSettingsGovernance.ListChangesByLineage(normalizedBaselineId, null);
         var coordinationItems = runs
-            .SelectMany(run => _coordinationLedger.List(200, run.RunId, null))
-            .Concat(changes.SelectMany(change => _coordinationLedger.List(200, null, change.ChangeId)))
+            .SelectMany(run => _coordinationLedger.ListByLineage(run.RunId, null))
+            .Concat(changes.SelectMany(change => _coordinationLedger.ListByLineage(null, change.ChangeId)))
             .GroupBy(item => item.ItemId, StringComparer.Ordinal)
             .Select(group => group.First())
             .OrderBy(item => item.CreatedAtUtc, StringComparer.Ordinal)

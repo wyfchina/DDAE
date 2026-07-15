@@ -142,20 +142,58 @@ public sealed class CoordinationLedgerService
         string? relatedScenarioRunId = null,
         string? relatedMasterSettingChangeId = null)
     {
+        return QueryList(
+            Math.Clamp(limit, 1, 200),
+            relatedScenarioRunId,
+            relatedMasterSettingChangeId);
+    }
+
+    internal IReadOnlyList<CoordinationItem> ListByLineage(
+        string? relatedScenarioRunId = null,
+        string? relatedMasterSettingChangeId = null) =>
+        QueryList(null, relatedScenarioRunId, relatedMasterSettingChangeId);
+
+    private IReadOnlyList<CoordinationItem> QueryList(
+        int? limit,
+        string? relatedScenarioRunId,
+        string? relatedMasterSettingChangeId)
+    {
         var scenarioRunFilter = Normalize(relatedScenarioRunId);
         var masterSettingChangeFilter = Normalize(relatedMasterSettingChangeId);
+        var predicates = new List<string>();
+        if (scenarioRunFilter is not null)
+        {
+            predicates.Add("related_scenario_run_id = $related_scenario_run_id");
+        }
+        if (masterSettingChangeFilter is not null)
+        {
+            predicates.Add("related_master_setting_change_id = $related_master_setting_change_id");
+        }
+
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
+        var whereClause = predicates.Count == 0
+            ? string.Empty
+            : $"WHERE {string.Join(" AND ", predicates)}";
+        var limitClause = limit.HasValue ? "LIMIT $limit" : string.Empty;
         command.CommandText = $"""
             {SelectItemSql}
-            WHERE ($related_scenario_run_id IS NULL OR related_scenario_run_id = $related_scenario_run_id)
-              AND ($related_master_setting_change_id IS NULL OR related_master_setting_change_id = $related_master_setting_change_id)
+            {whereClause}
             ORDER BY created_at_utc DESC
-            LIMIT $limit;
+            {limitClause};
             """;
-        command.Parameters.AddWithValue("$related_scenario_run_id", (object?)scenarioRunFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$related_master_setting_change_id", (object?)masterSettingChangeFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+        if (scenarioRunFilter is not null)
+        {
+            command.Parameters.AddWithValue("$related_scenario_run_id", scenarioRunFilter);
+        }
+        if (masterSettingChangeFilter is not null)
+        {
+            command.Parameters.AddWithValue("$related_master_setting_change_id", masterSettingChangeFilter);
+        }
+        if (limit.HasValue)
+        {
+            command.Parameters.AddWithValue("$limit", limit.Value);
+        }
         using var reader = command.ExecuteReader();
         var results = new List<CoordinationItem>();
         while (reader.Read())

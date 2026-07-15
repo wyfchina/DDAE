@@ -192,24 +192,59 @@ public sealed class MasterSettingsGovernanceService
         string? sourceScenarioRunId = null)
     {
         var boundedLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        return QueryChanges(boundedLimit, sourceBaselineId, sourceScenarioRunId);
+    }
+
+    internal IReadOnlyList<MasterSettingChangeSummary> ListChangesByLineage(
+        string? sourceBaselineId = null,
+        string? sourceScenarioRunId = null) =>
+        QueryChanges(null, sourceBaselineId, sourceScenarioRunId);
+
+    private IReadOnlyList<MasterSettingChangeSummary> QueryChanges(
+        int? limit,
+        string? sourceBaselineId,
+        string? sourceScenarioRunId)
+    {
         var baselineFilter = NormalizeFilter(sourceBaselineId);
         var scenarioRunFilter = NormalizeFilter(sourceScenarioRunId);
+        var predicates = new List<string>();
+        if (baselineFilter is not null)
+        {
+            predicates.Add("source_baseline_id = $source_baseline_id");
+        }
+        if (scenarioRunFilter is not null)
+        {
+            predicates.Add("source_scenario_run_id = $source_scenario_run_id");
+        }
+
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        var whereClause = predicates.Count == 0
+            ? string.Empty
+            : $"WHERE {string.Join(" AND ", predicates)}";
+        var limitClause = limit.HasValue ? "LIMIT $limit" : string.Empty;
+        command.CommandText = $"""
             SELECT change_id, change_number, source_scenario_run_id, source_template_id,
                    setting_type, target, current_value, proposed_value, trigger, effective_window,
                    status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
                    source_baseline_id, creation_method
             FROM master_setting_changes
-            WHERE ($source_baseline_id IS NULL OR source_baseline_id = $source_baseline_id)
-              AND ($source_scenario_run_id IS NULL OR source_scenario_run_id = $source_scenario_run_id)
+            {whereClause}
             ORDER BY created_at_utc DESC
-            LIMIT $limit;
+            {limitClause};
             """;
-        command.Parameters.AddWithValue("$source_baseline_id", (object?)baselineFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$source_scenario_run_id", (object?)scenarioRunFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$limit", boundedLimit);
+        if (baselineFilter is not null)
+        {
+            command.Parameters.AddWithValue("$source_baseline_id", baselineFilter);
+        }
+        if (scenarioRunFilter is not null)
+        {
+            command.Parameters.AddWithValue("$source_scenario_run_id", scenarioRunFilter);
+        }
+        if (limit.HasValue)
+        {
+            command.Parameters.AddWithValue("$limit", limit.Value);
+        }
 
         using var reader = command.ExecuteReader();
         var results = new List<MasterSettingChangeSummary>();
@@ -687,22 +722,11 @@ public sealed class MasterSettingsGovernanceService
             {
                 throw new ArgumentException("场景派生变更必须关联已保存的冻结比较 run。", nameof(change));
             }
+        }
 
-            var run = _scenarioRunLineageReader?.GetSummary(change.SourceScenarioRunId)
-                ?? throw new ArgumentException("场景派生变更关联的 run 不存在。", nameof(change));
-            if (!string.Equals(run.Status, "Saved", StringComparison.Ordinal))
-            {
-                throw new ArgumentException("场景派生变更必须关联已保存的 run。", nameof(change));
-            }
-            if (string.IsNullOrWhiteSpace(run.BaselineSnapshotId)
-                || !string.Equals(run.BaselineSnapshotId, change.SourceBaselineId, StringComparison.Ordinal))
-            {
-                throw new ArgumentException("场景派生变更的基线必须与已保存 run 一致。", nameof(change));
-            }
-            if (string.IsNullOrWhiteSpace(run.ResponseId))
-            {
-                throw new ArgumentException("场景派生变更必须来自已保存的冻结比较响应。", nameof(change));
-            }
+        if (!string.IsNullOrWhiteSpace(change.SourceScenarioRunId))
+        {
+            ValidateLinkedScenarioRun(change);
         }
 
         return change with
@@ -711,6 +735,25 @@ public sealed class MasterSettingsGovernanceService
             SourceScenarioRunId = string.IsNullOrWhiteSpace(change.SourceScenarioRunId) ? null : change.SourceScenarioRunId.Trim(),
             Status = "Proposed"
         };
+    }
+
+    private void ValidateLinkedScenarioRun(MasterSettingChangeRequest change)
+    {
+        var run = _scenarioRunLineageReader?.GetSummary(change.SourceScenarioRunId!.Trim())
+            ?? throw new ArgumentException("主设置变更关联的 run 不存在。", nameof(change));
+        if (!string.Equals(run.Status, "Saved", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("主设置变更必须关联已保存的 run。", nameof(change));
+        }
+        if (string.IsNullOrWhiteSpace(run.BaselineSnapshotId)
+            || !string.Equals(run.BaselineSnapshotId, change.SourceBaselineId!.Trim(), StringComparison.Ordinal))
+        {
+            throw new ArgumentException("主设置变更的基线必须与已保存 run 一致。", nameof(change));
+        }
+        if (string.IsNullOrWhiteSpace(run.ResponseId))
+        {
+            throw new ArgumentException("主设置变更关联的 run 必须来自已保存的冻结比较响应。", nameof(change));
+        }
     }
 
     private ScenarioRunSummary RequireFrozenComparisonRun(

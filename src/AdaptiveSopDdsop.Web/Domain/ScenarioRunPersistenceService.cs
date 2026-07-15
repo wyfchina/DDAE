@@ -169,24 +169,59 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         string? externalScenarioId = null)
     {
         var boundedLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        return QueryList(boundedLimit, baselineSnapshotId, externalScenarioId);
+    }
+
+    internal IReadOnlyList<ScenarioRunSummary> ListByLineage(
+        string? baselineSnapshotId = null,
+        string? externalScenarioId = null) =>
+        QueryList(null, baselineSnapshotId, externalScenarioId);
+
+    private IReadOnlyList<ScenarioRunSummary> QueryList(
+        int? limit,
+        string? baselineSnapshotId,
+        string? externalScenarioId)
+    {
         var baselineFilter = NormalizeFilter(baselineSnapshotId);
         var externalScenarioFilter = NormalizeFilter(externalScenarioId);
+        var predicates = new List<string>();
+        if (baselineFilter is not null)
+        {
+            predicates.Add("baseline_snapshot_id = $baseline_snapshot_id");
+        }
+        if (externalScenarioFilter is not null)
+        {
+            predicates.Add("external_scenario_id = $external_scenario_id");
+        }
+
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        var whereClause = predicates.Count == 0
+            ? string.Empty
+            : $"WHERE {string.Join(" AND ", predicates)}";
+        var limitClause = limit.HasValue ? "LIMIT $limit" : string.Empty;
+        command.CommandText = $"""
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
                    baseline_snapshot_id, external_scenario_id, response_id
             FROM scenario_runs
-            WHERE ($baseline_snapshot_id IS NULL OR baseline_snapshot_id = $baseline_snapshot_id)
-              AND ($external_scenario_id IS NULL OR external_scenario_id = $external_scenario_id)
+            {whereClause}
             ORDER BY created_at_utc DESC
-            LIMIT $limit;
+            {limitClause};
             """;
-        command.Parameters.AddWithValue("$baseline_snapshot_id", (object?)baselineFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$external_scenario_id", (object?)externalScenarioFilter ?? DBNull.Value);
-        command.Parameters.AddWithValue("$limit", boundedLimit);
+        if (baselineFilter is not null)
+        {
+            command.Parameters.AddWithValue("$baseline_snapshot_id", baselineFilter);
+        }
+        if (externalScenarioFilter is not null)
+        {
+            command.Parameters.AddWithValue("$external_scenario_id", externalScenarioFilter);
+        }
+        if (limit.HasValue)
+        {
+            command.Parameters.AddWithValue("$limit", limit.Value);
+        }
 
         using var reader = command.ExecuteReader();
         var results = new List<ScenarioRunSummary>();
