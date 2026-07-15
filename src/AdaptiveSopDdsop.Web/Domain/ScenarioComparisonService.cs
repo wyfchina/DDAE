@@ -77,6 +77,18 @@ public sealed class ScenarioComparisonService
             throw new ArgumentException("场景来源缺失；仅允许人工录入或演示模板", nameof(request));
         }
         _assumptionSource.Validate(request.ExternalScenario.Metadata);
+        if (string.Equals(
+                request.ExternalScenario.Metadata.SourceKind?.Trim(),
+                "DemoFixture",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var template = _assumptionSource.GetTemplate(request.ExternalScenario.Metadata.TemplateId ?? string.Empty)
+                ?? throw new ArgumentException("演示模板不存在。", nameof(request));
+            if (!HasCanonicalDemoPayload(request.ExternalScenario, template.ExternalScenario))
+            {
+                throw new ArgumentException("演示模板业务载荷与规范模板不一致。", nameof(request));
+            }
+        }
         var responseOptions = request.ResponseOptions ?? Array.Empty<ResponseConfiguration>();
         if (responseOptions.Any(option => string.IsNullOrWhiteSpace(option.ResponseId) || string.IsNullOrWhiteSpace(option.Name)))
         {
@@ -136,6 +148,29 @@ public sealed class ScenarioComparisonService
             externalScenarioId,
             preview,
             ProtectionBreachAnalyzer.Analyze(preview.Scenario));
+    }
+
+    private static bool HasCanonicalDemoPayload(
+        ExternalScenarioDefinition candidate,
+        ExternalScenarioDefinition canonical)
+    {
+        return string.Equals(candidate.ScenarioId, canonical.ScenarioId, StringComparison.Ordinal)
+            && string.Equals(candidate.Name, canonical.Name, StringComparison.Ordinal)
+            && SequenceEqual(candidate.DemandChanges, canonical.DemandChanges)
+            && SequenceEqual(candidate.SupplyRisks, canonical.SupplyRisks)
+            && SequenceEqual(candidate.CapacityLosses, canonical.CapacityLosses)
+            && SequenceEqual(candidate.KnownEvents, canonical.KnownEvents)
+            && SequenceEqual(candidate.TimeDelays, canonical.TimeDelays);
+    }
+
+    private static bool SequenceEqual<T>(IReadOnlyList<T>? candidate, IReadOnlyList<T>? canonical)
+    {
+        if (candidate is null || canonical is null)
+        {
+            return candidate is null && canonical is null;
+        }
+
+        return candidate.SequenceEqual(canonical);
     }
 }
 

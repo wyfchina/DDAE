@@ -31,6 +31,11 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline incrementally migrates legacy audit payload evidence", TestCurrentBaselineMigratesLegacyAuditPayloadColumn),
     ("Scenario assumption source provides only manual and demo inputs", TestScenarioAssumptionSourceProvidesOnlyManualAndDemoInputs),
     ("Scenario assumption source rejects external protocol sources", TestScenarioAssumptionSourceRejectsExternalProtocolSources),
+    ("Scenario assumption source rejects invalid manual dates", TestScenarioAssumptionSourceRejectsInvalidManualDates),
+    ("Scenario comparison rejects tampered demo fixture payloads", TestScenarioComparisonRejectsTamperedDemoFixturePayloads),
+    ("Scenario demo template demand disturbance changes backend results", TestScenarioDemoTemplateDemandDisturbanceChangesBackendResults),
+    ("Scenario demo template supply disturbance changes backend results", TestScenarioDemoTemplateSupplyDisturbanceChangesBackendResults),
+    ("Scenario demo template capacity disturbance changes backend results", TestScenarioDemoTemplateCapacityDisturbanceChangesBackendResults),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
@@ -1354,6 +1359,282 @@ static void TestScenarioAssumptionSourceRejectsExternalProtocolSources()
         }
 
         AssertTrue(rejected, $"source kind {sourceKind} should be rejected");
+    }
+}
+
+static void TestScenarioAssumptionSourceRejectsInvalidManualDates()
+{
+    var source = new SeedScenarioAssumptionSource();
+    var valid = new ScenarioAssumptionMetadata(
+        "Manual",
+        null,
+        null,
+        "DDS&OP 计划员",
+        "2026-07-15T08:00:00Z",
+        "2026-07-16",
+        "2026-09-30",
+        "客户会议确认的人工场景假设",
+        "人工录入：客户会议纪要");
+    source.Validate(valid);
+
+    var invalidCases = new (string Name, ScenarioAssumptionMetadata Metadata)[]
+    {
+        ("unparseable recorded time", valid with { RecordedAtUtc = "not-a-time" }),
+        ("non-UTC recorded offset", valid with { RecordedAtUtc = "2026-07-15T08:00:00+08:00" }),
+        ("invalid effective from", valid with { EffectiveFrom = "2026-02-30" }),
+        ("invalid effective through", valid with { EffectiveThrough = "2026-09-31" }),
+        ("non-canonical effective date", valid with { EffectiveFrom = "2026/07/16" }),
+        ("inverted effective range", valid with { EffectiveFrom = "2026-10-01", EffectiveThrough = "2026-09-30" })
+    };
+
+    foreach (var invalidCase in invalidCases)
+    {
+        var rejected = false;
+        try
+        {
+            source.Validate(invalidCase.Metadata);
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        AssertTrue(rejected, $"manual metadata should reject {invalidCase.Name}");
+    }
+}
+
+static void TestScenarioComparisonRejectsTamperedDemoFixturePayloads()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-demo-provenance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "演示模板来源校验"));
+        var source = new SeedScenarioAssumptionSource();
+        var service = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(validationData)),
+            source);
+        var template = source.GetTemplates().Single();
+        var canonicalScenario = template.ExternalScenario with
+        {
+            Metadata = template.ExternalScenario.Metadata! with { SourceKind = " demofixture " }
+        };
+
+        var canonical = service.Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            canonicalScenario,
+            Array.Empty<ResponseConfiguration>(),
+            12));
+        AssertEqual(template.ExternalScenario.ScenarioId, canonical.ExternalScenario.ScenarioId, "canonical demo fixture scenario ID");
+
+        var mutations = new (string Name, Func<ExternalScenarioDefinition, ExternalScenarioDefinition> Apply)[]
+        {
+            ("scenario ID", scenario => scenario with { ScenarioId = $"{scenario.ScenarioId}-TAMPERED" }),
+            ("scenario name", scenario => scenario with { Name = $"{scenario.Name}-TAMPERED" }),
+            ("demand changes", scenario => scenario with
+            {
+                DemandChanges = (scenario.DemandChanges ?? Array.Empty<ExternalDemandChange>())
+                    .Append(new ExternalDemandChange(null, "星载电子", 1, 2, 9m, "篡改需求"))
+                    .ToList()
+            }),
+            ("supply risks", scenario => scenario with
+            {
+                SupplyRisks = (scenario.SupplyRisks ?? Array.Empty<ExternalSupplyRisk>())
+                    .Append(new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 1, 2, 0.1m, "篡改供应"))
+                    .ToList()
+            }),
+            ("capacity losses", scenario => scenario with
+            {
+                CapacityLosses = (scenario.CapacityLosses ?? Array.Empty<ExternalCapacityLoss>())
+                    .Append(new ExternalCapacityLoss("RES-TVAC", 1, 2, 0.1m, "篡改能力"))
+                    .ToList()
+            }),
+            ("known events", scenario => scenario with
+            {
+                KnownEvents = (scenario.KnownEvents ?? Array.Empty<ExternalKnownEvent>())
+                    .Append(new ExternalKnownEvent("EVENT-TAMPERED", "篡改事件", 1, 2))
+                    .ToList()
+            }),
+            ("time delays", scenario => scenario with
+            {
+                TimeDelays = (scenario.TimeDelays ?? Array.Empty<ExternalTimeDelay>())
+                    .Append(new ExternalTimeDelay("TIME-TAMPERED", 1, 2, 5m, "篡改时间事件"))
+                    .ToList()
+            })
+        };
+
+        foreach (var mutation in mutations)
+        {
+            var rejected = false;
+            try
+            {
+                service.Compare(new ScenarioComparisonRequest(
+                    frozen.SnapshotId,
+                    mutation.Apply(canonicalScenario),
+                    Array.Empty<ResponseConfiguration>(),
+                    12));
+            }
+            catch (ArgumentException)
+            {
+                rejected = true;
+            }
+
+            AssertTrue(rejected, $"demo fixture should reject tampered {mutation.Name}");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioDemoTemplateDemandDisturbanceChangesBackendResults()
+{
+    var comparison = CreateScenarioDemoTemplateEffectComparison("Demand");
+    var change = comparison.Template.ExternalScenario.DemandChanges?
+        .SingleOrDefault(item => item.Family == "星载电子");
+    AssertTrue(change is not null, "demo template demand change should target the real 星载电子 family");
+    var demandChange = change!;
+    var familySkus = SeedData.Create().Skus
+        .Where(item => item.Family == "星载电子")
+        .Select(item => item.Sku)
+        .ToHashSet(StringComparer.Ordinal);
+
+    var controlDemand = comparison.Control.NoResponse.Preview.Scenario.Plan.BufferProjections
+        .Where(item => familySkus.Contains(item.Sku) && item.Week >= demandChange.StartWeek && item.Week <= demandChange.EndWeek)
+        .Sum(item => item.Demand);
+    var disturbedDemand = comparison.Disturbed.NoResponse.Preview.Scenario.Plan.BufferProjections
+        .Where(item => familySkus.Contains(item.Sku) && item.Week >= demandChange.StartWeek && item.Week <= demandChange.EndWeek)
+        .Sum(item => item.Demand);
+
+    AssertTrue(controlDemand > 0m, "frozen control should contain 星载电子 demand");
+    AssertTrue(disturbedDemand > controlDemand, "demo demand disturbance should increase backend family demand");
+}
+
+static void TestScenarioDemoTemplateSupplyDisturbanceChangesBackendResults()
+{
+    var comparison = CreateScenarioDemoTemplateEffectComparison("Supply");
+    var risk = comparison.Template.ExternalScenario.SupplyRisks?
+        .SingleOrDefault(item => item.Supplier == "Microchip Space" && item.MaterialFamily == "进口空间级 FPGA");
+    AssertTrue(risk is not null, "demo template supply risk should target the real Microchip Space / 进口空间级 FPGA pair");
+    var supplyRisk = risk!;
+
+    var controlCells = comparison.Control.NoResponse.Preview.Scenario.Constraints.SupplyCells
+        .Where(item => item.Supplier == supplyRisk.Supplier
+            && item.MaterialFamily == supplyRisk.MaterialFamily
+            && item.Week >= supplyRisk.StartWeek
+            && item.Week <= supplyRisk.EndWeek)
+        .ToList();
+    var disturbedCells = comparison.Disturbed.NoResponse.Preview.Scenario.Constraints.SupplyCells
+        .Where(item => item.Supplier == supplyRisk.Supplier
+            && item.MaterialFamily == supplyRisk.MaterialFamily
+            && item.Week >= supplyRisk.StartWeek
+            && item.Week <= supplyRisk.EndWeek)
+        .ToList();
+
+    AssertTrue(controlCells.Count > 0 && disturbedCells.Count == controlCells.Count, "frozen comparison should expose the real supplier/material weekly cells");
+    AssertTrue(
+        disturbedCells.Sum(item => item.ConstrainedAvailable) < controlCells.Sum(item => item.ConstrainedAvailable),
+        "demo supply disturbance should reduce backend constrained supplier capacity");
+}
+
+static void TestScenarioDemoTemplateCapacityDisturbanceChangesBackendResults()
+{
+    var comparison = CreateScenarioDemoTemplateEffectComparison("Capacity");
+    var loss = comparison.Template.ExternalScenario.CapacityLosses?
+        .SingleOrDefault(item => item.ResourceCode == "RES-TVAC");
+    AssertTrue(loss is not null, "demo template capacity loss should target the real RES-TVAC resource");
+    var capacityLoss = loss!;
+
+    var controlCells = comparison.Control.NoResponse.Preview.Scenario.Constraints.CapacityCells
+        .Where(item => item.ResourceCode == capacityLoss.ResourceCode
+            && item.Week >= capacityLoss.StartWeek
+            && item.Week <= capacityLoss.EndWeek)
+        .ToList();
+    var disturbedCells = comparison.Disturbed.NoResponse.Preview.Scenario.Constraints.CapacityCells
+        .Where(item => item.ResourceCode == capacityLoss.ResourceCode
+            && item.Week >= capacityLoss.StartWeek
+            && item.Week <= capacityLoss.EndWeek)
+        .ToList();
+
+    AssertTrue(controlCells.Count > 0 && disturbedCells.Count == controlCells.Count, "frozen comparison should expose the real RES-TVAC weekly cells");
+    AssertTrue(
+        disturbedCells.Sum(item => item.ConstrainedAvailable) < controlCells.Sum(item => item.ConstrainedAvailable),
+        "demo capacity disturbance should reduce backend constrained resource capacity");
+}
+
+static (ScenarioAssumptionTemplate Template, ScenarioComparisonResult Control, ScenarioComparisonResult Disturbed)
+    CreateScenarioDemoTemplateEffectComparison(string disturbanceKind)
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-demo-effects-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "演示模板效果验证"));
+        var source = new SeedScenarioAssumptionSource();
+        var service = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(validationData)),
+            source);
+        var template = source.GetTemplates().Single();
+        var controlScenario = new ExternalScenarioDefinition(
+            "EXT-NO-DISTURBANCE",
+            "无扰动对照",
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual",
+                null,
+                null,
+                "DDS&OP 计划员",
+                "2026-07-15T08:00:00Z",
+                "2026-07-16",
+                "2026-09-30",
+                "用于验证内置模板的后端业务效果",
+                "人工录入：无扰动对照"));
+        var control = service.Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            controlScenario,
+            Array.Empty<ResponseConfiguration>(),
+            12));
+        var manualMetadata = controlScenario.Metadata! with
+        {
+            Rationale = $"隔离验证模板 {disturbanceKind} 业务扰动",
+            EvidenceLabel = $"人工录入：模板 {disturbanceKind} 隔离测试"
+        };
+        var isolatedScenario = disturbanceKind switch
+        {
+            "Demand" => new ExternalScenarioDefinition(
+                "EXT-MANUAL-DEMAND-ONLY",
+                "仅需求扰动",
+                DemandChanges: template.ExternalScenario.DemandChanges,
+                Metadata: manualMetadata),
+            "Supply" => new ExternalScenarioDefinition(
+                "EXT-MANUAL-SUPPLY-ONLY",
+                "仅供应扰动",
+                SupplyRisks: template.ExternalScenario.SupplyRisks,
+                Metadata: manualMetadata),
+            "Capacity" => new ExternalScenarioDefinition(
+                "EXT-MANUAL-CAPACITY-ONLY",
+                "仅能力扰动",
+                CapacityLosses: template.ExternalScenario.CapacityLosses,
+                Metadata: manualMetadata),
+            _ => throw new ArgumentException("unknown disturbance kind", nameof(disturbanceKind))
+        };
+        var disturbed = service.Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            isolatedScenario,
+            Array.Empty<ResponseConfiguration>(),
+            12));
+
+        return (template, control, disturbed);
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
     }
 }
 

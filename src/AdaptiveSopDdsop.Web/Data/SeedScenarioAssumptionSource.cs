@@ -1,4 +1,5 @@
 using AdaptiveSopDdsop.Web.Domain;
+using System.Globalization;
 
 namespace AdaptiveSopDdsop.Web.Data;
 
@@ -27,15 +28,15 @@ public sealed class SeedScenarioAssumptionSource : IScenarioAssumptionSource
             "内置演示：需求上升与供应能力风险",
             DemandChanges: new[]
             {
-                new ExternalDemandChange(null, "精益液压件", 2, 6, 1.20m, "内置演示需求上升")
+                new ExternalDemandChange(null, "星载电子", 2, 6, 1.35m, "内置演示星载电子需求上升")
             },
             SupplyRisks: new[]
             {
-                new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.75m, "内置演示供应风险")
+                new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 3, 8, 0.45m, "内置演示进口 FPGA 供应风险")
             },
             CapacityLosses: new[]
             {
-                new ExternalCapacityLoss("R-MIX", 3, 6, 0.85m, "内置演示能力损失")
+                new ExternalCapacityLoss("RES-TVAC", 3, 6, 0.50m, "内置演示热真空能力损失")
             },
             KnownEvents: new[]
             {
@@ -93,6 +94,38 @@ public sealed class SeedScenarioAssumptionSource : IScenarioAssumptionSource
         Require(metadata.EffectiveThrough, "人工场景必须提供有效期结束日期。", metadata);
         Require(metadata.Rationale, "人工场景必须提供理由。", metadata);
         Require(metadata.EvidenceLabel, "人工场景必须提供证据标签。", metadata);
+
+        if (!DateTimeOffset.TryParse(
+                metadata.RecordedAtUtc,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out var recordedAt)
+            || recordedAt.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("人工场景记录时间必须是可解析的 UTC 时间。", nameof(metadata));
+        }
+        if (!DateOnly.TryParseExact(
+                metadata.EffectiveFrom,
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var effectiveFrom))
+        {
+            throw new ArgumentException("人工场景有效期开始日期必须使用 yyyy-MM-dd。", nameof(metadata));
+        }
+        if (!DateOnly.TryParseExact(
+                metadata.EffectiveThrough,
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var effectiveThrough))
+        {
+            throw new ArgumentException("人工场景有效期结束日期必须使用 yyyy-MM-dd。", nameof(metadata));
+        }
+        if (effectiveFrom > effectiveThrough)
+        {
+            throw new ArgumentException("人工场景有效期开始日期不能晚于结束日期。", nameof(metadata));
+        }
     }
 
     private void ValidateDemoFixture(ScenarioAssumptionMetadata metadata)
