@@ -153,7 +153,7 @@ public sealed class ExceptionWorkspaceService
         var presets = new List<ExceptionScenarioPreset>();
         if (signals.Any(item => item.Reason == "DemandSpike"))
         {
-            presets.Add(new("TPL-PREBUILD-PEAK", "需求尖峰提前建库", "用 Pre-build 测试把尖峰补货压力前移。"));
+            presets.Add(new("TPL-PREBUILD-PEAK", "需求尖峰提前建库", "用提前建库测试把尖峰补货压力前移。"));
         }
 
         if (signals.Any(item => item.Reason is "ServiceLoss" or "BufferRisk"))

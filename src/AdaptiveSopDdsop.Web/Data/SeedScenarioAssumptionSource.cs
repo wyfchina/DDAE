@@ -6,7 +6,7 @@ namespace AdaptiveSopDdsop.Web.Data;
 public sealed class SeedScenarioAssumptionSource : IScenarioAssumptionSource
 {
     private const string DemoTemplateId = "DDAE-DEMO-SUPPLY-CAPACITY-001";
-    private const string DemoTemplateVersion = "1.0.0";
+    private const string DemoTemplateVersion = "1.1.0";
     private const string DemoEvidenceLabel = "DDAE 内置演示假设；非外部事实输入";
 
     private readonly IReadOnlyList<ScenarioAssumptionTemplate> _templates;
@@ -32,7 +32,7 @@ public sealed class SeedScenarioAssumptionSource : IScenarioAssumptionSource
             },
             SupplyRisks: new[]
             {
-                new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 3, 8, 0.45m, "内置演示进口 FPGA 供应风险")
+                new ExternalSupplyRisk("Microchip Space", "进口空间级 FPGA", 3, 8, 0.05m, "内置演示进口 FPGA 供应严重受限")
             },
             CapacityLosses: new[]
             {

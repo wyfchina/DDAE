@@ -17,12 +17,12 @@ public interface ILocalDatabaseRepairService
 
 public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
 {
-    private const string RepairId = "2026-07-15-smoke-mojibake-v1";
+    private const string RepairId = "2026-07-15-known-local-smoke-repair-v1";
     private const string FirstCoordinationItemId = "09944ca75dfa4efab765d1481c860709";
     private const string SecondCoordinationItemId = "8aead2083210423db98e9f35924c7f8e";
     private const string TargetSnapshotNumber = "BASE-20260714-002";
-    private const string OldCreatedBy = "Codex ??";
-    private const string RepairedCreatedBy = "Codex 烟测";
+    private const string OldSnapshotCreatedBy = "Codex ??";
+    private const string RepairedSnapshotCreatedBy = "Codex 烟测";
     private const string SnapshotNoUpdateTriggerName = "trg_current_baseline_snapshots_no_update";
 
     private readonly string _databasePath;
@@ -62,22 +62,16 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
         var (triggerName, triggerSql) = ReadSnapshotNoUpdateTrigger(connection, transaction);
 
         DropSnapshotNoUpdateTrigger(connection, transaction, triggerName);
-        var repairedBaselines = RepairTargetBaseline(connection, transaction);
-        if (repairedBaselines > 1)
-        {
-            throw new InvalidOperationException("Known local baseline repair matched more than one row.");
-        }
+        var repairedBaselines = RepairTargetBaselines(connection, transaction);
         RestoreSnapshotNoUpdateTrigger(connection, transaction, triggerSql);
 
-        var addedBaselineAuditEvents = repairedBaselines == 1
-            ? AppendBaselineRepairAudit(connection, transaction)
-            : 0;
+        var addedBaselineAuditEvents = AppendBaselineRepairAudits(connection, transaction, repairedBaselines);
         InsertJournal(
             connection,
             transaction,
             deletedCoordinationItems,
             deletedCoordinationAuditEvents,
-            repairedBaselines,
+            repairedBaselines.Count,
             addedBaselineAuditEvents);
         transaction.Commit();
 
@@ -86,7 +80,7 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
             false,
             deletedCoordinationItems,
             deletedCoordinationAuditEvents,
-            repairedBaselines,
+            repairedBaselines.Count,
             addedBaselineAuditEvents);
     }
 
@@ -196,7 +190,17 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
         command.ExecuteNonQuery();
     }
 
-    private static int RepairTargetBaseline(SqliteConnection connection, SqliteTransaction transaction)
+    private static IReadOnlyList<string> RepairTargetBaselines(
+        SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        var snapshotId = RepairTargetBaseline(connection, transaction);
+        return snapshotId is null ? Array.Empty<string>() : new[] { snapshotId };
+    }
+
+    private static string? RepairTargetBaseline(
+        SqliteConnection connection,
+        SqliteTransaction transaction)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -206,10 +210,31 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
             WHERE snapshot_number = $snapshot_number
               AND created_by = $old_created_by;
             """;
-        command.Parameters.AddWithValue("$repaired_created_by", RepairedCreatedBy);
+        command.Parameters.AddWithValue("$repaired_created_by", RepairedSnapshotCreatedBy);
         command.Parameters.AddWithValue("$snapshot_number", TargetSnapshotNumber);
-        command.Parameters.AddWithValue("$old_created_by", OldCreatedBy);
-        return command.ExecuteNonQuery();
+        command.Parameters.AddWithValue("$old_created_by", OldSnapshotCreatedBy);
+        var repaired = command.ExecuteNonQuery();
+        if (repaired > 1)
+        {
+            throw new InvalidOperationException($"Known local baseline repair matched more than one row for {TargetSnapshotNumber}.");
+        }
+        if (repaired == 0)
+        {
+            return null;
+        }
+
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = """
+            SELECT snapshot_id
+            FROM current_baseline_snapshots
+            WHERE snapshot_number = $snapshot_number
+              AND created_by = $repaired_created_by;
+            """;
+        read.Parameters.AddWithValue("$snapshot_number", TargetSnapshotNumber);
+        read.Parameters.AddWithValue("$repaired_created_by", RepairedSnapshotCreatedBy);
+        return Convert.ToString(read.ExecuteScalar())
+            ?? throw new InvalidOperationException($"Repaired baseline {TargetSnapshotNumber} could not be read.");
     }
 
     private static void RestoreSnapshotNoUpdateTrigger(
@@ -223,24 +248,24 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
         command.ExecuteNonQuery();
     }
 
-    private static int AppendBaselineRepairAudit(SqliteConnection connection, SqliteTransaction transaction)
+    private static int AppendBaselineRepairAudits(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<string> snapshotIds)
     {
-        string snapshotId;
-        using (var snapshotCommand = connection.CreateCommand())
+        var added = 0;
+        foreach (var snapshotId in snapshotIds)
         {
-            snapshotCommand.Transaction = transaction;
-            snapshotCommand.CommandText = """
-                SELECT snapshot_id
-                FROM current_baseline_snapshots
-                WHERE snapshot_number = $snapshot_number
-                  AND created_by = $repaired_created_by;
-                """;
-            snapshotCommand.Parameters.AddWithValue("$snapshot_number", TargetSnapshotNumber);
-            snapshotCommand.Parameters.AddWithValue("$repaired_created_by", RepairedCreatedBy);
-            snapshotId = Convert.ToString(snapshotCommand.ExecuteScalar())
-                ?? throw new InvalidOperationException("Repaired baseline snapshot could not be read.");
+            added += AppendBaselineRepairAudit(connection, transaction, snapshotId);
         }
+        return added;
+    }
 
+    private static int AppendBaselineRepairAudit(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string snapshotId)
+    {
         long sequence;
         using (var sequenceCommand = connection.CreateCommand())
         {
@@ -260,7 +285,7 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
             INSERT INTO current_baseline_audit_events (
                 event_id, snapshot_id, sequence, event_type, message, created_at_utc, payload_json)
             VALUES (
-                $event_id, $snapshot_id, $sequence, $event_type, $message, $created_at_utc, NULL);
+                $event_id, $snapshot_id, $sequence, $event_type, $message, $created_at_utc, $payload_json);
             """;
         command.Parameters.AddWithValue("$event_id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("$snapshot_id", snapshotId);
@@ -268,8 +293,11 @@ public sealed class LocalDatabaseRepairService : ILocalDatabaseRepairService
         command.Parameters.AddWithValue("$event_type", "DataRepairApplied");
         command.Parameters.AddWithValue(
             "$message",
-            "已将已知本地烟测创建人乱码修复为 Codex 烟测。");
+            "已将已知本地烟测创建人乱码修复为 Codex 烟测；备注与业务快照载荷保持不变。");
         command.Parameters.AddWithValue("$created_at_utc", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$payload_json",
+            "{\"field\":\"created_by\",\"before\":\"Codex ??\",\"after\":\"Codex 烟测\"}");
         return command.ExecuteNonQuery();
     }
 

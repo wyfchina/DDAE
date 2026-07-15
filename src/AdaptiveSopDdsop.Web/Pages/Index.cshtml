@@ -283,7 +283,7 @@
                     <div class="panel-heading">
                         <div>
                             <span class="panel-kicker">独立产品入口</span>
-                            <h2>Network 候选入口</h2>
+                            <h2>网络结构候选</h2>
                         </div>
                         <a class="button secondary" href="@Model.NetworkStructureProductUrl">打开独立产品</a>
                     </div>
@@ -423,6 +423,7 @@
                         <div class="response-option-list">
                             <label><input id="response-temporary-capacity" type="checkbox" checked><span><strong>临时能力</strong><small>在风险窗口增加受影响资源能力</small></span></label>
                             <label><input id="response-policy-cover" type="checkbox" checked><span><strong>MOQ / 订货周期覆盖</strong><small>比较主参数临时覆盖对库存与服务的影响</small></span></label>
+                            <label><input id="response-supply-recovery" type="checkbox" checked><span><strong>供应响应</strong><small>按冻结基线恢复同一风险窗口内已确认的供应承诺</small></span></label>
                             <label><input id="response-prebuild" type="checkbox"><span><strong>提前建库</strong><small>在风险前建立保护，不直接生成执行排程</small></span></label>
                         </div>
                         <button id="run-scenario-comparison" class="button primary" type="button">比较不采取措施与响应方案</button>
@@ -487,6 +488,29 @@
                 <div class="panel-heading">
                     <div><span class="panel-kicker">基准方案与预览方案</span><h2>方案比较</h2></div>
                 </div>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">场景记录</span><h2>已保存场景</h2></div>
+                    <button id="refresh-scenario-runs" class="button secondary" type="button">刷新记录</button>
+                </div>
+                <div class="saved-run-layout">
+                    <section class="saved-run-list">
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>场景编号</th><th>名称</th><th>创建人</th><th>状态</th><th>服务水平</th><th>补货释放峰值</th><th>供应缺口</th></tr></thead>
+                                <tbody id="saved-scenario-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="readiness-panel">
+                        <div class="panel-heading compact-heading">
+                            <div><span class="panel-kicker">场景详情</span><h2 id="saved-scenario-title">尚未选择</h2></div>
+                            <span id="saved-scenario-status" class="status-chip neutral">未选择</span>
+                        </div>
+                        <div id="scenario-detail-summary" class="metadata-list"></div>
+                        <div id="scenario-lineage-list" class="diagnostics-list"></div>
+                        <div id="scenario-audit-list" class="diagnostics-list"></div>
+                    </section>
+                </div>
                 <div id="future-comparison-cards" class="comparison-grid"></div>
                 <section class="stage-card comparison-save-card">
                     <div class="panel-heading compact-heading"><div><span class="panel-kicker">显式留痕</span><h2>保存所选比较方案</h2></div><span id="future-comparison-save-status" class="status-chip neutral">尚未保存</span></div>
@@ -505,7 +529,7 @@
                     </div>
                     <div class="table-scroll">
                         <table class="data-table">
-                            <thead><tr><th>方案</th><th>服务变化</th><th>流速变化</th><th>平均库存变化</th><th>峰值负荷变化</th><th>红区 SKU 变化</th><th>供应缺口变化</th><th>补货订单变化</th><th>动作成本</th><th>管理判断</th></tr></thead>
+                            <thead><tr><th>方案</th><th>服务变化</th><th>流速变化</th><th>平均库存变化</th><th>补货释放峰值变化</th><th>红区 SKU 变化</th><th>供应缺口变化</th><th>补货订单变化</th><th>动作成本</th><th>管理判断</th></tr></thead>
                             <tbody id="multi-scenario-comparison-body"></tbody>
                         </table>
                     </div>
@@ -516,7 +540,7 @@
                     </div>
                     <div class="table-scroll">
                         <table class="data-table">
-                            <thead><tr><th>候选动作</th><th>对象</th><th>服务影响</th><th>库存影响</th><th>峰值负荷影响</th><th>供应缺口影响</th><th>补货订单影响</th><th>估算成本</th><th>动作约束</th><th>可行性</th></tr></thead>
+                            <thead><tr><th>候选动作</th><th>对象</th><th>服务影响</th><th>库存影响</th><th>补货释放峰值影响</th><th>供应缺口影响</th><th>补货订单影响</th><th>估算成本</th><th>动作约束</th><th>可行性</th></tr></thead>
                             <tbody id="candidate-impact-matrix-body"></tbody>
                         </table>
                     </div>
@@ -541,27 +565,6 @@
                         <button class="button secondary" type="button" data-coordination-status="Completed">完成</button>
                     </div>
                 </section>
-                <div class="panel-heading">
-                    <div><span class="panel-kicker">场景记录</span><h2>已保存场景</h2></div>
-                    <button id="refresh-scenario-runs" class="button secondary" type="button">刷新记录</button>
-                </div>
-                <div class="saved-run-layout">
-                    <section class="saved-run-list">
-                        <div class="table-scroll">
-                            <table class="data-table">
-                                <thead><tr><th>场景编号</th><th>名称</th><th>创建人</th><th>状态</th><th>服务水平</th><th>峰值负荷</th><th>供应缺口</th></tr></thead>
-                                <tbody id="saved-scenario-body"></tbody>
-                            </table>
-                        </div>
-                    </section>
-                    <section class="readiness-panel">
-                        <div class="panel-heading compact-heading">
-                            <div><span class="panel-kicker">审计链</span><h2 id="saved-scenario-title">审计链</h2></div>
-                            <span id="saved-scenario-status" class="status-chip neutral">未选择</span>
-                        </div>
-                        <div id="scenario-audit-list" class="diagnostics-list"></div>
-                    </section>
-                </div>
             </section>
 
             <section id="ddom-parameter-decision-view" class="workspace-section workspace-route-view" data-workspace-route="#ddom-decision-panel/parameter-decision" hidden>
@@ -641,6 +644,7 @@
                     <section class="master-settings-block">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中变更详情</span><h2 id="master-setting-detail-title">主设置变更详情</h2></div><button id="advance-master-setting-status" class="button secondary" type="button">推进状态</button></div>
                         <div id="master-setting-detail" class="metadata-list"></div>
+                        <div id="master-setting-lineage-list" class="diagnostics-list"></div>
                     </section>
                     <section class="master-settings-block">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">审计链</span><h2>主设置变更审计链</h2></div></div>
@@ -746,16 +750,17 @@
                         <span id="rccp-case-chip" class="status-chip neutral">基准方案</span>
                     </div>
                     <div id="rccp-kpis" class="rccp-kpis" aria-label="RCCP 关键指标"></div>
+                    <p class="muted-note rccp-load-note">RCCP 负荷按预计补货订单在释放周折算；补货订单释放周压力，不等于设备持续利用率。</p>
                     <div class="future-capacity-separation">
                         <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">上游保护资源</span><h2>负荷与保护消耗</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>上游资源</th><th>保护 CCR</th><th>周</th><th>计划可用</th><th>承诺负荷</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>状态</th></tr></thead><tbody id="future-capacity-protection-body"></tbody></table></div></section>
-                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">CCR 单列</span><h2>CCR 利用率</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>CCR</th><th>平均负荷</th><th>峰值负荷</th><th>状态</th></tr></thead><tbody id="future-ccr-utilization-body"></tbody></table></div></section>
+                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">CCR 单列</span><h2>CCR 释放负荷</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>CCR</th><th>平均释放负荷</th><th>补货释放峰值</th><th>状态</th></tr></thead><tbody id="future-ccr-utilization-body"></tbody></table></div></section>
                     </div>
                     <div class="rccp-workbench">
                         <section class="rccp-block">
                             <div class="panel-heading compact-heading">
                                 <div><span class="panel-kicker">资源汇总</span><h2>资源汇总</h2></div>
                             </div>
-                            <div class="table-scroll"><table class="data-table rccp-summary-table"><thead><tr><th>资源</th><th>类型</th><th>平均负载</th><th>峰值负载</th><th>超载周</th><th>最大缺口</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="rccp-resource-summary-body"></tbody></table></div>
+                            <div class="table-scroll"><table class="data-table rccp-summary-table"><thead><tr><th>资源</th><th>类型</th><th>平均释放负荷</th><th>补货释放峰值</th><th>超载周</th><th>最大缺口</th><th>状态</th><th>建议动作</th></tr></thead><tbody id="rccp-resource-summary-body"></tbody></table></div>
                         </section>
                         <section class="rccp-block">
                             <div class="panel-heading compact-heading">

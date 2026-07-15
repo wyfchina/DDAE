@@ -92,20 +92,21 @@ public sealed class MasterSettingsGovernanceService
         string sourceScenarioRunId,
         GovernanceDecisionContext governanceContext)
     {
-        RequireFrozenComparisonRun(
+        var savedRun = RequireFrozenComparisonRun(
             sourceScenarioRunId,
             frozenBaseline.SnapshotId,
             comparisonCase.ExternalScenarioId,
             comparisonCase.ResponseId);
+        EnsureSameNormalizedRunRequest(comparisonCase.Preview.Request, savedRun.Request);
         var context = governanceContext with
         {
             SourceBaselineId = frozenBaseline.SnapshotId,
             SourceScenarioRunId = sourceScenarioRunId.Trim()
         };
-        var request = comparisonCase.Preview.Request with { GovernanceContext = context };
-        var preview = comparisonCase.Preview with { Request = request };
-        var data = _previewService.LoadFrozenWorkspaceData(request, frozenBaseline);
-        return BuildProposalResponse(request, preview, data);
+        var request = savedRun.Request with { GovernanceContext = context };
+        var preview = _previewService.PreviewAgainstFrozenBaseline(request, frozenBaseline);
+        var data = _previewService.LoadFrozenWorkspaceData(preview.Request, frozenBaseline);
+        return BuildProposalResponse(preview.Request, preview, data);
     }
 
     private static MasterSettingProposalResponse BuildProposalResponse(
@@ -406,7 +407,7 @@ public sealed class MasterSettingsGovernanceService
             }
             if (policy.OrderCycleDays.HasValue)
             {
-                proposedParts.Add($"订货周期 {policy.OrderCycleDays}d");
+                proposedParts.Add($"订货周期 {policy.OrderCycleDays} 天");
             }
 
             yield return BuildProposal(
@@ -504,7 +505,7 @@ public sealed class MasterSettingsGovernanceService
                     "Inventory Buffer",
                     sku.Name,
                     SkuCurrentValue(sku),
-                    "重审 ADU / DLT / VF / MOQ / 订货周期",
+                    "重审 ADU / DLT / 变异因子 / MOQ / 订货周期",
                     "预览结果仍存在红区 SKU。",
                     "下一轮 DDS&OP 生效窗口",
                     2.0m,
@@ -521,7 +522,7 @@ public sealed class MasterSettingsGovernanceService
                 "Capacity Buffer",
                 resource.ResourceName,
                 "按当前资源日历与保护能力执行",
-                $"设置保护能力边界，峰值负荷 {resource.PeakLoadPercent:0.#}%",
+                $"设置保护能力边界，补货释放峰值 {resource.PeakLoadPercent:0.#}%",
                 "RCCP 预览存在红区资源。",
                 "超载周之前",
                 2.4m,
@@ -544,7 +545,7 @@ public sealed class MasterSettingsGovernanceService
             {
                 var proposed = action.ActionType == "MoqOverride"
                     ? $"MOQ {action.Value:0}"
-                    : $"订货周期 {action.Value:0}d";
+                    : $"订货周期 {action.Value:0} 天";
                 yield return BuildProposal(request, "Inventory Buffer", sku.Name, SkuCurrentValue(sku), proposed, "模板建议调整补货策略。", $"第 {action.StartWeek}-{action.EndWeek} 周", 1.2m, sku.UnitCost * action.Value * 0.06m, "Yellow", source);
             }
         }
@@ -553,7 +554,7 @@ public sealed class MasterSettingsGovernanceService
             var sku = data.Skus.FirstOrDefault(item => item.Sku == action.Target);
             if (sku is not null)
             {
-                yield return BuildProposal(request, "Inventory Buffer", sku.Name, SkuCurrentValue(sku), $"提前建库 {action.Value:0} {action.Unit}", "模板建议提前建库保护未来窗口。", $"第 {action.StartWeek}-{action.EndWeek} 周", 1.5m, sku.UnitCost * action.Value, "Yellow", source);
+                yield return BuildProposal(request, "Inventory Buffer", sku.Name, SkuCurrentValue(sku), $"提前建库 {action.Value:0} {BusinessUnitLabel(action.Unit)}", "模板建议提前建库保护未来窗口。", $"第 {action.StartWeek}-{action.EndWeek} 周", 1.5m, sku.UnitCost * action.Value, "Yellow", source);
             }
         }
         else if (action.ActionType == "CapacityMultiplier")
@@ -566,7 +567,7 @@ public sealed class MasterSettingsGovernanceService
         }
         else if (action.ActionType == "SupplierCapacityLimit")
         {
-            yield return BuildProposal(request, "Supplier Master Setting", action.Target, "按当前供应商承诺能力", $"第 {action.StartWeek}-{action.EndWeek} 周承诺能力 {action.Value:0.#} {action.Unit}", "模板建议设置供应约束窗口。", $"第 {action.StartWeek}-{action.EndWeek} 周", -1.2m, 0m, "Yellow", source);
+            yield return BuildProposal(request, "Supplier Master Setting", action.Target, "按当前供应商承诺能力", $"第 {action.StartWeek}-{action.EndWeek} 周承诺能力 {action.Value:0.#} {BusinessUnitLabel(action.Unit)}", "模板建议设置供应约束窗口。", $"第 {action.StartWeek}-{action.EndWeek} 周", -1.2m, 0m, "Yellow", source);
         }
     }
 
@@ -600,7 +601,7 @@ public sealed class MasterSettingsGovernanceService
             decimal.Round(serviceImpact, 1),
             decimal.Round(cashImpact, 0),
             riskLevel,
-            new[] { source, "由 Scenario Preview 生成，保存时作为主设置治理记录留痕。" },
+            new[] { source, "由场景预览生成，保存时作为主设置治理记录留痕。" },
             ChangeCategory: changeCategory,
             SourceBaselineId: context?.SourceBaselineId,
             Owner: context?.Owner,
@@ -615,8 +616,17 @@ public sealed class MasterSettingsGovernanceService
 
     private static string SkuCurrentValue(SkuBufferSetting sku)
     {
-        return $"ADU {sku.Adu:0.#}, DLT {sku.DecoupledLeadTimeDays}d, VF {sku.VariabilityFactor:0.0}, MOQ {sku.MinimumOrderQuantity:0}, 订货周期 {sku.OrderCycleDays}d";
+        return $"ADU {sku.Adu:0.#}, DLT {sku.DecoupledLeadTimeDays} 天, 变异因子 {sku.VariabilityFactor:0.0}, MOQ {sku.MinimumOrderQuantity:0}, 订货周期 {sku.OrderCycleDays} 天";
     }
+
+    private static string BusinessUnitLabel(string unit) => unit switch
+    {
+        "units" => "件",
+        "units/week" => "件/周",
+        "factor" => "倍",
+        "days" => "天",
+        _ => "单位未定义"
+    };
 
     private void EnsureCreated()
     {
@@ -756,7 +766,7 @@ public sealed class MasterSettingsGovernanceService
         }
     }
 
-    private ScenarioRunSummary RequireFrozenComparisonRun(
+    private ScenarioRunDetail RequireFrozenComparisonRun(
         string sourceScenarioRunId,
         string baselineSnapshotId,
         string externalScenarioId,
@@ -787,7 +797,20 @@ public sealed class MasterSettingsGovernanceService
             throw new ArgumentException("冻结比较 run 不属于请求的响应方案。", nameof(sourceScenarioRunId));
         }
 
-        return run;
+        return _scenarioRunLineageReader?.GetDetail(sourceScenarioRunId.Trim())
+            ?? throw new ArgumentException("冻结比较 run 缺少可复现的持久化请求。", nameof(sourceScenarioRunId));
+    }
+
+    private static void EnsureSameNormalizedRunRequest(
+        ScenarioRunPreviewRequest submittedRequest,
+        ScenarioRunPreviewRequest persistedRequest)
+    {
+        var submittedJson = JsonSerializer.Serialize(submittedRequest, JsonOptions);
+        var persistedJson = JsonSerializer.Serialize(persistedRequest, JsonOptions);
+        if (!string.Equals(submittedJson, persistedJson, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("冻结比较内容与已保存 run 的规范化请求不一致。", nameof(submittedRequest));
+        }
     }
 
     private static void EnsureColumn(SqliteConnection connection, string columnName, string definition)
@@ -848,7 +871,7 @@ public sealed class MasterSettingsGovernanceService
         return new[]
         {
             new MasterSettingChangeAuditEvent(Guid.NewGuid().ToString("N"), changeId, 1, "ChangeProposed", "Governance", "Information", "收到主设置变更建议。", proposalJson, createdAtText),
-            new MasterSettingChangeAuditEvent(Guid.NewGuid().ToString("N"), changeId, 2, "PreviewRecalculated", "Engine", "Information", "主设置建议来自服务端重新运行的 Scenario Preview。", null, createdAtText),
+            new MasterSettingChangeAuditEvent(Guid.NewGuid().ToString("N"), changeId, 2, "PreviewRecalculated", "Engine", "Information", "主设置建议来自服务端重新运行的场景预览。", null, createdAtText),
             new MasterSettingChangeAuditEvent(Guid.NewGuid().ToString("N"), changeId, 3, "ImpactCaptured", "Impact", "Information", "已保存服务、现金与风险影响快照。", impactJson, createdAtText),
             new MasterSettingChangeAuditEvent(Guid.NewGuid().ToString("N"), changeId, 4, "ChangeSaved", "Persistence", "Information", "主设置变更请求已保存，等待治理状态流转。", null, createdAtText)
         };

@@ -295,11 +295,11 @@ public sealed class HistoryReviewWorkspaceService
                 .FirstOrDefault(item =>
                     item.ResourceCode == resourceCode &&
                     !string.IsNullOrWhiteSpace(item.ProtectsCcrResourceCode));
-            var protectedCcrCode = definition?.ProtectedCcrResourceCode ?? routingClaim?.ProtectsCcrResourceCode;
             var hasProtectionClaim = definition is not null || routingClaim is not null;
             var hasCompleteDefinition = definition is not null &&
                 definition.EvidenceStatus == Complete &&
                 HasCompleteSequenceEvidence(definitions.ResourceRoutings, definition);
+            var protectedCcrCode = hasCompleteDefinition ? definition!.ProtectedCcrResourceCode : null;
             var capacityEvidenceComplete = theoretical is not null &&
                 standard is not null &&
                 demonstrated is not null &&
@@ -320,7 +320,7 @@ public sealed class HistoryReviewWorkspaceService
                 remaining = decimal.Round(protective.Value - consumed.Value, 1);
             }
 
-            var relationshipRole = hasProtectionClaim
+            var relationshipRole = hasCompleteDefinition
                 ? "UpstreamProtection"
                 : claimedCcrCodes.Contains(resourceCode)
                     ? "CcrUtilization"

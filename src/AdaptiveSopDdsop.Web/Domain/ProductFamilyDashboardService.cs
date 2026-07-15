@@ -246,7 +246,7 @@ public sealed class ProductFamilyDashboardService
             .Select(item => new ProductFamilyRiskItem("缓冲", item.Sku, item.Week, item.BufferStatus == "Red" ? "净流动量穿透红区" : "净流动量进入黄区", item.BufferStatus));
         var capacityRisks = weeklyCells
             .Where(item => item.CapacityGap > 0m || item.PeakLoadPercent > 85m)
-            .Select(item => new ProductFamilyRiskItem("RCCP", family, item.Week, item.CapacityGap > 0m ? $"产能缺口 {item.CapacityGap:0.#}" : $"峰值负荷 {item.PeakLoadPercent:0.#}%", item.CapacityGap > 0m ? "Red" : "Yellow"));
+            .Select(item => new ProductFamilyRiskItem("RCCP", family, item.Week, item.CapacityGap > 0m ? $"产能缺口 {item.CapacityGap:0.#}" : $"补货释放峰值 {item.PeakLoadPercent:0.#}%", item.CapacityGap > 0m ? "Red" : "Yellow"));
         var supplyKeys = data.SupplierItemSources
             .Where(item => familySkuSet.Contains(item.Sku))
             .Select(item => (item.Supplier, item.MaterialFamily))

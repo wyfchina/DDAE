@@ -24,7 +24,12 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
     ("Current baseline applies required evidence rules when section items are null or empty", TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems),
+    ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
+    ("Seed time-buffer progress covers every requested horizon week", TestSeedTimeBufferProgressCoversRequestedHorizon),
+    ("Time-buffer baseline freeze rejects partial horizon evidence", TestTimeBufferBaselineFreezeRejectsPartialHorizonEvidence),
+    ("Time-buffer baseline freeze rejects duplicate week evidence", TestTimeBufferBaselineFreezeRejectsDuplicateWeekEvidence),
+    ("Time-buffer baseline rejects structurally inconsistent evidence before freezing", TestTimeBufferBaselineRejectsStructurallyInconsistentEvidence),
     ("Mixed time-buffer progress reports the actual missing evidence week", TestMixedTimeBufferProgressReportsActualMissingWeek),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
@@ -37,6 +42,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario demo template supply disturbance changes backend results", TestScenarioDemoTemplateSupplyDisturbanceChangesBackendResults),
     ("Scenario demo template capacity disturbance changes backend results", TestScenarioDemoTemplateCapacityDisturbanceChangesBackendResults),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
+    ("Scenario supply response restores internal committed supply without external input", TestScenarioSupplyResponseRestoresCommittedSupply),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
     ("Scenario assumption and frozen save APIs remain internal only", TestScenarioAssumptionAndFrozenSaveApisRemainInternalOnly),
@@ -63,6 +69,9 @@ var tests = new (string Name, Action Run)[]
     ("Workspace navigation removes scroll observer and uses hash state", TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState),
     ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
+    ("Five-stage business views localize ordinary unit tokens", TestBusinessViewsLocalizeOrdinaryUnitTokens),
+    ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
+    ("Five-stage generated business text uses Chinese ordinary wording", TestGeneratedBusinessTextUsesChineseOrdinaryWording),
     ("Five-stage UI has no external import or protocol input", TestFiveStageUiHasNoExternalImportOrProtocolInput),
     ("Time-buffer view uses backend results only", TestTimeBufferViewUsesBackendResultsOnly),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
@@ -88,6 +97,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
+    ("Five-stage details expose readable bidirectional lineage navigation", TestFiveStageDetailsExposeReadableBidirectionalLineageNavigation),
     ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
@@ -100,6 +110,7 @@ var tests = new (string Name, Action Run)[]
     ("Baseline references return all links beyond public page limit", TestBaselineReferencesReturnAllLinksBeyondPublicPageLimit),
     ("Lineage filters use indexable parameterized equality predicates", TestLineageFiltersUseIndexableParameterizedEqualityPredicates),
     ("Coordination outcome does not advance governance status", TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus),
+    ("Frozen comparison governance rejects reused run ID with different normalized request", TestFrozenComparisonGovernanceRejectsReusedRunIdWithDifferentRequest),
     ("Lineage endpoints expose read-only filters and validate saved comparison runs", TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonRuns),
     ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
     ("Scenario preview applies pre-build capacity policy and supplier limits", TestScenarioPreviewAppliesScenarioParameters),
@@ -554,8 +565,10 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
         unprotectedAit.ProtectiveCapacity is null &&
         unprotectedAit.ConsumedProtection is null &&
         unprotectedAit.RemainingProtection is null &&
+        unprotectedAit.ProtectedCcrResourceCode is null &&
+        unprotectedAit.RelationshipRole != "UpstreamProtection" &&
         unprotectedAit.EvidenceStatus == "EvidenceMissing",
-        "missing protection definitions should not be disguised as zero capacity protection");
+        "a routing claim without an explicit sequenced protection definition must not be presented as capacity protection");
     AssertTrue(withoutDefinition.OperatingOutcomes.RemainingProtectionPercent is null, "missing protection evidence should leave the aggregate percentage empty");
     AssertTrue(result.ConstraintExposure.Any(item => item.ExposureType == "场景潜在 CCR"), "history should classify scenario potential CCR exposure");
 }
@@ -921,6 +934,31 @@ static void TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems()
     }
 }
 
+static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(
+        script.Contains("function baselineFreezeBlockingIssues(", StringComparison.Ordinal),
+        "baseline UI should centralize the same item-level blocking rule used by the backend");
+    var blockingRule = SourceFunctionBody(script, "baselineFreezeBlockingIssues");
+    AssertTrue(
+        blockingRule.Contains("section.items", StringComparison.Ordinal) &&
+        blockingRule.Contains("item.blocksFreeze", StringComparison.Ordinal) &&
+        blockingRule.Contains("item.freshnessStatus === \"Fresh\"", StringComparison.Ordinal) &&
+        blockingRule.Contains("item.completenessStatus === \"Complete\"", StringComparison.Ordinal),
+        "baseline UI blocking rule should inspect the serialized item blockers and item evidence state");
+
+    var renderRule = SourceFunctionBody(script, "renderCurrentBaselineWorkspace");
+    AssertTrue(
+        renderRule.Contains("baselineFreezeBlockingIssues(candidate.sections)", StringComparison.Ordinal),
+        "baseline renderer should derive chip and button state from item-level blockers");
+    AssertTrue(
+        !renderRule.Contains("item.isRequired &&", StringComparison.Ordinal),
+        "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
+}
+
 static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
 {
     var databasePaths = new List<string>();
@@ -1049,6 +1087,269 @@ static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         foreach (var databasePath in databasePaths)
         {
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
+static void TestSeedTimeBufferProgressCoversRequestedHorizon()
+{
+    foreach (var horizonWeeks in new[] { 1, 12, 52 })
+    {
+        var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+            .Load(new ScenarioWorkspaceDataRequest(horizonWeeks, new DateOnly(2026, 6, 1)));
+        var definition = data.TimeBuffers!.Single();
+        var progress = data.ControlPointProgress!
+            .Where(item => item.BufferId == definition.BufferId)
+            .OrderBy(item => item.Week)
+            .ToList();
+
+        AssertEqual(horizonWeeks, progress.Count, $"time-buffer progress row count for {horizonWeeks}-week horizon");
+        AssertEqual(
+            string.Join('|', Enumerable.Range(1, horizonWeeks)),
+            string.Join('|', progress.Select(item => item.Week)),
+            $"time-buffer progress weeks for {horizonWeeks}-week horizon");
+        AssertTrue(
+            progress.All(item => item.ObservedDelayDays.HasValue && item.EvidenceStatus == "Complete"),
+            $"time-buffer progress should carry explicit complete evidence for {horizonWeeks}-week horizon");
+
+        var analysis = new TimeBufferProtectionAnalyzer().Analyze(
+            data,
+            new ExternalScenarioDefinition("EXT-TIME-SEED", "演示时间缓冲证据"),
+            null,
+            horizonWeeks);
+        AssertTrue(
+            analysis.Projection.Count == horizonWeeks &&
+            analysis.Projection.All(item => item.EvidenceStatus == "Complete" && item.PenetrationPercent.HasValue),
+            $"seed time-buffer analysis should be calculable for {horizonWeeks}-week horizon");
+    }
+}
+
+static void TestTimeBufferBaselineFreezeRejectsPartialHorizonEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-partial-time-horizon-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+        var definition = planningInputs.TimeBuffers!.Single();
+        var partialInputs = planningInputs with
+        {
+            ControlPointProgress = planningInputs.ControlPointProgress!
+                .Where(item => item.BufferId == definition.BufferId && item.Week <= 3)
+                .ToList()
+        };
+        var service = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(partialInputs)),
+            databasePath);
+        var candidate = service.GetCandidate();
+        var progressItem = candidate.Sections
+            .Single(item => item.SectionCode == "CONTROL_POINT_PROGRESS")
+            .Items!
+            .Single(item => item.ItemKey == definition.BufferId);
+
+        AssertEqual("EvidenceMissing", progressItem.CompletenessStatus, "partial-horizon progress completeness");
+        AssertTrue(
+            progressItem.MissingReason!.Contains("Week 4", StringComparison.Ordinal),
+            "partial-horizon progress should identify the first missing week");
+
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "partial horizon must not freeze"));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains($"CONTROL_POINT_PROGRESS/{definition.BufferId}", StringComparison.Ordinal) &&
+                ex.Message.Contains("Week 4", StringComparison.Ordinal);
+        }
+        AssertTrue(rejected, "critical partial-horizon progress must block freezing");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestTimeBufferBaselineFreezeRejectsDuplicateWeekEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-duplicate-time-week-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
+            .Load(new ScenarioWorkspaceDataRequest(4, new DateOnly(2026, 6, 1)));
+        var definition = planningInputs.TimeBuffers!.Single();
+        var duplicate = planningInputs.ControlPointProgress!.Single(item => item.BufferId == definition.BufferId && item.Week == 2);
+        var duplicateInputs = planningInputs with
+        {
+            ControlPointProgress = planningInputs.ControlPointProgress!.Concat(new[] { duplicate }).ToList()
+        };
+        var service = new CurrentBaselineService(
+            new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(duplicateInputs)),
+            databasePath);
+        var progressItem = service.GetCandidate().Sections
+            .Single(item => item.SectionCode == "CONTROL_POINT_PROGRESS")
+            .Items!
+            .Single(item => item.ItemKey == definition.BufferId);
+
+        AssertEqual("EvidenceMissing", progressItem.CompletenessStatus, "duplicate-week progress completeness");
+        AssertTrue(
+            progressItem.MissingReason!.Contains("Week 2", StringComparison.Ordinal) &&
+            progressItem.MissingReason.Contains("duplicate", StringComparison.OrdinalIgnoreCase),
+            "duplicate progress evidence should identify the duplicated week");
+
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "duplicate week must not freeze"));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains($"CONTROL_POINT_PROGRESS/{definition.BufferId}", StringComparison.Ordinal) &&
+                ex.Message.Contains("Week 2", StringComparison.Ordinal);
+        }
+        AssertTrue(rejected, "critical duplicate-week progress must block freezing");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestTimeBufferBaselineRejectsStructurallyInconsistentEvidence()
+{
+    var validationData = SeedData.Create();
+    var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
+        .Load(new ScenarioWorkspaceDataRequest(4, new DateOnly(2026, 6, 1)));
+    var definition = planningInputs.TimeBuffers!.Single();
+    var scope = planningInputs.TimeBufferProductScopes!.Single(item => item.BufferId == definition.BufferId);
+    var knownSku = planningInputs.Skus.First(item => item.Sku != "AV-FPGA-203").Sku;
+    AssertTrue(definition.IsCritical, "structural evidence tests require a critical seed time buffer");
+
+    var variants = new[]
+    {
+        (
+            Name: "duplicate-definition",
+            Inputs: planningInputs with
+            {
+                TimeBuffers = planningInputs.TimeBuffers!.Concat(new[] { definition }).ToList()
+            },
+            SectionCode: "TIME_BUFFER_DEFINITIONS",
+            ExpectedReason: "duplicate",
+            AnalyzerMustReject: false),
+        (
+            Name: "duplicate-scope",
+            Inputs: planningInputs with
+            {
+                TimeBufferProductScopes = planningInputs.TimeBufferProductScopes!.Concat(new[] { scope }).ToList()
+            },
+            SectionCode: "TIME_BUFFER_PRODUCT_SCOPES",
+            ExpectedReason: "duplicate",
+            AnalyzerMustReject: true),
+        (
+            Name: "unknown-definition-status",
+            Inputs: planningInputs with
+            {
+                TimeBuffers = new[] { definition with { EvidenceStatus = "Verified" } }
+            },
+            SectionCode: "TIME_BUFFER_DEFINITIONS",
+            ExpectedReason: "EvidenceStatus=Verified",
+            AnalyzerMustReject: true),
+        (
+            Name: "unknown-scope-status",
+            Inputs: planningInputs with
+            {
+                TimeBufferProductScopes = new[] { scope with { EvidenceStatus = "Verified" } }
+            },
+            SectionCode: "TIME_BUFFER_PRODUCT_SCOPES",
+            ExpectedReason: "EvidenceStatus=Verified",
+            AnalyzerMustReject: true),
+        (
+            Name: "unknown-sku-scope",
+            Inputs: planningInputs with
+            {
+                TimeBufferProductScopes = new[]
+                {
+                    scope with { Skus = scope.Skus.Concat(new[] { "UNKNOWN-SKU" }).ToList() }
+                }
+            },
+            SectionCode: "TIME_BUFFER_PRODUCT_SCOPES",
+            ExpectedReason: "Unknown SKU",
+            AnalyzerMustReject: true),
+        (
+            Name: "orphan-scope",
+            Inputs: planningInputs with
+            {
+                TimeBufferProductScopes = planningInputs.TimeBufferProductScopes!.Concat(new[]
+                {
+                    new TimeBufferProductScope("UNKNOWN-TIME-BUFFER", Array.Empty<string>(), new[] { knownSku }, "Complete")
+                }).ToList()
+            },
+            SectionCode: "TIME_BUFFER_PRODUCT_SCOPES",
+            ExpectedReason: "undefined time-buffer definition",
+            AnalyzerMustReject: false),
+        (
+            Name: "orphan-progress",
+            Inputs: planningInputs with
+            {
+                ControlPointProgress = planningInputs.ControlPointProgress!.Concat(new[]
+                {
+                    new ControlPointProgressFact("UNKNOWN-TIME-BUFFER", 1, 0m, "orphan evidence", "Complete")
+                }).ToList()
+            },
+            SectionCode: "CONTROL_POINT_PROGRESS",
+            ExpectedReason: "undefined time-buffer definition",
+            AnalyzerMustReject: false)
+    };
+
+    foreach (var variant in variants)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-current-baseline-time-structure-{variant.Name}-{Guid.NewGuid():N}.db");
+        try
+        {
+            if (variant.AnalyzerMustReject)
+            {
+                var analysis = new TimeBufferProtectionAnalyzer().Analyze(
+                    variant.Inputs,
+                    new ExternalScenarioDefinition($"EXT-{variant.Name}", variant.Name),
+                    null,
+                    4);
+                AssertTrue(
+                    analysis.Breaches.Any(item => item.EvidenceStatus == "EvidenceMissing"),
+                    $"{variant.Name} should reproduce the downstream analyzer evidence failure");
+            }
+
+            var service = new CurrentBaselineService(
+                new SeedCurrentBaselineDataSource(validationData, new StaticScenarioWorkspaceDataSource(variant.Inputs)),
+                databasePath);
+            var candidate = service.GetCandidate();
+            var section = candidate.Sections.Single(item => item.SectionCode == variant.SectionCode);
+            AssertTrue(
+                section.Items!.Any(item =>
+                    item.BlocksFreeze &&
+                    item.CompletenessStatus == "EvidenceMissing" &&
+                    item.MissingReason?.Contains(variant.ExpectedReason, StringComparison.OrdinalIgnoreCase) == true),
+                $"{variant.Name} should be a blocking candidate item with reason containing {variant.ExpectedReason}");
+
+            var rejected = false;
+            try
+            {
+                service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", variant.Name));
+            }
+            catch (ArgumentException ex)
+            {
+                rejected = ex.Message.Contains(variant.SectionCode, StringComparison.Ordinal) &&
+                    ex.Message.Contains(variant.ExpectedReason, StringComparison.OrdinalIgnoreCase);
+            }
+            AssertTrue(rejected, $"{variant.Name} must be rejected before an immutable baseline is frozen");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteSqliteFiles(databasePath);
         }
     }
@@ -1762,6 +2063,55 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
             }
             AssertTrue(rejected, "response IDs must be unique and must not use the reserved NO_RESPONSE ID");
         }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioSupplyResponseRestoresCommittedSupply()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-supply-response-{Guid.NewGuid():N}.db");
+    try
+    {
+        var data = SeedData.Create();
+        var workspaceData = new SeedScenarioWorkspaceDataSource(data)
+            .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(data), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "供应响应来源基线"));
+        var assumptionSource = new SeedScenarioAssumptionSource();
+        var externalScenario = assumptionSource.GetTemplates().Single().ExternalScenario;
+        var risks = externalScenario.SupplyRisks ?? Array.Empty<ExternalSupplyRisk>();
+        var service = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(data)),
+            assumptionSource);
+        var restoredCommitments = workspaceData.SupplierCapacityWindows
+            .Where(item => risks.Any(risk =>
+                risk.Supplier == item.Supplier &&
+                risk.MaterialFamily == item.MaterialFamily &&
+                item.Week >= risk.StartWeek &&
+                item.Week <= risk.EndWeek))
+            .Select(item => new SupplierCapacityLimit(item.Supplier, item.MaterialFamily, item.Week, item.Week, item.CommittedCapacity))
+            .ToList();
+        var result = service.Compare(new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            externalScenario,
+            new[]
+            {
+                new ResponseConfiguration(
+                    "RESP-SUPPLY-RECOVERY",
+                    "供应响应",
+                    new ScenarioRunParameterSet(SupplierCapacityLimits: restoredCommitments))
+            },
+            12));
+
+        var response = result.ResponseCases.Single();
+        AssertTrue(response.Preview.Request.Parameters?.SupplierCapacityLimits?.Count > 0, "supply response should remain an explicit internal response configuration");
+        AssertTrue(response.Preview.Scenario.Metrics.SupplyGap < result.NoResponse.Preview.Scenario.Metrics.SupplyGap, "restored committed supply should reduce the externally disturbed supply gap");
+        AssertTrue(response.Preview.Trace.Any(item => item.Message.Contains("供应响应", StringComparison.Ordinal)), "backend white-box trace should retain the supply-response evidence");
     }
     finally
     {
@@ -2580,10 +2930,14 @@ static void TestFrozenPureSupplyRiskDoesNotGenerateBufferGovernance()
             "RUN-FROZEN-SUPPLY-ONLY", "SR-20260715-0003", "冻结纯供应风险", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
             "2026-07-15T08:00:00Z", 4, null, null, 98m, 1m, 1_000_000m, 90m, 1m, 0, 0,
             frozen.SnapshotId, comparison.NoResponse.ExternalScenarioId, comparison.NoResponse.ResponseId);
+        var savedDetail = new ScenarioRunDetail(
+            savedRun,
+            comparison.NoResponse.Preview.Request,
+            comparison.NoResponse.Preview with { IsPersisted = true });
         var proposals = new MasterSettingsGovernanceService(
                 source,
                 previewService,
-                new FixedScenarioRunLineageReader(savedRun),
+                new FixedScenarioRunLineageReader(savedDetail),
                 databasePath)
             .ProposeFromFrozenComparison(
                 comparison.NoResponse,
@@ -2731,13 +3085,14 @@ static void TestCoordinationLedgerRejectsInvalidDirectCompletion()
 
 static void TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent()
 {
-    const string repairId = "2026-07-15-smoke-mojibake-v1";
+    const string repairId = "2026-07-15-known-local-smoke-repair-v1";
     const string firstTargetItemId = "09944ca75dfa4efab765d1481c860709";
     const string secondTargetItemId = "8aead2083210423db98e9f35924c7f8e";
     const string similarItemId = "09944ca75dfa4efab765d1481c860708";
     const string targetSnapshotId = "baseline-smoke-target";
     const string targetSnapshotNumber = "BASE-20260714-002";
     const string existingAuditMessage = "原始中文审计：不得改写。";
+    const string existingBusinessNote = "客户确认：保留原备注";
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-{Guid.NewGuid():N}.db");
     var controlDatabasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-control-{Guid.NewGuid():N}.db");
     var failureDatabasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-rollback-{Guid.NewGuid():N}.db");
@@ -2765,7 +3120,7 @@ static void TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent()
             "烟测审计三");
         SeedRepairCoordinationItem(databasePath, similarItemId, "CONTROL-001", "只差一字符的正常事项", "陈经理", "周计划员",
             "相似 ID 审计必须保留");
-        SeedRepairBaseline(databasePath, targetSnapshotId, targetSnapshotNumber, "Codex ??", existingAuditMessage, 7);
+        SeedRepairBaseline(databasePath, targetSnapshotId, targetSnapshotNumber, "Codex ??", existingAuditMessage, 7, existingBusinessNote);
         SeedRepairBaseline(databasePath, "baseline-same-old-value", "BASE-20260714-003", "Codex ??", null, null);
         SeedRepairBaseline(databasePath, "baseline-normal-chinese", "BASE-20260714-004", "王计划员", null, null);
 
@@ -2806,6 +3161,9 @@ static void TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent()
         AssertEqual("Codex 烟测", Convert.ToString(ReadSqliteScalar(databasePath,
             "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", targetSnapshotId))),
             "double-condition target baseline creator");
+        AssertEqual(existingBusinessNote, Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT note FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", targetSnapshotId))),
+            "target baseline business note must remain unchanged");
         AssertEqual("Codex ??", Convert.ToString(ReadSqliteScalar(databasePath,
             "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", "baseline-same-old-value"))),
             "same old creator on another snapshot number should remain");
@@ -3193,6 +3551,7 @@ static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
     AssertTrue(script.Contains("history.replaceState", StringComparison.Ordinal), "workspace route should canonicalize defaults and aliases without adding history entries");
     AssertTrue(script.Contains("navigateWorkspace(\"future-scenario-panel\", \"scenario-config\", false)", StringComparison.Ordinal), "exception action should navigate to future scenario configuration");
     AssertTrue(script.Contains("navigateWorkspace(\"ddom-decision-panel\", \"parameter-decision\", false)", StringComparison.Ordinal), "governance action should navigate to DDOM parameter decision");
+    AssertTrue(script.Contains("workspace.scrollTop = 0", StringComparison.Ordinal), "every workspace view switch should reset the actual scrolling container");
     AssertTrue(script.Contains("\"#overview-panel\": \"#ddom-decision-panel/structure-settings\"", StringComparison.Ordinal), "legacy overview hash should have a read-only canonical alias");
     AssertTrue(script.Contains("\"#saved-scenarios-panel\": \"#coordination-panel/action-tracking\"", StringComparison.Ordinal), "legacy saved scenario hash should point to action tracking");
     AssertEqual(1, CountExactOccurrences(script, "requiredHostId: \"saved-scenarios-panel\""), "only white-box trace should require the saved scenarios host");
@@ -3965,8 +4324,14 @@ static void TestScenarioPreviewReturnsComparableResults()
     AssertTrue(result.Scenario.Metrics.FlowIndex > 0, "scenario should expose a flow index");
     AssertTrue(result.Comparison.FlowIndexDelta == result.Scenario.Metrics.FlowIndex - result.Baseline.Metrics.FlowIndex, "comparison should include flow index delta");
     AssertEqual("FlowFirst", result.Request.AdoptionConstraintMode!, "preview should preserve adoption constraint mode");
-    AssertTrue(result.Trace.Any(item => item.Message.Contains("FlowFirst", StringComparison.Ordinal)), "preview trace should include adoption constraint mode");
+    AssertTrue(result.Trace.Any(item => item.Message.Contains("流速优先", StringComparison.Ordinal)), "preview trace should show the adoption constraint mode in Chinese");
+    AssertTrue(!result.Trace.Any(item => item.Message.Contains("FlowFirst", StringComparison.Ordinal)), "preview trace should not expose the internal adoption constraint code");
     AssertTrue(result.Trace.Any(item => item.Message.Contains("需求驱动计划引擎", StringComparison.Ordinal)), "preview should trace shared engine use in Chinese");
+
+    var defaultResult = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(12));
+    AssertTrue(defaultResult.Trace.Any(item => item.Message.Contains("综合平衡", StringComparison.Ordinal)), "default preview trace should localize the balanced adoption mode");
+    AssertTrue(!defaultResult.Trace.Any(item => item.Message.Contains("Balanced", StringComparison.Ordinal)), "default preview trace should not expose the internal balanced code");
 }
 
 static void TestScenarioRunPersistenceSavesPreviewResultAndAuditChain()
@@ -4041,7 +4406,7 @@ static void TestScenarioRunWorkspaceExposesSaveAuditUi()
 
     AssertTrue(page.Contains("id=\"scenario-save-panel\"", StringComparison.Ordinal), "page should expose scenario save panel");
     AssertTrue(page.Contains("id=\"save-scenario\"", StringComparison.Ordinal), "page should expose save scenario button");
-    AssertTrue(page.Contains("id=\"coordination-action-tracking-view\"", StringComparison.Ordinal), "page should expose saved scenarios under action tracking");
+    AssertTrue(page.Contains("id=\"scenario-comparison\"", StringComparison.Ordinal), "page should expose saved scenarios under stage 03 plan comparison");
     AssertTrue(page.Contains("id=\"scenario-audit-list\"", StringComparison.Ordinal), "page should expose audit chain list");
     AssertTrue(page.Contains("保存场景", StringComparison.Ordinal), "page should use Chinese save label");
     AssertTrue(page.Contains("已保存场景", StringComparison.Ordinal), "page should use Chinese saved scenario label");
@@ -4084,7 +4449,7 @@ static void TestMasterSettingsGovernanceGeneratesProposalsFromPreview()
         AssertTrue(source.LoadCount >= 3, "proposal generation should rerun preview and reload data through data source");
         AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Inventory Buffer"), "MOQ/order cycle/prebuild should create inventory buffer proposals");
         AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Capacity Buffer"), "capacity multiplier should create capacity buffer proposals");
-        AssertTrue(proposals.Proposals.Any(item => item.Rationale.Any(reason => reason.Contains("Scenario Preview", StringComparison.Ordinal))), "proposals should explain preview origin");
+        AssertTrue(proposals.Proposals.Any(item => item.Rationale.Any(reason => reason.Contains("场景预览", StringComparison.Ordinal))), "proposals should explain preview origin in Chinese");
         AssertTrue(proposals.Trace.Any(item => item.Stage == "MasterSettings"), "proposal response should include master settings trace");
     }
     finally
@@ -4154,6 +4519,64 @@ static void TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus()
     }
 }
 
+static void TestFiveStageDetailsExposeReadableBidirectionalLineageNavigation()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    var scenarioViewStart = page.IndexOf("id=\"scenario-comparison\"", StringComparison.Ordinal);
+    var scenarioViewEnd = page.IndexOf("id=\"coordination-action-tracking-view\"", scenarioViewStart, StringComparison.Ordinal);
+    var scenarioDetail = page.IndexOf("id=\"scenario-lineage-list\"", scenarioViewStart, StringComparison.Ordinal);
+    AssertTrue(scenarioViewStart >= 0 && scenarioDetail > scenarioViewStart && scenarioDetail < scenarioViewEnd,
+        "saved scenario detail and lineage should belong to stage 03 plan comparison");
+    AssertTrue(page.Contains("id=\"scenario-detail-summary\"", StringComparison.Ordinal),
+        "scenario detail should expose a readable summary");
+    AssertTrue(page.Contains("id=\"master-setting-lineage-list\"", StringComparison.Ordinal),
+        "master-setting detail should expose linked scenarios and actions");
+    AssertTrue(page.Contains("id=\"coordination-lineage-list\"", StringComparison.Ordinal),
+        "coordination detail should expose linked scenario and change records");
+
+    foreach (var functionName in new[]
+    {
+        "renderScenarioLineage",
+        "renderMasterSettingLineage",
+        "renderCoordinationLineage",
+        "openScenarioLineageDetail",
+        "openMasterSettingLineageDetail",
+        "openCoordinationLineageDetail"
+    })
+    {
+        AssertTrue(script.Contains($"function {functionName}(", StringComparison.Ordinal)
+            || script.Contains($"async function {functionName}(", StringComparison.Ordinal),
+            $"script should implement {functionName}");
+    }
+
+    AssertTrue(script.Contains("/api/master-settings/changes?limit=50&sourceScenarioRunId=", StringComparison.Ordinal),
+        "scenario detail should query changes by source scenario run");
+    AssertTrue(script.Contains("/api/coordination-items?limit=50&relatedScenarioRunId=", StringComparison.Ordinal),
+        "scenario detail should query actions by related scenario run");
+    AssertTrue(script.Contains("/api/coordination-items?limit=50&relatedMasterSettingChangeId=", StringComparison.Ordinal),
+        "change detail should query actions by related master-setting change");
+    AssertTrue(script.Contains("data-lineage-scenario-run-id", StringComparison.Ordinal),
+        "lineage should expose scenario jump controls");
+    AssertTrue(script.Contains("data-lineage-master-change-id", StringComparison.Ordinal),
+        "lineage should expose master-setting jump controls");
+    AssertTrue(script.Contains("data-lineage-coordination-item-id", StringComparison.Ordinal),
+        "lineage should expose coordination jump controls");
+    AssertTrue(script.Contains("navigateWorkspace(\"future-scenario-panel\", \"plan-comparison\", false)", StringComparison.Ordinal),
+        "scenario lineage jump should switch to the stage 03 detail view");
+    AssertTrue(script.Contains("navigateWorkspace(\"ddom-decision-panel\", \"change-records\", false)", StringComparison.Ordinal),
+        "change lineage jump should switch to the stage 04 detail view");
+    AssertTrue(script.Contains("navigateWorkspace(\"coordination-panel\", \"action-tracking\", false)", StringComparison.Ordinal),
+        "action lineage jump should switch to the stage 05 detail view");
+    foreach (var readableField in new[] { "runNumber", "changeNumber", "itemNumber", ".name", ".target", ".title" })
+    {
+        AssertTrue(script.Contains(readableField, StringComparison.Ordinal),
+            $"lineage rendering should include readable field {readableField}");
+    }
+}
+
 static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -4171,7 +4594,7 @@ static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
         && actualHistory.EvidenceLabel.Contains("AsOf=", StringComparison.Ordinal),
         "real history evidence should exercise the composite internal label shape handled by the UI");
 
-    foreach (var helper in new[] { "baselineSourceLabel", "freshnessLabel", "completenessLabel", "baselineStatusLabel", "coordinationStatusLabel", "breachScopeLabel", "metricOrEvidenceMissing" })
+    foreach (var helper in new[] { "baselineSourceLabel", "baselineActorLabel", "freshnessLabel", "completenessLabel", "baselineStatusLabel", "coordinationStatusLabel", "breachScopeLabel", "metricOrEvidenceMissing" })
     {
         AssertTrue(script.Contains($"function {helper}(", StringComparison.Ordinal), $"business script should centralize {helper}");
     }
@@ -4195,6 +4618,11 @@ static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
     AssertTrue(businessPage.Contains("追踪", StringComparison.Ordinal), "business page should use the Chinese trace label");
     AssertTrue(script.Contains("normalized.includes(\"DemoFixture\")", StringComparison.Ordinal), "composite history evidence should translate DemoFixture instead of leaking its internal key");
     AssertTrue(script.Contains("historyEvidenceSummary(history.evidenceLabel)", StringComparison.Ordinal), "history renderer should invoke the composite evidence translator on the real API field");
+    AssertTrue(script.Contains("baselineActorLabel(item.createdBy)", StringComparison.Ordinal), "known local smoke actors should be localized only at display time");
+    AssertTrue(script.Contains("function masterSettingDisplayValue(changeId, field, value)", StringComparison.Ordinal)
+        && script.Contains("历史烟测目标（非业务数据）", StringComparison.Ordinal)
+        && script.Contains("masterSettingDisplayValue(summary.changeId, \"auditMessage\"", StringComparison.Ordinal),
+        "known legacy DDOM smoke values should be localized only at display time while retaining their audit record");
     AssertTrue(script.Contains("function historyEvidenceSummary(", StringComparison.Ordinal)
         && script.Contains("SourceAuthority=", StringComparison.Ordinal)
         && script.Contains("来源：", StringComparison.Ordinal)
@@ -4215,6 +4643,108 @@ static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
         "business evidence should translate governance evidence states");
     AssertTrue(script.Contains("历史烟测记录已由纠正审计保留", StringComparison.Ordinal), "legacy corrupt audit display should be masked without changing stored data");
     AssertTrue(script.Contains("DataRepairApplied", StringComparison.Ordinal), "repair audit event should have a business label");
+    AssertTrue(script.Contains("Governance: \"治理\"", StringComparison.Ordinal)
+        && script.Contains("Impact: \"影响\"", StringComparison.Ordinal),
+        "governance audit stages should use Chinese business labels");
+    AssertTrue(script.Contains("rollbackCondition: \"历史烟测回滚条件\"", StringComparison.Ordinal)
+        && script.Contains("masterSettingDisplayValue(summary.changeId, \"rollbackCondition\"", StringComparison.Ordinal),
+        "known legacy rollback text should be localized only at display time");
+    AssertTrue(script.Contains("item.textContent.replaceAll(\"红色供应窗口\", \"供应能力不足周\")", StringComparison.Ordinal)
+        && script.Contains("localizeLegacyTraceWording();", StringComparison.Ordinal),
+        "white-box trace should describe supplier-capacity shortage weeks in plain business language without changing the protected renderer");
+}
+
+static void TestBusinessViewsLocalizeOrdinaryUnitTokens()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(script.Contains("function businessUnitLabel(", StringComparison.Ordinal), "business UI should centralize ordinary unit translation");
+    foreach (var mapping in new[]
+    {
+        "units: \"件\"",
+        "\"units/week\": \"件/周\"",
+        "factor: \"倍\"",
+        "days: \"天\""
+    })
+    {
+        AssertTrue(script.Contains(mapping, StringComparison.Ordinal), $"business unit translation should contain {mapping}");
+    }
+
+    AssertTrue(
+        script.Contains("businessUnitLabel(action.unit)", StringComparison.Ordinal),
+        "scenario cards should render localized action units");
+    AssertTrue(
+        !script.Contains("${number(action.value)} ${action.unit}", StringComparison.Ordinal),
+        "scenario cards must not render raw ordinary English units");
+}
+
+static void TestRccpPeakLoadUsesReleasePressureWording()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(page.Contains("补货释放峰值", StringComparison.Ordinal), "RCCP tables should name the metric as replenishment release peak load");
+    AssertTrue(
+        page.Contains("补货订单释放周压力，不等于设备持续利用率", StringComparison.Ordinal),
+        "RCCP view should explain why a release-week peak can exceed sustained utilization");
+    AssertTrue(
+        script.Contains("补货释放峰值", StringComparison.Ordinal),
+        "scenario KPI cards should use replenishment release peak wording");
+}
+
+static void TestGeneratedBusinessTextUsesChineseOrdinaryWording()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var relativeFiles = new[]
+    {
+        Path.Combine("src", "AdaptiveSopDdsop.Web", "Data", "SeedScenarioWorkspaceDataSource.cs"),
+        Path.Combine("src", "AdaptiveSopDdsop.Web", "Domain", "BufferTrendWorkspaceService.cs"),
+        Path.Combine("src", "AdaptiveSopDdsop.Web", "Domain", "ExceptionWorkspaceService.cs"),
+        Path.Combine("src", "AdaptiveSopDdsop.Web", "Domain", "MasterSettingsGovernanceService.cs")
+    };
+    var generatedTextSources = string.Join('\n', relativeFiles.Select(file => File.ReadAllText(Path.Combine(root, file))));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    foreach (var forbidden in new[]
+    {
+        "Scenario Preview",
+        "Pre-build",
+        "缓冲 sizing",
+        "Zone Adjustment Factor",
+        "订货周期 {policy.OrderCycleDays}d",
+        "订货周期 {action.Value:0}d",
+        "{action.Value:0} {action.Unit}"
+    })
+    {
+        AssertTrue(
+            !generatedTextSources.Contains(forbidden, StringComparison.Ordinal),
+            $"generated five-stage business text should not expose {forbidden}");
+    }
+
+    foreach (var translation in new[]
+    {
+        ".replace(/\\bdemonstrated ADU\\b/g, \"经验证 ADU\")",
+        ".replace(/\\bZone (?=\\d)/g, \"区域调整因子 \")",
+        ".replace(/\\bVF (?=\\d)/g, \"变异因子 \")"
+    })
+    {
+        AssertTrue(script.Contains(translation, StringComparison.Ordinal), $"business renderer should contain {translation}");
+    }
+    AssertTrue(script.Contains("businessEvidenceLabel(item.aduSource)", StringComparison.Ordinal), "DDMRP source evidence should be localized only at display time");
+    AssertTrue(script.Contains("businessEvidenceLabel(item.currentValue)", StringComparison.Ordinal), "current DDOM values should be localized only at display time");
+    AssertTrue(
+        script.Contains("fillSelect(selectors.risk, \"风险\"", StringComparison.Ordinal) &&
+        script.Contains("statusLabel)", StringComparison.Ordinal),
+        "risk filter options should render Chinese status labels while retaining internal status values");
+    foreach (var stage in new[] { "FrozenBaseline", "ExternalScenario", "ResponseConfiguration", "MasterSettings", "Trace" })
+    {
+        AssertTrue(script.Contains($"{stage}: \"", StringComparison.Ordinal), $"white-box trace stage {stage} should have a Chinese display mapping");
+    }
+    AssertTrue(script.Contains(".replace(/\\bBalanced\\b/g, \"综合平衡\")", StringComparison.Ordinal), "white-box trace should localize the default adoption mode");
+    AssertTrue(script.Contains(".replace(/\\btrace\\b/gi, \"追踪记录\")", StringComparison.Ordinal), "persisted trace messages should not expose an ordinary English trace token");
+    AssertTrue(script.Contains("item.textContent.replaceAll(\"红色供应窗口\", \"供应能力不足周\")", StringComparison.Ordinal), "protected white-box trace should localize the legacy supply-window wording without changing its protected renderer");
 }
 
 static void TestFiveStageUiHasNoExternalImportOrProtocolInput()
@@ -4237,6 +4767,17 @@ static void TestFiveStageUiHasNoExternalImportOrProtocolInput()
 
     AssertTrue(businessPage.Contains("id=\"future-assumption-mode\"", StringComparison.Ordinal), "scenario source must be chosen explicitly");
     AssertTrue(businessPage.Contains("value=\"Manual\"", StringComparison.Ordinal) && businessPage.Contains("value=\"DemoFixture\"", StringComparison.Ordinal), "only manual and internal demo inputs should be offered");
+    AssertTrue(businessPage.Contains("id=\"response-supply-recovery\"", StringComparison.Ordinal), "enterprise response options should include an internal supply response");
+    AssertTrue(script.Contains("RESP-SUPPLY-RECOVERY", StringComparison.Ordinal)
+        && script.Contains("supplierCapacityLimits", StringComparison.Ordinal),
+        "supply response should use the existing internal supplier-capacity parameter set");
+    AssertTrue(script.Contains("state.futureComparisonBaseline?.payload?.planningInputs?.supplierCapacityWindows", StringComparison.Ordinal),
+        "supply response commitments should come from the selected frozen baseline instead of mutable live workspace data");
+    var baselineFetch = script.IndexOf("const baselineResponse = await fetch(`/api/current-baselines/", StringComparison.Ordinal);
+    var frozenBaselineAssignment = script.IndexOf("state.futureComparisonBaseline = await baselineResponse.json();", baselineFetch, StringComparison.Ordinal);
+    var comparisonRequestBuild = script.IndexOf("const request = buildScenarioComparisonRequest();", frozenBaselineAssignment, StringComparison.Ordinal);
+    AssertTrue(baselineFetch >= 0 && frozenBaselineAssignment > baselineFetch && comparisonRequestBuild > frozenBaselineAssignment,
+        "scenario comparison must load the selected frozen baseline before building response configurations");
     AssertTrue(script.Contains("/api/scenario-assumptions/templates", StringComparison.Ordinal), "demo assumptions should come from the internal template endpoint");
     AssertTrue(script.Contains("/api/scenario-runs/compare/save", StringComparison.Ordinal), "comparison must be saved explicitly through the internal save endpoint");
     AssertTrue(script.Contains("sourceScenarioRunId: savedRun.runId", StringComparison.Ordinal), "scenario-derived governance must use the real saved run id");
@@ -4264,6 +4805,10 @@ static void TestTimeBufferViewUsesBackendResultsOnly()
     AssertTrue(script.Contains("const evidenceComplete = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "time-buffer display should distinguish missing evidence from a complete non-breach");
     AssertTrue(script.Contains("item.evidenceStatus === \"NotApplicable\" ? \"不适用\" : \"证据缺失\"", StringComparison.Ordinal), "time-buffer display should distinguish not applicable from missing evidence");
     AssertTrue(script.Contains("!item.isBreached ? \"不适用\"", StringComparison.Ordinal), "a complete non-breach should show recovery as not applicable");
+    AssertTrue(script.Contains("breach.evidenceStatus === \"Complete\" || breach.evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal), "comparison cards should accept a legitimate not-applicable scope without reporting missing evidence");
+    AssertTrue(script.Contains("allBreachEvidenceNotApplicable ? \"不适用\"", StringComparison.Ordinal), "comparison cards should label an entirely not-applicable breach set explicitly");
+    AssertTrue(script.Contains("const breachEvidenceAvailable = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "all future breach rows should branch on backend evidence status");
+    AssertTrue(script.Contains("!breachEvidenceAvailable ? unavailableEvidence", StringComparison.Ordinal), "future breach rows must show evidence state before non-breach values");
     AssertTrue(script.Contains("[\"击穿记录\"", StringComparison.Ordinal) && script.Contains("[\"未恢复记录\"", StringComparison.Ordinal), "time-buffer KPIs should summarize unambiguous backend record counts");
     AssertTrue(!script.Contains("const firstBreach =", StringComparison.Ordinal), "time-buffer KPIs must not label the first array item as the global earliest or maximum result");
 }
@@ -4814,10 +5359,14 @@ static void TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonR
         var wrongScenario = validRun with { RunId = "RUN-API-WRONG-SCENARIO", ExternalScenarioId = "EXT-OTHER" };
         var wrongResponse = validRun with { RunId = "RUN-API-WRONG-RESPONSE", ResponseId = "RESP-LINEAGE-B" };
         var unsaved = validRun with { RunId = "RUN-API-NOT-SAVED", Status = "Draft" };
+        var validDetail = new ScenarioRunDetail(
+            validRun,
+            selected.Preview.Request,
+            selected.Preview with { IsPersisted = true });
         var governance = new MasterSettingsGovernanceService(
             source,
             preview,
-            new FixedScenarioRunLineageReader(validRun, wrongBaseline, wrongScenario, wrongResponse, unsaved),
+            new FixedScenarioRunLineageReader(validDetail, wrongBaseline, wrongScenario, wrongResponse, unsaved),
             databasePath);
 
         var generated = governance.ProposeFromFrozenComparison(
@@ -4881,6 +5430,73 @@ static void TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonR
             && !program.Contains("MapPost(\"/api/current-baselines/{snapshotId}/publish", StringComparison.Ordinal)
             && !program.Contains("MapPost(\"/api/coordination-items/{itemId}/forward", StringComparison.Ordinal),
             "lineage work must not add approval publish or forwarding automation");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestFrozenComparisonGovernanceRejectsReusedRunIdWithDifferentRequest()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-governance-run-request-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "治理运行请求一致性"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var originalRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var runs = new ScenarioRunPersistenceService(preview, comparisonService, databasePath);
+        var saved = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            originalRequest,
+            "RESP-LINEAGE-A",
+            "治理血缘源运行",
+            "保存规范化请求",
+            "DDS&OP 计划员"));
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+
+        var alteredResponseRequest = originalRequest with
+        {
+            ResponseOptions = originalRequest.ResponseOptions!
+                .Select(option => option.ResponseId == "RESP-LINEAGE-A"
+                    ? option with
+                    {
+                        Parameters = new ScenarioRunParameterSet(
+                            CapacityAdjustments: new[]
+                            {
+                                new ResourceCapacityAdjustment("RES-TVAC", 3, 1.35m, "篡改临时能力")
+                            })
+                    }
+                    : option)
+                .ToList()
+        };
+        var alteredScenarioRequest = originalRequest with
+        {
+            ExternalScenario = originalRequest.ExternalScenario with
+            {
+                DemandChanges = new[]
+                {
+                    new ExternalDemandChange(null, "星载电子", 2, 5, 1.35m, "篡改需求变化")
+                }
+            }
+        };
+
+        foreach (var tamperedRequest in new[] { alteredResponseRequest, alteredScenarioRequest })
+        {
+            var selected = comparisonService.Compare(tamperedRequest).ResponseCases
+                .Single(item => item.ResponseId == "RESP-LINEAGE-A");
+            AssertArgumentRejected(
+                () => governance.ProposeFromFrozenComparison(
+                    selected,
+                    frozen,
+                    saved.RunId,
+                    new GovernanceDecisionContext()),
+                "saved run ID reused with different normalized request");
+        }
     }
     finally
     {
@@ -6001,7 +6617,8 @@ static void SeedRepairBaseline(
     string snapshotNumber,
     string createdBy,
     string? auditMessage,
-    int? auditSequence)
+    int? auditSequence,
+    string? note = null)
 {
     using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
     connection.Open();
@@ -6018,11 +6635,12 @@ static void SeedRepairBaseline(
                 created_by, note, created_at_utc, sections_json, payload_json, evidence_label)
             VALUES (
                 $snapshot_id, $snapshot_number, 'Frozen', $as_of_utc, 'MASTER-SMOKE-V1',
-                $created_by, NULL, $created_at_utc, '[]', '{}', 'LocalSmoke');
+                $created_by, $note, $created_at_utc, '[]', '{}', 'LocalSmoke');
             """;
         command.Parameters.AddWithValue("$snapshot_id", snapshotId);
         command.Parameters.AddWithValue("$snapshot_number", snapshotNumber);
         command.Parameters.AddWithValue("$created_by", createdBy);
+        command.Parameters.AddWithValue("$note", note is null ? DBNull.Value : note);
         command.Parameters.AddWithValue("$as_of_utc", "2026-07-14T08:00:00.0000000+00:00");
         command.Parameters.AddWithValue("$created_at_utc", "2026-07-14T08:00:00.0000000+00:00");
         command.ExecuteNonQuery();
@@ -6145,17 +6763,22 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
                     "人工录入：治理测试")),
             new[] { new ResponseConfiguration("RESP-001", "临时能力", new ScenarioRunParameterSet(CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 3, 1.2m, "临时能力") })) },
             12));
+        var selectedComparison = comparison.ResponseCases.Single();
         var savedRun = new ScenarioRunSummary(
             "RUN-SAVED-GOV-001", "SR-20260715-0002", "治理来源场景", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
             "2026-07-15T08:00:00Z", 12, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
             frozen.SnapshotId, comparison.ExternalScenario.ScenarioId, "RESP-001");
+        var savedDetail = new ScenarioRunDetail(
+            savedRun,
+            selectedComparison.Preview.Request,
+            selectedComparison.Preview with { IsPersisted = true });
         var service = new MasterSettingsGovernanceService(
             source,
             new ScenarioRunPreviewService(source),
-            new FixedScenarioRunLineageReader(savedRun),
+            new FixedScenarioRunLineageReader(savedDetail),
             databasePath);
         var generated = service.ProposeFromFrozenComparison(
-                comparison.ResponseCases.Single(),
+                selectedComparison,
                 frozen,
                 savedRun.RunId,
                 new GovernanceDecisionContext(
@@ -6308,14 +6931,30 @@ internal sealed class FixedCurrentBaselineDataSource : ICurrentBaselineDataSourc
 internal sealed class FixedScenarioRunLineageReader : IScenarioRunLineageReader
 {
     private readonly IReadOnlyDictionary<string, ScenarioRunSummary> _runs;
+    private readonly IReadOnlyDictionary<string, ScenarioRunDetail> _details;
 
     public FixedScenarioRunLineageReader(params ScenarioRunSummary[] runs)
     {
         _runs = runs.ToDictionary(item => item.RunId, StringComparer.Ordinal);
+        _details = new Dictionary<string, ScenarioRunDetail>(StringComparer.Ordinal);
+    }
+
+    public FixedScenarioRunLineageReader(ScenarioRunDetail detail, params ScenarioRunSummary[] runs)
+    {
+        _runs = runs
+            .Append(detail.Summary)
+            .ToDictionary(item => item.RunId, StringComparer.Ordinal);
+        _details = new Dictionary<string, ScenarioRunDetail>(StringComparer.Ordinal)
+        {
+            [detail.Summary.RunId] = detail
+        };
     }
 
     public ScenarioRunSummary? GetSummary(string runId) =>
         _runs.TryGetValue(runId, out var summary) ? summary : null;
+
+    public ScenarioRunDetail? GetDetail(string runId) =>
+        _details.TryGetValue(runId, out var detail) ? detail : null;
 }
 
 internal sealed class StaticScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource

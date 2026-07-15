@@ -489,9 +489,9 @@ public sealed class ScenarioRunPreviewService
         var trace = new List<ScenarioAuditTrace>
         {
             new("Data", $"读取 {data.Skus.Count} 个 SKU、{data.Resources.Count} 个资源、{data.SupplierItemSources.Count} 条供应来源。", "Information"),
-            new("Scenario", $"模板 {request.TemplateId ?? "无"}；采纳口径 {request.AdoptionConstraintMode ?? "Balanced"}；提前建库 {parameters.PrebuildCampaigns?.Count ?? 0} 条；产能调整 {parameters.CapacityAdjustments?.Count ?? 0} 条；SKU 策略调整 {parameters.SkuPolicyOverrides?.Count ?? 0} 条。", "Information"),
+            new("Scenario", $"模板 {request.TemplateId ?? "无"}；采纳口径 {AdoptionConstraintDisplay(request.AdoptionConstraintMode)}；提前建库 {parameters.PrebuildCampaigns?.Count ?? 0} 条；产能调整 {parameters.CapacityAdjustments?.Count ?? 0} 条；SKU 策略调整 {parameters.SkuPolicyOverrides?.Count ?? 0} 条。", "Information"),
             new("Engine", "基准方案与预览方案均复用需求驱动计划引擎，未复制业务逻辑。", "Information"),
-            new("Result", $"峰值负荷变化 {scenario.Metrics.PeakLoadPercent - baseline.Metrics.PeakLoadPercent:0.#}pp，供应缺口变化 {scenario.Metrics.SupplyGap - baseline.Metrics.SupplyGap:0}。", scenario.Metrics.SupplyGap > baseline.Metrics.SupplyGap ? "Warning" : "Information"),
+            new("Result", $"补货释放峰值变化 {scenario.Metrics.PeakLoadPercent - baseline.Metrics.PeakLoadPercent:0.#}pp，供应缺口变化 {scenario.Metrics.SupplyGap - baseline.Metrics.SupplyGap:0}。", scenario.Metrics.SupplyGap > baseline.Metrics.SupplyGap ? "Warning" : "Information"),
             new("Persistence", "本次为预览结果，未保存、未审批、未调用优化求解器。", "Information")
         };
         if (request.ExternalScenario is not null)
@@ -506,6 +506,19 @@ public sealed class ScenarioRunPreviewService
             $"企业响应：提前建库 {parameters.PrebuildCampaigns?.Count ?? 0}，临时能力 {parameters.CapacityAdjustments?.Count ?? 0}，主参数覆盖 {parameters.SkuPolicyOverrides?.Count ?? 0}，供应响应 {parameters.SupplierCapacityLimits?.Count ?? 0}。",
             "Information"));
         return trace;
+    }
+
+    private static string AdoptionConstraintDisplay(string? mode)
+    {
+        return mode switch
+        {
+            "ServiceFirst" => "服务优先",
+            "FlowFirst" => "流速优先",
+            "CashFirst" => "现金优先",
+            "CapacityFirst" => "产能优先",
+            "SupplyFirst" => "供应优先",
+            _ => "综合平衡"
+        };
     }
 
     private static string ScenarioName(ScenarioWorkspaceDataSet data, string? templateId)

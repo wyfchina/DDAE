@@ -200,7 +200,9 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
     private static TimeBufferEvidence BuildTimeBufferEvidence(string asOf, ScenarioWorkspaceDataSet planningInputs)
     {
         var definitions = planningInputs.TimeBuffers ?? Array.Empty<TimeBufferDefinition>();
-        if (definitions.Count == 0)
+        var scopes = planningInputs.TimeBufferProductScopes ?? Array.Empty<TimeBufferProductScope>();
+        var progress = planningInputs.ControlPointProgress ?? Array.Empty<ControlPointProgressFact>();
+        if (definitions.Count == 0 && scopes.Count == 0 && progress.Count == 0)
         {
             var notApplicable = new[]
             {
@@ -213,62 +215,145 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 new BaselineAnalysisAvailability("TimeBuffer", "NotApplicable", "No time-buffer definitions are configured."));
         }
 
-        var scopes = planningInputs.TimeBufferProductScopes ?? Array.Empty<TimeBufferProductScope>();
-        var progress = planningInputs.ControlPointProgress ?? Array.Empty<ControlPointProgressFact>();
-        var definitionItems = definitions.Select(definition =>
+        var horizonWeeks = Math.Clamp(planningInputs.Request.HorizonWeeks, 1, 52);
+        var definitionGroups = definitions
+            .GroupBy(item => item.BufferId, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .ToList();
+        var knownDefinitionIds = definitionGroups
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        var knownSkus = planningInputs.Skus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
+        var knownFamilies = planningInputs.Skus.Select(item => item.Family).ToHashSet(StringComparer.Ordinal);
+
+        var definitionItems = definitionGroups.Select(group =>
         {
-            var completeness = definition.BufferDays > 0m && IsCompleteEvidence(definition.EvidenceStatus)
+            var definition = group.First();
+            var duplicate = group.Count() != 1;
+            var completeness = !duplicate && definition.BufferDays > 0m && definition.EvidenceStatus == "Complete"
                 ? "Complete"
                 : "EvidenceMissing";
+            var evidenceStatus = group
+                .Select(item => item.EvidenceStatus)
+                .FirstOrDefault(item => Freshness(item) != "Fresh") ?? definition.EvidenceStatus;
+            var explicitReason = duplicate
+                ? $"Duplicate time-buffer definitions ({group.Count()} rows)"
+                : definition.BufferDays > 0m
+                    ? null
+                    : "BufferDays is missing or invalid";
             return new BaselineEvidenceItem(
                 definition.BufferId,
                 definition.ControlPoint,
-                Freshness(definition.EvidenceStatus),
+                Freshness(evidenceStatus),
                 completeness,
-                definition.IsCritical,
-                EvidenceReason(definition.EvidenceStatus, completeness, definition.BufferDays > 0m
-                    ? null
-                    : "BufferDays is missing or invalid"));
+                duplicate || definition.IsCritical,
+                EvidenceReason(evidenceStatus, completeness, explicitReason));
         }).ToList();
-        var scopeItems = definitions.Select(definition =>
+
+        var scopeItems = definitionGroups.Select(group =>
         {
-            var scope = scopes.FirstOrDefault(item => item.BufferId == definition.BufferId);
-            var hasScope = scope is not null && (scope.ProductFamilies.Count > 0 || scope.Skus.Count > 0);
-            var completeness = hasScope && IsCompleteEvidence(scope!.EvidenceStatus) ? "Complete" : "EvidenceMissing";
+            var definition = group.First();
+            var matchingScopes = scopes.Where(item => item.BufferId == definition.BufferId).ToList();
+            var scope = matchingScopes.Count == 1 ? matchingScopes[0] : null;
+            string? scopeIssue = matchingScopes.Count switch
+            {
+                0 => "Product scope evidence is missing",
+                > 1 => $"Duplicate product scope evidence ({matchingScopes.Count} rows)",
+                _ => null
+            };
+            if (scopeIssue is null && scope!.EvidenceStatus != "Complete")
+            {
+                scopeIssue = $"EvidenceStatus={scope.EvidenceStatus ?? "Missing"}";
+            }
+            if (scopeIssue is null)
+            {
+                var unknownSkus = scope!.Skus.Where(item => !knownSkus.Contains(item)).Distinct(StringComparer.Ordinal).ToList();
+                var unknownFamilies = scope.ProductFamilies.Where(item => !knownFamilies.Contains(item)).Distinct(StringComparer.Ordinal).ToList();
+                if (unknownSkus.Count > 0)
+                {
+                    scopeIssue = $"Unknown SKU scope evidence: {string.Join(", ", unknownSkus)}";
+                }
+                else if (unknownFamilies.Count > 0)
+                {
+                    scopeIssue = $"Unknown product-family scope evidence: {string.Join(", ", unknownFamilies)}";
+                }
+                else
+                {
+                    var scopedFamilies = scope.ProductFamilies.ToHashSet(StringComparer.Ordinal);
+                    var affectedProducts = scope.Skus
+                        .Concat(planningInputs.Skus
+                            .Where(item => scopedFamilies.Contains(item.Family))
+                            .Select(item => item.Sku))
+                        .Where(ProtectionProductEligibility.IsEligible)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList();
+                    if (affectedProducts.Count == 0)
+                    {
+                        scopeIssue = "Product scope does not resolve to an eligible product";
+                    }
+                }
+            }
+
+            var evidenceStatus = matchingScopes
+                .Select(item => item.EvidenceStatus)
+                .FirstOrDefault(item => Freshness(item) != "Fresh") ?? scope?.EvidenceStatus;
+            var completeness = scopeIssue is null ? "Complete" : "EvidenceMissing";
             return new BaselineEvidenceItem(
                 definition.BufferId,
                 $"{definition.ControlPoint} product scope",
-                Freshness(scope?.EvidenceStatus),
+                Freshness(evidenceStatus),
                 completeness,
                 definition.IsCritical,
-                EvidenceReason(scope?.EvidenceStatus, completeness, hasScope ? null : "Product scope evidence is missing"));
+                EvidenceReason(evidenceStatus, completeness, scopeIssue));
         }).ToList();
-        var progressItems = definitions.Select(definition =>
+        scopeItems.AddRange(scopes
+            .Where(item => !knownDefinitionIds.Contains(item.BufferId))
+            .GroupBy(item => item.BufferId, StringComparer.Ordinal)
+            .Select(group => new BaselineEvidenceItem(
+                $"UNKNOWN:{group.Key}",
+                $"{group.Key} product scope",
+                Freshness(group.Select(item => item.EvidenceStatus).FirstOrDefault(item => Freshness(item) != "Fresh")),
+                "EvidenceMissing",
+                true,
+                "Product scope references an undefined time-buffer definition")));
+
+        var progressItems = definitionGroups.Select(group =>
         {
+            var definition = group.First();
             var facts = progress.Where(item => item.BufferId == definition.BufferId).ToList();
-            var hasValues = facts.Count > 0 && facts.All(item => item.ObservedDelayDays.HasValue);
-            var evidenceComplete = facts.Count > 0 && facts.All(item => IsCompleteEvidence(item.EvidenceStatus));
-            var completeness = hasValues && evidenceComplete ? "Complete" : "EvidenceMissing";
-            var aggregateFreshnessStatus = facts
-                .Select(item => item.EvidenceStatus)
-                .FirstOrDefault(item => Freshness(item) != "Fresh");
+            var horizonFacts = facts.Where(item => item.Week >= 1 && item.Week <= horizonWeeks).ToList();
+            var factsByWeek = horizonFacts
+                .GroupBy(item => item.Week)
+                .ToDictionary(group => group.Key, group => group.ToList());
             var factIssues = new List<string>();
-            foreach (var fact in facts)
+            foreach (var week in Enumerable.Range(1, horizonWeeks))
             {
+                if (!factsByWeek.TryGetValue(week, out var weeklyFacts) || weeklyFacts.Count == 0)
+                {
+                    factIssues.Add($"Week {week}: Control-point progress evidence is missing");
+                    continue;
+                }
+                if (weeklyFacts.Count != 1)
+                {
+                    factIssues.Add($"Week {week}: duplicate control-point progress evidence ({weeklyFacts.Count} rows)");
+                    continue;
+                }
+
+                var fact = weeklyFacts[0];
                 if (!fact.ObservedDelayDays.HasValue)
                 {
                     factIssues.Add($"Week {fact.Week}: ObservedDelayDays is missing");
                 }
-                if (Freshness(fact.EvidenceStatus) != "Fresh" || !IsCompleteEvidence(fact.EvidenceStatus))
+                if (fact.EvidenceStatus != "Complete")
                 {
                     factIssues.Add($"Week {fact.Week}: EvidenceStatus={fact.EvidenceStatus ?? "Missing"}");
                 }
             }
-            var missingReason = facts.Count == 0
-                ? "Control-point progress evidence is missing"
-                : factIssues.Count > 0
-                    ? string.Join("; ", factIssues)
-                    : null;
+            var completeness = factIssues.Count == 0 ? "Complete" : "EvidenceMissing";
+            var aggregateFreshnessStatus = horizonFacts
+                .Select(item => item.EvidenceStatus)
+                .FirstOrDefault(item => Freshness(item) != "Fresh");
+            var missingReason = factIssues.Count > 0 ? string.Join("; ", factIssues) : null;
             return new BaselineEvidenceItem(
                 definition.BufferId,
                 $"{definition.ControlPoint} progress",
@@ -277,6 +362,16 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 definition.IsCritical,
                 EvidenceReason(aggregateFreshnessStatus, completeness, missingReason));
         }).ToList();
+        progressItems.AddRange(progress
+            .Where(item => !knownDefinitionIds.Contains(item.BufferId))
+            .GroupBy(item => item.BufferId, StringComparer.Ordinal)
+            .Select(group => new BaselineEvidenceItem(
+                $"UNKNOWN:{group.Key}",
+                $"{group.Key} progress",
+                Freshness(group.Select(item => item.EvidenceStatus).FirstOrDefault(item => Freshness(item) != "Fresh")),
+                "EvidenceMissing",
+                true,
+                "Control-point progress references an undefined time-buffer definition")));
 
         var sections = new[]
         {

@@ -6,6 +6,7 @@ namespace AdaptiveSopDdsop.Web.Domain;
 public interface IScenarioRunLineageReader
 {
     ScenarioRunSummary? GetSummary(string runId);
+    ScenarioRunDetail? GetDetail(string runId);
 }
 
 public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader

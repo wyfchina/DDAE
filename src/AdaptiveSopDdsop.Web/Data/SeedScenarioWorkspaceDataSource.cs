@@ -64,7 +64,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             BuildGuardrails(),
             BuildCapacityProtections(routings),
             BuildTimeBuffers(),
-            BuildControlPointProgress(),
+            BuildControlPointProgress(horizonWeeks),
             BuildTimeBufferProductScopes(scopedSkus));
     }
 
@@ -114,14 +114,17 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         };
     }
 
-    private static IReadOnlyList<ControlPointProgressFact> BuildControlPointProgress()
+    private static IReadOnlyList<ControlPointProgressFact> BuildControlPointProgress(int horizonWeeks)
     {
-        return new[]
-        {
-            new ControlPointProgressFact("MS-TB-001", 1, 0.5m, "试验件按计划进入准备窗口", "Complete"),
-            new ControlPointProgressFact("MS-TB-001", 2, 1.0m, "洁净转运窗口调整", "Complete"),
-            new ControlPointProgressFact("MS-TB-001", 3, 0m, "准备工作恢复计划节奏", "Complete"),
-        };
+        return Enumerable.Range(1, horizonWeeks)
+            .Select(week => week switch
+            {
+                1 => new ControlPointProgressFact("MS-TB-001", week, 0.5m, "试验件按计划进入准备窗口", "Complete"),
+                2 => new ControlPointProgressFact("MS-TB-001", week, 1.0m, "洁净转运窗口调整", "Complete"),
+                3 => new ControlPointProgressFact("MS-TB-001", week, 0m, "准备工作恢复计划节奏", "Complete"),
+                _ => new ControlPointProgressFact("MS-TB-001", week, 0m, "展望期内按计划，无基线延迟", "Complete")
+            })
+            .ToList();
     }
 
     private static IReadOnlyList<TimeBufferProductScope> BuildTimeBufferProductScopes(
@@ -184,7 +187,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
 
                 var completenessStatus = missing.Count == 0 ? "Complete" : "Incomplete";
                 var validationMessage = missing.Count == 0
-                    ? "DDMRP 参数完整，可用于缓冲 sizing、补货投影、RCCP 和主设置治理。"
+                    ? "DDMRP 参数完整，可用于缓冲定容、补货投影、RCCP 和主设置治理。"
                     : $"缺少 {string.Join("、", missing)}，不得进入正式主设置下传。";
 
                 return new DdmrpParameterProfile(
