@@ -181,7 +181,8 @@ public sealed record ExternalScenarioDefinition(
     IReadOnlyList<ExternalSupplyRisk>? SupplyRisks = null,
     IReadOnlyList<ExternalCapacityLoss>? CapacityLosses = null,
     IReadOnlyList<ExternalKnownEvent>? KnownEvents = null,
-    IReadOnlyList<ExternalTimeDelay>? TimeDelays = null);
+    IReadOnlyList<ExternalTimeDelay>? TimeDelays = null,
+    ScenarioAssumptionMetadata? Metadata = null);
 
 public sealed record GovernanceDecisionContext(
     string? SourceBaselineId = null,
@@ -696,6 +697,13 @@ public sealed record ScenarioRunSaveRequest(
     string? CreatedBy,
     ScenarioRunPreviewRequest PreviewRequest);
 
+public sealed record ScenarioComparisonSaveRequest(
+    ScenarioComparisonRequest Comparison,
+    string ResponseId,
+    string Name,
+    string? Description,
+    string? CreatedBy);
+
 public sealed record ScenarioRunSummary(
     string RunId,
     string RunNumber,
@@ -714,7 +722,10 @@ public sealed record ScenarioRunSummary(
     decimal PeakLoadPercent,
     decimal SupplyGap,
     int RedSkuCount,
-    int ReplenishmentOrderCount);
+    int ReplenishmentOrderCount,
+    string? BaselineSnapshotId = null,
+    string? ExternalScenarioId = null,
+    string? ResponseId = null);
 
 public sealed record ScenarioRunDetail(
     ScenarioRunSummary Summary,

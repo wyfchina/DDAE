@@ -48,11 +48,16 @@ public sealed class ScenarioComparisonService
 {
     private readonly CurrentBaselineService _baselineService;
     private readonly ScenarioRunPreviewService _previewService;
+    private readonly IScenarioAssumptionSource _assumptionSource;
 
-    public ScenarioComparisonService(CurrentBaselineService baselineService, ScenarioRunPreviewService previewService)
+    public ScenarioComparisonService(
+        CurrentBaselineService baselineService,
+        ScenarioRunPreviewService previewService,
+        IScenarioAssumptionSource assumptionSource)
     {
         _baselineService = baselineService;
         _previewService = previewService;
+        _assumptionSource = assumptionSource;
     }
 
     public ScenarioComparisonResult Compare(ScenarioComparisonRequest request)
@@ -67,6 +72,11 @@ public sealed class ScenarioComparisonService
         {
             throw new ArgumentException("外部场景标识不能为空。", nameof(request));
         }
+        if (request.ExternalScenario.Metadata is null)
+        {
+            throw new ArgumentException("场景来源缺失；仅允许人工录入或演示模板", nameof(request));
+        }
+        _assumptionSource.Validate(request.ExternalScenario.Metadata);
         var responseOptions = request.ResponseOptions ?? Array.Empty<ResponseConfiguration>();
         if (responseOptions.Any(option => string.IsNullOrWhiteSpace(option.ResponseId) || string.IsNullOrWhiteSpace(option.Name)))
         {

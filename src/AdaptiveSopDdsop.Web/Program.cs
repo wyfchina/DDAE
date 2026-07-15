@@ -36,6 +36,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ICurrentBaselineDataSource>(),
         databasePath);
 });
+builder.Services.AddSingleton<IScenarioAssumptionSource, SeedScenarioAssumptionSource>();
 builder.Services.AddSingleton<ScenarioComparisonService>();
 builder.Services.AddSingleton(sp =>
 {
@@ -49,8 +50,11 @@ builder.Services.AddSingleton(sp =>
     var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
     return new ScenarioRunPersistenceService(
         sp.GetRequiredService<ScenarioRunPreviewService>(),
+        sp.GetRequiredService<ScenarioComparisonService>(),
         databasePath);
 });
+builder.Services.AddSingleton<IScenarioRunLineageReader>(sp =>
+    sp.GetRequiredService<ScenarioRunPersistenceService>());
 builder.Services.AddSingleton(sp =>
 {
     var environment = sp.GetRequiredService<IWebHostEnvironment>();
@@ -312,11 +316,32 @@ app.MapGet("/api/current-baselines/{snapshotId}/audit", (string snapshotId, Curr
     return Results.Ok(service.GetAuditEvents(snapshotId));
 });
 
+app.MapGet("/api/scenario-assumptions/templates", (IScenarioAssumptionSource source) =>
+{
+    return Results.Ok(source.GetTemplates());
+});
+
 app.MapPost("/api/scenario-runs/compare", (ScenarioComparisonRequest request, ScenarioComparisonService service) =>
 {
     try
     {
         return Results.Ok(service.Compare(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
+app.MapPost("/api/scenario-runs/compare/save", (ScenarioComparisonSaveRequest request, ScenarioRunPersistenceService service) =>
+{
+    try
+    {
+        return Results.Ok(service.SaveFrozenComparison(request));
     }
     catch (ArgumentException ex)
     {

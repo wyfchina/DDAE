@@ -29,8 +29,12 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
     ("Current baseline incrementally migrates legacy audit payload evidence", TestCurrentBaselineMigratesLegacyAuditPayloadColumn),
+    ("Scenario assumption source provides only manual and demo inputs", TestScenarioAssumptionSourceProvidesOnlyManualAndDemoInputs),
+    ("Scenario assumption source rejects external protocol sources", TestScenarioAssumptionSourceRejectsExternalProtocolSources),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
+    ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
+    ("Scenario assumption and frozen save APIs remain internal only", TestScenarioAssumptionAndFrozenSaveApisRemainInternalOnly),
     ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
     ("Coordination ledger enforces workflow and audits creation status decision and outcome", TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates),
     ("Coordination ledger rejects invalid direct completion", TestCoordinationLedgerRejectsInvalidDirectCompletion),
@@ -1281,6 +1285,78 @@ static void TestCurrentBaselineMigratesLegacyAuditPayloadColumn()
     }
 }
 
+static void TestScenarioAssumptionSourceProvidesOnlyManualAndDemoInputs()
+{
+    var source = new SeedScenarioAssumptionSource();
+    var templates = source.GetTemplates();
+    var repeatedTemplates = source.GetTemplates();
+
+    AssertTrue(templates.Count > 0, "the internal assumption source should expose at least one demo fixture");
+    AssertEqual(templates.Count, templates.Select(item => item.TemplateId).Distinct(StringComparer.Ordinal).Count(), "demo template IDs should be unique");
+    AssertTrue(
+        templates.Select(item => $"{item.TemplateId}@{item.TemplateVersion}")
+            .SequenceEqual(repeatedTemplates.Select(item => $"{item.TemplateId}@{item.TemplateVersion}")),
+        "demo template identity should be stable across reads");
+
+    foreach (var template in templates)
+    {
+        AssertTrue(!string.IsNullOrWhiteSpace(template.TemplateId), "demo template ID should be explicit");
+        AssertTrue(!string.IsNullOrWhiteSpace(template.TemplateVersion), "demo template version should be explicit");
+        AssertTrue(!string.IsNullOrWhiteSpace(template.EvidenceLabel), "demo template evidence label should be explicit");
+        AssertTrue(template.ExternalScenario.Metadata is not null, "demo fixture should carry source metadata");
+        AssertEqual("DemoFixture", template.ExternalScenario.Metadata!.SourceKind, "demo fixture source kind");
+        AssertEqual(template.TemplateId, template.ExternalScenario.Metadata.TemplateId!, "demo fixture metadata template ID");
+        AssertEqual(template.TemplateVersion, template.ExternalScenario.Metadata.TemplateVersion!, "demo fixture metadata template version");
+        AssertEqual(template.EvidenceLabel, template.ExternalScenario.Metadata.EvidenceLabel, "demo fixture metadata evidence label");
+        AssertEqual(template.TemplateId, source.GetTemplate(template.TemplateId)!.TemplateId, "demo fixture should be retrievable by stable ID");
+        source.Validate(template.ExternalScenario.Metadata);
+    }
+
+    source.Validate(new ScenarioAssumptionMetadata(
+        " manual ",
+        null,
+        null,
+        "DDS&OP 计划员",
+        "2026-07-15T08:00:00Z",
+        "2026-07-16",
+        "2026-09-30",
+        "客户会议确认的人工场景假设",
+        "人工录入：客户会议纪要"));
+}
+
+static void TestScenarioAssumptionSourceRejectsExternalProtocolSources()
+{
+    var source = new SeedScenarioAssumptionSource();
+    var forbiddenSources = new[]
+    {
+        "ExternalImport", "File", "Csv", "Json", "Network", "NetworkScore", "SDBR", "DDOM", "Contract", "Unknown"
+    };
+
+    foreach (var sourceKind in forbiddenSources)
+    {
+        var rejected = false;
+        try
+        {
+            source.Validate(new ScenarioAssumptionMetadata(
+                sourceKind,
+                "EXTERNAL-TEMPLATE",
+                "v1",
+                "外部连接器",
+                "2026-07-15T08:00:00Z",
+                "2026-07-16",
+                "2026-09-30",
+                "外部来源不得进入 DDAE 场景假设",
+                "外部协议证据"));
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+
+        AssertTrue(rejected, $"source kind {sourceKind} should be rejected");
+    }
+}
+
 static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-compare-{Guid.NewGuid():N}.db");
@@ -1290,14 +1366,24 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
         var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "场景比较来源基线"));
         var previewService = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(validationData));
-        var service = new ScenarioComparisonService(baselineService, previewService);
+        var service = new ScenarioComparisonService(baselineService, previewService, new SeedScenarioAssumptionSource());
         var externalScenario = new ExternalScenarioDefinition(
             "EXT-SUPPLY-CAPACITY",
             "需求上升与供应能力风险",
             new[] { new ExternalDemandChange(null, "精益液压件", 2, 6, 1.35m, "客户需求上升") },
             new[] { new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.55m, "供应商产出风险") },
             new[] { new ExternalCapacityLoss("R-MIX", 3, 6, 0.65m, "设备能力损失") },
-            new[] { new ExternalKnownEvent("EVENT-001", "客户促销窗口", 2, 6) });
+            new[] { new ExternalKnownEvent("EVENT-001", "客户促销窗口", 2, 6) },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual",
+                null,
+                null,
+                "DDS&OP 计划员",
+                "2026-07-15T08:00:00Z",
+                "2026-07-16",
+                "2026-09-30",
+                "客户与供应商会议确认",
+                "人工录入：DDS&OP 场景会议"));
         var responses = new[]
         {
             new ResponseConfiguration(
@@ -1322,7 +1408,23 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
         AssertTrue(result.AllCases.All(item => item.ExternalScenarioId == externalScenario.ScenarioId), "all cases should share the external scenario");
         AssertTrue(result.NoResponse.Preview.Request.Parameters is null, "no-response case must not carry enterprise responses");
         AssertTrue(result.ResponseCases.All(item => item.Preview.Request.Parameters is not null), "response cases should carry response configuration only");
+        AssertTrue(result.AllCases.All(item => item.Preview.Request.ExternalScenario?.Metadata?.SourceKind == "Manual"), "all cases should retain the validated manual source metadata");
         AssertTrue(result.AllCases.SelectMany(item => item.Breaches).Select(item => item.ScopeType).Distinct().OrderBy(item => item).SequenceEqual(new[] { "Capacity", "Inventory", "Supply" }), "inventory capacity and supply breach analyses should all be present");
+
+        var missingMetadataRejected = false;
+        try
+        {
+            service.Compare(new ScenarioComparisonRequest(
+                frozen.SnapshotId,
+                externalScenario with { Metadata = null },
+                responses,
+                12));
+        }
+        catch (ArgumentException ex)
+        {
+            missingMetadataRejected = ex.Message.Contains("场景来源缺失；仅允许人工录入或演示模板", StringComparison.Ordinal);
+        }
+        AssertTrue(missingMetadataRejected, "comparison should reject a scenario whose source metadata is missing");
 
         foreach (var invalidResponses in new[]
         {
@@ -1390,9 +1492,21 @@ static void TestScenarioComparisonUsesFrozenSnapshotValues()
         };
         var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(frozenCandidate), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "冻结库存来源验证"));
-        var comparison = new ScenarioComparisonService(baselineService, previewService).Compare(new ScenarioComparisonRequest(
+        var comparison = new ScenarioComparisonService(baselineService, previewService, new SeedScenarioAssumptionSource()).Compare(new ScenarioComparisonRequest(
             frozen.SnapshotId,
-            new ExternalScenarioDefinition("EXT-FROZEN-SOURCE", "无额外扰动"),
+            new ExternalScenarioDefinition(
+                "EXT-FROZEN-SOURCE",
+                "无额外扰动",
+                Metadata: new ScenarioAssumptionMetadata(
+                    "Manual",
+                    null,
+                    null,
+                    "DDS&OP 计划员",
+                    "2026-07-15T08:00:00Z",
+                    "2026-07-16",
+                    "2026-09-30",
+                    "冻结库存来源验证",
+                    "人工录入：冻结来源测试")),
             Array.Empty<ResponseConfiguration>(),
             4));
         AssertEqual(0, liveSource.LoadCount, "frozen comparison must not call the live workspace data source");
@@ -1425,6 +1539,154 @@ static void TestScenarioComparisonUsesFrozenSnapshotValues()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         DeleteSqliteFiles(databasePath);
     }
+}
+
+static void TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-frozen-scenario-runs-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "冻结场景保存来源基线"));
+        var liveSource = new TrackingScenarioWorkspaceDataSource(validationData);
+        var previewService = new ScenarioRunPreviewService(liveSource);
+        var comparisonService = new ScenarioComparisonService(
+            baselineService,
+            previewService,
+            new SeedScenarioAssumptionSource());
+        var persistence = new ScenarioRunPersistenceService(previewService, comparisonService, databasePath);
+        var comparisonRequest = new ScenarioComparisonRequest(
+            frozen.SnapshotId,
+            new ExternalScenarioDefinition(
+                "EXT-FROZEN-LINEAGE",
+                "冻结场景血缘验证",
+                DemandChanges: new[]
+                {
+                    new ExternalDemandChange(null, "精益液压件", 2, 6, 1.25m, "客户需求上升")
+                },
+                SupplyRisks: new[]
+                {
+                    new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.70m, "供应商产出风险")
+                },
+                Metadata: new ScenarioAssumptionMetadata(
+                    "Manual",
+                    null,
+                    null,
+                    "DDS&OP 计划员",
+                    "2026-07-15T08:00:00Z",
+                    "2026-07-16",
+                    "2026-09-30",
+                    "客户与供应商会议确认",
+                    "人工录入：冻结场景保存测试")),
+            new[]
+            {
+                new ResponseConfiguration(
+                    "RESP-CAPACITY",
+                    "临时能力",
+                    new ScenarioRunParameterSet(
+                        CapacityAdjustments: Enumerable.Range(3, 4)
+                            .Select(week => new ResourceCapacityAdjustment("R-MIX", week, 1.25m, "临时能力响应"))
+                            .ToList())),
+                new ResponseConfiguration(
+                    "RESP-POLICY",
+                    "策略覆盖",
+                    new ScenarioRunParameterSet(
+                        SkuPolicyOverrides: new[] { new SkuPolicyOverride("HYD-100", 80m, 7) }))
+            },
+            12);
+        var frozenComparison = comparisonService.Compare(comparisonRequest);
+        var responseIds = new[] { "NO_RESPONSE", "RESP-CAPACITY", "RESP-POLICY" };
+
+        var saved = responseIds
+            .Select(responseId => persistence.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+                comparisonRequest,
+                responseId,
+                $"冻结场景 {responseId}",
+                "保存冻结比较结果与真实血缘",
+                "DDS&OP 计划员")))
+            .ToList();
+
+        AssertEqual(0, liveSource.LoadCount, "frozen comparison save must not reload the live scenario workspace source");
+        AssertEqual(saved.Count, saved.Select(item => item.RunId).Distinct(StringComparer.Ordinal).Count(), "each frozen comparison save should return a distinct real run ID");
+        AssertTrue(saved.All(item => Guid.TryParseExact(item.RunId, "N", out _)), "frozen comparison save should return GUID run IDs");
+        AssertTrue(saved.All(item => item.Status == "Saved" && item.ApprovalStatus == "NotSubmitted"), "frozen saves must not change governance status");
+
+        IScenarioRunLineageReader lineageReader = persistence;
+        var summaries = saved.Select(item => lineageReader.GetSummary(item.RunId)!).ToList();
+        AssertTrue(summaries.All(item => item is not null), "saved frozen runs should be available through the lineage reader");
+        AssertTrue(summaries.All(item => item.BaselineSnapshotId == frozen.SnapshotId), "saved cases should share the frozen baseline ID");
+        AssertTrue(summaries.All(item => item.ExternalScenarioId == comparisonRequest.ExternalScenario.ScenarioId), "saved cases should share the external scenario ID");
+        AssertTrue(summaries.Select(item => item.ResponseId).SequenceEqual(responseIds), "saved cases should retain the selected response IDs");
+
+        foreach (var summary in summaries)
+        {
+            var expectedCase = frozenComparison.AllCases.Single(item => item.ResponseId == summary.ResponseId);
+            var detail = persistence.GetDetail(summary.RunId);
+            AssertTrue(detail is not null, "saved frozen preview should be readable");
+            AssertTrue(detail!.Result.IsPersisted, "saved frozen preview should be marked persisted");
+            AssertEqual(expectedCase.Preview.Scenario.Metrics.ServiceLevelPercent, detail.Result.Scenario.Metrics.ServiceLevelPercent, "saved frozen preview service level");
+            AssertEqual(expectedCase.Preview.Scenario.Metrics.AverageInventoryValue, detail.Result.Scenario.Metrics.AverageInventoryValue, "saved frozen preview inventory value");
+            AssertEqual(expectedCase.Preview.Request.Parameters is null, detail.Request.Parameters is null, "saved frozen preview should retain only the selected response configuration");
+        }
+
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(scenario_runs);";
+        using var reader = command.ExecuteReader();
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(1));
+        }
+        AssertTrue(
+            new[] { "baseline_snapshot_id", "external_scenario_id", "response_id" }.All(columns.Contains),
+            "scenario_runs should add frozen lineage columns");
+
+        var unknownResponseRejected = false;
+        try
+        {
+            persistence.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+                comparisonRequest,
+                "RESP-NOT-DEFINED",
+                "无效响应",
+                null,
+                "DDS&OP 计划员"));
+        }
+        catch (ArgumentException)
+        {
+            unknownResponseRejected = true;
+        }
+        AssertTrue(unknownResponseRejected, "frozen comparison save should select exactly one existing response case");
+        AssertEqual(3, persistence.List(50).Count, "an invalid response selection must not create a run");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioAssumptionAndFrozenSaveApisRemainInternalOnly()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+
+    AssertTrue(
+        program.Contains("app.MapGet(\"/api/scenario-assumptions/templates\"", StringComparison.Ordinal),
+        "internal demo assumption templates endpoint should be exposed");
+    AssertTrue(
+        program.Contains("app.MapPost(\"/api/scenario-runs/compare/save\"", StringComparison.Ordinal),
+        "frozen comparison save endpoint should be exposed");
+    AssertTrue(
+        program.Contains("AddSingleton<IScenarioRunLineageReader>", StringComparison.Ordinal),
+        "the read-only lineage interface should resolve to the scenario persistence singleton");
+    AssertTrue(
+        !program.Contains("/api/scenario-assumptions/import", StringComparison.Ordinal)
+        && !program.Contains("/api/scenario-assumptions/network", StringComparison.Ordinal)
+        && !program.Contains("/api/scenario-assumptions/protocol", StringComparison.Ordinal),
+        "scenario assumptions must not expose import network or protocol endpoints");
 }
 
 static void TestProtectionBreachAnalysisReportsRecovery()
@@ -3269,10 +3531,25 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
         var service = new MasterSettingsGovernanceService(source, new ScenarioRunPreviewService(source), databasePath);
         var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "治理来源基线"));
-        var comparisonService = new ScenarioComparisonService(baselineService, new ScenarioRunPreviewService(source));
+        var comparisonService = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(source),
+            new SeedScenarioAssumptionSource());
         var comparison = comparisonService.Compare(new ScenarioComparisonRequest(
             frozen.SnapshotId,
-            new ExternalScenarioDefinition("RUN-001", "治理来源场景"),
+            new ExternalScenarioDefinition(
+                "RUN-001",
+                "治理来源场景",
+                Metadata: new ScenarioAssumptionMetadata(
+                    "Manual",
+                    null,
+                    null,
+                    "DDS&OP 计划员",
+                    "2026-07-15T08:00:00Z",
+                    "2026-07-20",
+                    "2026-08-16",
+                    "治理来源场景",
+                    "人工录入：治理测试")),
             new[] { new ResponseConfiguration("RESP-001", "临时能力", new ScenarioRunParameterSet(CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 3, 1.2m, "临时能力") })) },
             12));
         var generated = service.ProposeFromFrozenComparison(

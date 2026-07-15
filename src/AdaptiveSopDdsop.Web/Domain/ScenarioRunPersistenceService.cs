@@ -3,7 +3,12 @@ using Microsoft.Data.Sqlite;
 
 namespace AdaptiveSopDdsop.Web.Domain;
 
-public sealed class ScenarioRunPersistenceService
+public interface IScenarioRunLineageReader
+{
+    ScenarioRunSummary? GetSummary(string runId);
+}
+
+public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -12,12 +17,22 @@ public sealed class ScenarioRunPersistenceService
 
     private readonly string _databasePath;
     private readonly ScenarioRunPreviewService _previewService;
+    private readonly ScenarioComparisonService? _comparisonService;
 
     public ScenarioRunPersistenceService(ScenarioRunPreviewService previewService, string databasePath)
     {
         _previewService = previewService;
         _databasePath = databasePath;
         EnsureCreated();
+    }
+
+    public ScenarioRunPersistenceService(
+        ScenarioRunPreviewService previewService,
+        ScenarioComparisonService comparisonService,
+        string databasePath)
+        : this(previewService, databasePath)
+    {
+        _comparisonService = comparisonService;
     }
 
     public ScenarioRunSaveResponse Save(ScenarioRunSaveRequest request)
@@ -48,12 +63,90 @@ public sealed class ScenarioRunPersistenceService
                     run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                     horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
                     service_level_percent, flow_index, average_inventory_value, peak_load_percent,
-                    supply_gap, red_sku_count, replenishment_order_count)
+                    supply_gap, red_sku_count, replenishment_order_count,
+                    baseline_snapshot_id, external_scenario_id, response_id)
                 VALUES (
                     $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
                     $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
                     $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
-                    $supply_gap, $red_sku_count, $replenishment_order_count);
+                    $supply_gap, $red_sku_count, $replenishment_order_count,
+                    $baseline_snapshot_id, $external_scenario_id, $response_id);
+                """;
+            AddParameters(command, summary);
+            command.Parameters.AddWithValue("$request_json", requestJson);
+            command.Parameters.AddWithValue("$result_json", resultJson);
+            command.ExecuteNonQuery();
+        }
+
+        foreach (var auditEvent in auditEvents)
+        {
+            InsertAuditEvent(connection, transaction, auditEvent);
+        }
+
+        transaction.Commit();
+        return new ScenarioRunSaveResponse(runId, runNumber, "Saved", "NotSubmitted", true, summary);
+    }
+
+    public ScenarioRunSaveResponse SaveFrozenComparison(ScenarioComparisonSaveRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            throw new ArgumentException("场景名称不能为空。", nameof(request));
+        }
+        if (string.IsNullOrWhiteSpace(request.ResponseId))
+        {
+            throw new ArgumentException("响应方案标识不能为空。", nameof(request));
+        }
+
+        var comparisonService = _comparisonService
+            ?? throw new InvalidOperationException("冻结比较保存需要后端场景比较服务。");
+        var comparison = comparisonService.Compare(request.Comparison);
+        var selectedCase = comparison.AllCases.SingleOrDefault(item =>
+            string.Equals(item.ResponseId, request.ResponseId, StringComparison.Ordinal));
+        if (selectedCase is null)
+        {
+            throw new ArgumentException("所选响应方案不存在于本次冻结比较。", nameof(request));
+        }
+
+        var runId = Guid.NewGuid().ToString("N");
+        var createdAt = DateTimeOffset.UtcNow;
+        var createdAtText = createdAt.ToString("O");
+        var runNumber = $"SR-{createdAt:yyyyMMdd}-{NextSequence():0000}";
+        var createdBy = string.IsNullOrWhiteSpace(request.CreatedBy) ? "计划员" : request.CreatedBy.Trim();
+        var preview = selectedCase.Preview with { IsPersisted = true };
+        var saveRequest = new ScenarioRunSaveRequest(
+            request.Name,
+            request.Description,
+            request.CreatedBy,
+            preview.Request);
+        var summary = BuildSummary(runId, runNumber, saveRequest, createdBy, createdAtText, preview) with
+        {
+            BaselineSnapshotId = comparison.BaselineSnapshotId,
+            ExternalScenarioId = selectedCase.ExternalScenarioId,
+            ResponseId = selectedCase.ResponseId
+        };
+        var requestJson = JsonSerializer.Serialize(preview.Request, JsonOptions);
+        var resultJson = JsonSerializer.Serialize(preview, JsonOptions);
+        var auditEvents = BuildAuditEvents(runId, requestJson, preview, createdAt);
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO scenario_runs (
+                    run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
+                    horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
+                    service_level_percent, flow_index, average_inventory_value, peak_load_percent,
+                    supply_gap, red_sku_count, replenishment_order_count,
+                    baseline_snapshot_id, external_scenario_id, response_id)
+                VALUES (
+                    $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
+                    $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
+                    $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
+                    $supply_gap, $red_sku_count, $replenishment_order_count,
+                    $baseline_snapshot_id, $external_scenario_id, $response_id);
                 """;
             AddParameters(command, summary);
             command.Parameters.AddWithValue("$request_json", requestJson);
@@ -78,7 +171,8 @@ public sealed class ScenarioRunPersistenceService
         command.CommandText = """
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
-                   average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count
+                   average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
+                   baseline_snapshot_id, external_scenario_id, response_id
             FROM scenario_runs
             ORDER BY created_at_utc DESC
             LIMIT $limit;
@@ -95,6 +189,24 @@ public sealed class ScenarioRunPersistenceService
         return results;
     }
 
+    public ScenarioRunSummary? GetSummary(string runId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
+                   horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
+                   average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
+                   baseline_snapshot_id, external_scenario_id, response_id
+            FROM scenario_runs
+            WHERE run_id = $run_id;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadSummary(reader) : null;
+    }
+
     public ScenarioRunDetail? GetDetail(string runId)
     {
         using var connection = OpenConnection();
@@ -103,7 +215,7 @@ public sealed class ScenarioRunPersistenceService
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   request_json, result_json
+                   baseline_snapshot_id, external_scenario_id, response_id, request_json, result_json
             FROM scenario_runs
             WHERE run_id = $run_id;
             """;
@@ -116,8 +228,8 @@ public sealed class ScenarioRunPersistenceService
         }
 
         var summary = ReadSummary(reader);
-        var requestJson = reader.GetString(18);
-        var resultJson = reader.GetString(19);
+        var requestJson = reader.GetString(21);
+        var resultJson = reader.GetString(22);
         var request = JsonSerializer.Deserialize<ScenarioRunPreviewRequest>(requestJson, JsonOptions)
             ?? new ScenarioRunPreviewRequest();
         var result = JsonSerializer.Deserialize<ScenarioRunPreviewResult>(resultJson, JsonOptions)
@@ -207,6 +319,29 @@ public sealed class ScenarioRunPersistenceService
             CREATE INDEX IF NOT EXISTS ix_scenario_run_audit_run_sequence ON scenario_run_audit_events(run_id, sequence);
             """;
         command.ExecuteNonQuery();
+        EnsureColumn(connection, "baseline_snapshot_id", "TEXT NULL");
+        EnsureColumn(connection, "external_scenario_id", "TEXT NULL");
+        EnsureColumn(connection, "response_id", "TEXT NULL");
+    }
+
+    private static void EnsureColumn(SqliteConnection connection, string columnName, string definition)
+    {
+        using (var inspect = connection.CreateCommand())
+        {
+            inspect.CommandText = "PRAGMA table_info(scenario_runs);";
+            using var reader = inspect.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE scenario_runs ADD COLUMN {columnName} {definition};";
+        alter.ExecuteNonQuery();
     }
 
     private int NextSequence()
@@ -291,6 +426,9 @@ public sealed class ScenarioRunPersistenceService
         command.Parameters.AddWithValue("$supply_gap", summary.SupplyGap);
         command.Parameters.AddWithValue("$red_sku_count", summary.RedSkuCount);
         command.Parameters.AddWithValue("$replenishment_order_count", summary.ReplenishmentOrderCount);
+        command.Parameters.AddWithValue("$baseline_snapshot_id", (object?)summary.BaselineSnapshotId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$external_scenario_id", (object?)summary.ExternalScenarioId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$response_id", (object?)summary.ResponseId ?? DBNull.Value);
     }
 
     private static void InsertAuditEvent(SqliteConnection connection, SqliteTransaction transaction, ScenarioRunAuditEvent auditEvent)
@@ -335,6 +473,9 @@ public sealed class ScenarioRunPersistenceService
             reader.GetDecimal(14),
             reader.GetDecimal(15),
             reader.GetInt32(16),
-            reader.GetInt32(17));
+            reader.GetInt32(17),
+            reader.IsDBNull(18) ? null : reader.GetString(18),
+            reader.IsDBNull(19) ? null : reader.GetString(19),
+            reader.IsDBNull(20) ? null : reader.GetString(20));
     }
 }
