@@ -21,14 +21,25 @@ public sealed class MasterSettingsGovernanceService
     private readonly string _databasePath;
     private readonly IScenarioWorkspaceDataSource _dataSource;
     private readonly ScenarioRunPreviewService _previewService;
+    private readonly IScenarioRunLineageReader? _scenarioRunLineageReader;
 
     public MasterSettingsGovernanceService(
         IScenarioWorkspaceDataSource dataSource,
         ScenarioRunPreviewService previewService,
         string databasePath)
+        : this(dataSource, previewService, null, databasePath)
+    {
+    }
+
+    public MasterSettingsGovernanceService(
+        IScenarioWorkspaceDataSource dataSource,
+        ScenarioRunPreviewService previewService,
+        IScenarioRunLineageReader? scenarioRunLineageReader,
+        string databasePath)
     {
         _dataSource = dataSource;
         _previewService = previewService;
+        _scenarioRunLineageReader = scenarioRunLineageReader;
         _databasePath = databasePath;
         EnsureCreated();
     }
@@ -78,12 +89,18 @@ public sealed class MasterSettingsGovernanceService
     public MasterSettingProposalResponse ProposeFromFrozenComparison(
         ScenarioComparisonCase comparisonCase,
         CurrentBaselineSnapshot frozenBaseline,
+        string sourceScenarioRunId,
         GovernanceDecisionContext governanceContext)
     {
+        RequireFrozenComparisonRun(
+            sourceScenarioRunId,
+            frozenBaseline.SnapshotId,
+            comparisonCase.ExternalScenarioId,
+            comparisonCase.ResponseId);
         var context = governanceContext with
         {
             SourceBaselineId = frozenBaseline.SnapshotId,
-            SourceScenarioRunId = $"{comparisonCase.ExternalScenarioId}/{comparisonCase.ResponseId}"
+            SourceScenarioRunId = sourceScenarioRunId.Trim()
         };
         var request = comparisonCase.Preview.Request with { GovernanceContext = context };
         var preview = comparisonCase.Preview with { Request = request };
@@ -124,13 +141,14 @@ public sealed class MasterSettingsGovernanceService
             throw new ArgumentException("主设置变更类型和目标不能为空。", nameof(request));
         }
 
+        var proposal = ValidateCreationMetadata(request.Change);
+
         var createdAt = DateTimeOffset.UtcNow;
         var createdAtText = createdAt.ToString("O");
         var changeId = Guid.NewGuid().ToString("N");
         var changeNumber = $"MSG-{createdAt:yyyyMMdd}-{NextChangeSequence():0000}";
         var createdBy = string.IsNullOrWhiteSpace(request.CreatedBy) ? "计划员" : request.CreatedBy.Trim();
-        var status = NormalizeInitialStatus(request.Change.Status);
-        var proposal = request.Change with { Status = status };
+        const string status = "Proposed";
         var impact = new MasterSettingChangeImpact(proposal.ServiceImpact, proposal.CashImpact, proposal.RiskLevel, string.Join("；", proposal.Rationale));
         var summary = BuildSummary(changeId, changeNumber, createdBy, createdAtText, proposal);
         var proposalJson = JsonSerializer.Serialize(proposal, JsonOptions);
@@ -146,12 +164,12 @@ public sealed class MasterSettingsGovernanceService
                     change_id, change_number, source_scenario_run_id, source_template_id,
                     setting_type, target, current_value, proposed_value, trigger, effective_window,
                     status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
-                    proposal_json, impact_json)
+                    source_baseline_id, creation_method, proposal_json, impact_json)
                 VALUES (
                     $change_id, $change_number, $source_scenario_run_id, $source_template_id,
                     $setting_type, $target, $current_value, $proposed_value, $trigger, $effective_window,
                     $status, $service_impact, $cash_impact, $risk_level, $created_by, $created_at_utc,
-                    $proposal_json, $impact_json);
+                    $source_baseline_id, $creation_method, $proposal_json, $impact_json);
                 """;
             AddChangeParameters(command, summary);
             command.Parameters.AddWithValue("$proposal_json", proposalJson);
@@ -168,19 +186,29 @@ public sealed class MasterSettingsGovernanceService
         return new MasterSettingChangeSaveResponse(changeId, changeNumber, status, true, summary);
     }
 
-    public IReadOnlyList<MasterSettingChangeSummary> ListChanges(int limit)
+    public IReadOnlyList<MasterSettingChangeSummary> ListChanges(
+        int limit,
+        string? sourceBaselineId = null,
+        string? sourceScenarioRunId = null)
     {
         var boundedLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        var baselineFilter = NormalizeFilter(sourceBaselineId);
+        var scenarioRunFilter = NormalizeFilter(sourceScenarioRunId);
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT change_id, change_number, source_scenario_run_id, source_template_id,
                    setting_type, target, current_value, proposed_value, trigger, effective_window,
-                   status, service_impact, cash_impact, risk_level, created_by, created_at_utc
+                   status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
+                   source_baseline_id, creation_method
             FROM master_setting_changes
+            WHERE ($source_baseline_id IS NULL OR source_baseline_id = $source_baseline_id)
+              AND ($source_scenario_run_id IS NULL OR source_scenario_run_id = $source_scenario_run_id)
             ORDER BY created_at_utc DESC
             LIMIT $limit;
             """;
+        command.Parameters.AddWithValue("$source_baseline_id", (object?)baselineFilter ?? DBNull.Value);
+        command.Parameters.AddWithValue("$source_scenario_run_id", (object?)scenarioRunFilter ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", boundedLimit);
 
         using var reader = command.ExecuteReader();
@@ -201,7 +229,7 @@ public sealed class MasterSettingsGovernanceService
             SELECT change_id, change_number, source_scenario_run_id, source_template_id,
                    setting_type, target, current_value, proposed_value, trigger, effective_window,
                    status, service_impact, cash_impact, risk_level, created_by, created_at_utc,
-                   proposal_json, impact_json
+                   source_baseline_id, creation_method, proposal_json, impact_json
             FROM master_setting_changes
             WHERE change_id = $change_id;
             """;
@@ -214,9 +242,9 @@ public sealed class MasterSettingsGovernanceService
         }
 
         var summary = ReadSummary(reader);
-        var proposal = JsonSerializer.Deserialize<MasterSettingChangeRequest>(reader.GetString(16), JsonOptions)
+        var proposal = JsonSerializer.Deserialize<MasterSettingChangeRequest>(reader.GetString(18), JsonOptions)
             ?? new MasterSettingChangeRequest(null, null, summary.SettingType, summary.Target, summary.CurrentValue, summary.ProposedValue, summary.Trigger, summary.EffectiveWindow, summary.Status, summary.ServiceImpact, summary.CashImpact, summary.RiskLevel, Array.Empty<string>());
-        var impact = JsonSerializer.Deserialize<MasterSettingChangeImpact>(reader.GetString(17), JsonOptions)
+        var impact = JsonSerializer.Deserialize<MasterSettingChangeImpact>(reader.GetString(19), JsonOptions)
             ?? new MasterSettingChangeImpact(summary.ServiceImpact, summary.CashImpact, summary.RiskLevel, summary.Trigger);
         return new MasterSettingChangeDetail(summary, proposal, impact);
     }
@@ -546,7 +574,8 @@ public sealed class MasterSettingsGovernanceService
             EffectiveThrough: context?.EffectiveThrough,
             ReviewOn: string.IsNullOrWhiteSpace(context?.ReviewOn) ? "下一次 DDS&OP 复查点" : context.ReviewOn,
             ExpectedEffect: string.IsNullOrWhiteSpace(context?.ExpectedEffect) ? $"服务影响 {serviceImpact:0.0}pp；现金影响 {cashImpact:0}" : context.ExpectedEffect,
-            RollbackCondition: string.IsNullOrWhiteSpace(context?.RollbackCondition) ? "实际效果偏离预期或保护能力恶化时人工回滚" : context.RollbackCondition);
+            RollbackCondition: string.IsNullOrWhiteSpace(context?.RollbackCondition) ? "实际效果偏离预期或保护能力恶化时人工回滚" : context.RollbackCondition,
+            CreationMethod: string.IsNullOrWhiteSpace(context?.SourceScenarioRunId) ? "Manual" : "ScenarioDerived");
     }
 
     private static string SkuCurrentValue(SkuBufferSetting sku)
@@ -582,6 +611,8 @@ public sealed class MasterSettingsGovernanceService
                 risk_level TEXT NOT NULL,
                 created_by TEXT NOT NULL,
                 created_at_utc TEXT NOT NULL,
+                source_baseline_id TEXT NULL,
+                creation_method TEXT NOT NULL DEFAULT 'Legacy',
                 proposal_json TEXT NOT NULL,
                 impact_json TEXT NOT NULL
             );
@@ -603,6 +634,15 @@ public sealed class MasterSettingsGovernanceService
             CREATE INDEX IF NOT EXISTS ix_master_setting_change_audit_sequence ON master_setting_change_audit_events(change_id, sequence);
             """;
         command.ExecuteNonQuery();
+        EnsureColumn(connection, "source_baseline_id", "TEXT NULL");
+        EnsureColumn(connection, "creation_method", "TEXT NOT NULL DEFAULT 'Legacy'");
+
+        using var lineageIndexes = connection.CreateCommand();
+        lineageIndexes.CommandText = """
+            CREATE INDEX IF NOT EXISTS ix_master_setting_changes_source_baseline ON master_setting_changes(source_baseline_id);
+            CREATE INDEX IF NOT EXISTS ix_master_setting_changes_source_scenario_run ON master_setting_changes(source_scenario_run_id);
+            """;
+        lineageIndexes.ExecuteNonQuery();
     }
 
     private int NextChangeSequence()
@@ -630,11 +670,101 @@ public sealed class MasterSettingsGovernanceService
         return connection;
     }
 
-    private static string NormalizeInitialStatus(string status)
+    private MasterSettingChangeRequest ValidateCreationMetadata(MasterSettingChangeRequest change)
     {
-        return status is "Proposed" or "Reviewed" or "Approved" or "Effective" or "Expired"
-            ? status
-            : "Proposed";
+        if (change.CreationMethod is not ("Manual" or "ScenarioDerived"))
+        {
+            throw new ArgumentException("创建方式只能为 Manual 或 ScenarioDerived；Legacy 仅用于读取历史记录。", nameof(change));
+        }
+        if (string.IsNullOrWhiteSpace(change.SourceBaselineId))
+        {
+            throw new ArgumentException("主设置变更必须关联来源冻结基线。", nameof(change));
+        }
+
+        if (change.CreationMethod == "ScenarioDerived")
+        {
+            if (string.IsNullOrWhiteSpace(change.SourceScenarioRunId))
+            {
+                throw new ArgumentException("场景派生变更必须关联已保存的冻结比较 run。", nameof(change));
+            }
+
+            var run = _scenarioRunLineageReader?.GetSummary(change.SourceScenarioRunId)
+                ?? throw new ArgumentException("场景派生变更关联的 run 不存在。", nameof(change));
+            if (!string.Equals(run.Status, "Saved", StringComparison.Ordinal))
+            {
+                throw new ArgumentException("场景派生变更必须关联已保存的 run。", nameof(change));
+            }
+            if (string.IsNullOrWhiteSpace(run.BaselineSnapshotId)
+                || !string.Equals(run.BaselineSnapshotId, change.SourceBaselineId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException("场景派生变更的基线必须与已保存 run 一致。", nameof(change));
+            }
+            if (string.IsNullOrWhiteSpace(run.ResponseId))
+            {
+                throw new ArgumentException("场景派生变更必须来自已保存的冻结比较响应。", nameof(change));
+            }
+        }
+
+        return change with
+        {
+            SourceBaselineId = change.SourceBaselineId.Trim(),
+            SourceScenarioRunId = string.IsNullOrWhiteSpace(change.SourceScenarioRunId) ? null : change.SourceScenarioRunId.Trim(),
+            Status = "Proposed"
+        };
+    }
+
+    private ScenarioRunSummary RequireFrozenComparisonRun(
+        string sourceScenarioRunId,
+        string baselineSnapshotId,
+        string externalScenarioId,
+        string responseId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceScenarioRunId))
+        {
+            throw new ArgumentException("必须提供已保存的冻结比较 run 标识。", nameof(sourceScenarioRunId));
+        }
+
+        var run = _scenarioRunLineageReader?.GetSummary(sourceScenarioRunId.Trim())
+            ?? throw new ArgumentException("冻结比较 run 不存在。", nameof(sourceScenarioRunId));
+        if (!string.Equals(run.Status, "Saved", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("冻结比较 run 尚未保存。", nameof(sourceScenarioRunId));
+        }
+        if (!string.Equals(run.BaselineSnapshotId, baselineSnapshotId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("冻结比较 run 不属于请求的基线。", nameof(sourceScenarioRunId));
+        }
+        if (!string.Equals(run.ExternalScenarioId, externalScenarioId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("冻结比较 run 不属于请求的外部场景。", nameof(sourceScenarioRunId));
+        }
+        if (string.IsNullOrWhiteSpace(run.ResponseId)
+            || !string.Equals(run.ResponseId, responseId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("冻结比较 run 不属于请求的响应方案。", nameof(sourceScenarioRunId));
+        }
+
+        return run;
+    }
+
+    private static void EnsureColumn(SqliteConnection connection, string columnName, string definition)
+    {
+        using (var inspect = connection.CreateCommand())
+        {
+            inspect.CommandText = "PRAGMA table_info(master_setting_changes);";
+            using var reader = inspect.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE master_setting_changes ADD COLUMN {columnName} {definition};";
+        alter.ExecuteNonQuery();
     }
 
     private static MasterSettingChangeSummary BuildSummary(
@@ -660,7 +790,9 @@ public sealed class MasterSettingsGovernanceService
             proposal.CashImpact,
             proposal.RiskLevel,
             createdBy,
-            createdAtUtc);
+            createdAtUtc,
+            proposal.SourceBaselineId,
+            proposal.CreationMethod);
     }
 
     private static IReadOnlyList<MasterSettingChangeAuditEvent> BuildSaveAuditEvents(
@@ -697,6 +829,8 @@ public sealed class MasterSettingsGovernanceService
         command.Parameters.AddWithValue("$risk_level", summary.RiskLevel);
         command.Parameters.AddWithValue("$created_by", summary.CreatedBy);
         command.Parameters.AddWithValue("$created_at_utc", summary.CreatedAtUtc);
+        command.Parameters.AddWithValue("$source_baseline_id", (object?)summary.SourceBaselineId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$creation_method", summary.CreationMethod);
     }
 
     private static void InsertAuditEvent(SqliteConnection connection, SqliteTransaction transaction, MasterSettingChangeAuditEvent auditEvent)
@@ -739,7 +873,9 @@ public sealed class MasterSettingsGovernanceService
             reader.GetDecimal(12),
             reader.GetString(13),
             reader.GetString(14),
-            reader.GetString(15));
+            reader.GetString(15),
+            reader.IsDBNull(16) ? null : reader.GetString(16),
+            reader.GetString(17));
     }
 
     private static int StatusRank(string status)
@@ -755,4 +891,7 @@ public sealed class MasterSettingsGovernanceService
             _ => 99
         };
     }
+
+    private static string? NormalizeFilter(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

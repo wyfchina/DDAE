@@ -14,7 +14,8 @@ public sealed record ScenarioComparisonRequest(
 public sealed record FrozenComparisonGovernanceProposalRequest(
     ScenarioComparisonRequest Comparison,
     string ResponseId,
-    GovernanceDecisionContext? GovernanceContext = null);
+    GovernanceDecisionContext? GovernanceContext = null,
+    string? SourceScenarioRunId = null);
 
 public sealed record ScenarioComparisonCase(
     string ResponseId,

@@ -137,11 +137,24 @@ public sealed class CoordinationLedgerService
         return item;
     }
 
-    public IReadOnlyList<CoordinationItem> List(int limit)
+    public IReadOnlyList<CoordinationItem> List(
+        int limit,
+        string? relatedScenarioRunId = null,
+        string? relatedMasterSettingChangeId = null)
     {
+        var scenarioRunFilter = Normalize(relatedScenarioRunId);
+        var masterSettingChangeFilter = Normalize(relatedMasterSettingChangeId);
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = $"{SelectItemSql} ORDER BY created_at_utc DESC LIMIT $limit;";
+        command.CommandText = $"""
+            {SelectItemSql}
+            WHERE ($related_scenario_run_id IS NULL OR related_scenario_run_id = $related_scenario_run_id)
+              AND ($related_master_setting_change_id IS NULL OR related_master_setting_change_id = $related_master_setting_change_id)
+            ORDER BY created_at_utc DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$related_scenario_run_id", (object?)scenarioRunFilter ?? DBNull.Value);
+        command.Parameters.AddWithValue("$related_master_setting_change_id", (object?)masterSettingChangeFilter ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
         using var reader = command.ExecuteReader();
         var results = new List<CoordinationItem>();
@@ -327,6 +340,8 @@ public sealed class CoordinationLedgerService
                 UNIQUE(item_id, sequence)
             );
             CREATE INDEX IF NOT EXISTS ix_coordination_status_due ON coordination_items(status, due_date);
+            CREATE INDEX IF NOT EXISTS ix_coordination_related_scenario_run ON coordination_items(related_scenario_run_id);
+            CREATE INDEX IF NOT EXISTS ix_coordination_related_master_setting_change ON coordination_items(related_master_setting_change_id);
             CREATE INDEX IF NOT EXISTS ix_coordination_audit_sequence ON coordination_item_audit_events(item_id, sequence);
             """;
         command.ExecuteNonQuery();

@@ -83,6 +83,13 @@ var tests = new (string Name, Action Run)[]
     ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
+    ("Manual governance change requires baseline and allows no scenario", TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario),
+    ("Scenario-derived governance change requires baseline and scenario", TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario),
+    ("Unlinked historical records remain explicitly unlinked", TestUnlinkedHistoricalRecordsRemainExplicitlyUnlinked),
+    ("Scenario change and coordination links are queryable both directions", TestScenarioChangeAndCoordinationLinksAreQueryableBothDirections),
+    ("Baseline references expose runs changes and actions", TestBaselineReferencesExposeRunsChangesAndActions),
+    ("Coordination outcome does not advance governance status", TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus),
+    ("Lineage endpoints expose read-only filters and validate saved comparison runs", TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonRuns),
     ("Scenario Run Workspace exposes master settings governance UI", TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi),
     ("Scenario preview applies pre-build capacity policy and supplier limits", TestScenarioPreviewAppliesScenarioParameters),
     ("Product RCCP workspace summarizes resources heatmap and detail", TestProductRccpWorkspaceSummarizesResourcesHeatmapAndDetail),
@@ -2558,10 +2565,19 @@ static void TestFrozenPureSupplyRiskDoesNotGenerateBufferGovernance()
                 4));
         AssertTrue(comparison.NoResponse.Preview.Scenario.Metrics.SupplyGap > 0m, "frozen pure supply-risk comparison should reproduce a supply gap");
 
-        var proposals = new MasterSettingsGovernanceService(source, previewService, databasePath)
+        var savedRun = new ScenarioRunSummary(
+            "RUN-FROZEN-SUPPLY-ONLY", "SR-20260715-0003", "冻结纯供应风险", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
+            "2026-07-15T08:00:00Z", 4, null, null, 98m, 1m, 1_000_000m, 90m, 1m, 0, 0,
+            frozen.SnapshotId, comparison.NoResponse.ExternalScenarioId, comparison.NoResponse.ResponseId);
+        var proposals = new MasterSettingsGovernanceService(
+                source,
+                previewService,
+                new FixedScenarioRunLineageReader(savedRun),
+                databasePath)
             .ProposeFromFrozenComparison(
                 comparison.NoResponse,
                 frozen,
+                savedRun.RunId,
                 new GovernanceDecisionContext())
             .Proposals;
 
@@ -3540,7 +3556,9 @@ static void TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus()
             .Proposals
             .First(item => item.SettingType == "Inventory Buffer");
 
-        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("计划员", proposal));
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest(
+            "计划员",
+            proposal with { SourceBaselineId = "BASELINE-MANUAL-AUDIT", CreationMethod = "Manual" }));
 
         AssertTrue(Guid.TryParseExact(saved.ChangeId, "N", out _), "saved change should return a GUID change id");
         AssertTrue(saved.ChangeNumber.StartsWith("MSG-", StringComparison.Ordinal), "saved change should return readable number");
@@ -3581,6 +3599,556 @@ static void TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         DeleteSqliteFiles(databasePath);
     }
+}
+
+static void TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-manual-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var preview = new ScenarioRunPreviewService(source);
+        var service = new MasterSettingsGovernanceService(source, preview, databasePath);
+        var proposal = service.ProposeFromPreview(new ScenarioRunPreviewRequest(
+                12,
+                Parameters: new ScenarioRunParameterSet(
+                    SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500) })))
+            .Proposals
+            .First();
+
+        var missingBaselineRequest = proposal with
+        {
+            CreationMethod = "Manual",
+            SourceBaselineId = null,
+            SourceScenarioRunId = null
+        };
+
+        var rejected = false;
+        try
+        {
+            service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", missingBaselineRequest));
+        }
+        catch (ArgumentException)
+        {
+            rejected = true;
+        }
+        AssertTrue(rejected, "manual governance change without a source baseline must be rejected");
+
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest(
+            "DDS&OP 计划员",
+            proposal with
+            {
+                CreationMethod = "Manual",
+                SourceBaselineId = "BASELINE-MANUAL-001",
+                SourceScenarioRunId = null
+            }));
+
+        AssertEqual("Proposed", saved.Status, "manual governance change initial status");
+        AssertTrue(saved.Summary.SourceScenarioRunId is null, "manual governance change may omit scenario lineage");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-scenario-derived-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validRun = new ScenarioRunSummary(
+            "RUN-SAVED-001", "SR-20260715-0001", "冻结比较响应", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
+            "2026-07-15T08:00:00Z", 12, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
+            "BASELINE-001", "EXT-001", "RESP-001");
+        var mismatchedBaselineRun = validRun with { RunId = "RUN-WRONG-BASELINE", BaselineSnapshotId = "BASELINE-OTHER" };
+        var missingResponseRun = validRun with { RunId = "RUN-NO-RESPONSE", ResponseId = null };
+        var unsavedRun = validRun with { RunId = "RUN-NOT-SAVED", Status = "Draft" };
+        var lineageReader = new FixedScenarioRunLineageReader(validRun, mismatchedBaselineRun, missingResponseRun, unsavedRun);
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var preview = new ScenarioRunPreviewService(source);
+        var service = new MasterSettingsGovernanceService(source, preview, lineageReader, databasePath);
+        var proposal = service.ProposeFromPreview(new ScenarioRunPreviewRequest(
+                12,
+                Parameters: new ScenarioRunParameterSet(
+                    SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 500) })))
+            .Proposals
+            .First();
+
+        MasterSettingChangeRequest Derived(string? baselineId, string? runId) => proposal with
+        {
+            SourceBaselineId = baselineId,
+            SourceScenarioRunId = runId,
+            CreationMethod = "ScenarioDerived",
+            Status = "Effective"
+        };
+
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived(null, validRun.RunId))),
+            "scenario-derived change without baseline");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", null))),
+            "scenario-derived change without run");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", "RUN-MISSING"))),
+            "scenario-derived change with unknown run");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", mismatchedBaselineRun.RunId))),
+            "scenario-derived change with mismatched baseline");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", missingResponseRun.RunId))),
+            "scenario-derived change with unsaved comparison response");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", unsavedRun.RunId))),
+            "scenario-derived change with a non-saved run");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest(
+                "DDS&OP 计划员",
+                proposal with { CreationMethod = "Legacy", SourceBaselineId = "BASELINE-001" })),
+            "new Legacy governance change");
+        AssertArgumentRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest(
+                "DDS&OP 计划员",
+                proposal with { CreationMethod = "Imported", SourceBaselineId = "BASELINE-001" })),
+            "unsupported governance creation method");
+
+        var saved = service.SaveChange(new MasterSettingChangeSaveRequest(
+            "DDS&OP 计划员",
+            Derived("BASELINE-001", validRun.RunId)));
+        var detail = service.GetDetail(saved.ChangeId)!;
+
+        AssertEqual("Proposed", saved.Status, "scenario-derived change must always start proposed");
+        AssertEqual("BASELINE-001", saved.Summary.SourceBaselineId, "scenario-derived summary baseline lineage");
+        AssertEqual(validRun.RunId, saved.Summary.SourceScenarioRunId, "scenario-derived summary run lineage");
+        AssertEqual("ScenarioDerived", saved.Summary.CreationMethod, "scenario-derived summary creation method");
+        AssertEqual("BASELINE-001", detail.Summary.SourceBaselineId, "persisted scenario-derived baseline lineage");
+        AssertEqual("ScenarioDerived", detail.Summary.CreationMethod, "persisted scenario-derived creation method");
+        AssertEqual("Proposed", detail.Proposal.Status, "persisted proposal must remain proposed");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestUnlinkedHistoricalRecordsRemainExplicitlyUnlinked()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-legacy-governance-{Guid.NewGuid():N}.db");
+    try
+    {
+        var proposal = new MasterSettingChangeRequest(
+            null, null, "Inventory Buffer", "历史缓冲", "100", "120", "历史记录", "下周期", "Proposed",
+            1m, 0m, "Yellow", new[] { "迁移前记录" });
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE master_setting_changes (
+                    change_id TEXT PRIMARY KEY,
+                    change_number TEXT NOT NULL UNIQUE,
+                    source_scenario_run_id TEXT NULL,
+                    source_template_id TEXT NULL,
+                    setting_type TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    current_value TEXT NOT NULL,
+                    proposed_value TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    effective_window TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    service_impact REAL NOT NULL,
+                    cash_impact REAL NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    proposal_json TEXT NOT NULL,
+                    impact_json TEXT NOT NULL
+                );
+                INSERT INTO master_setting_changes (
+                    change_id, change_number, source_scenario_run_id, source_template_id, setting_type, target,
+                    current_value, proposed_value, trigger, effective_window, status, service_impact, cash_impact,
+                    risk_level, created_by, created_at_utc, proposal_json, impact_json)
+                VALUES (
+                    $change_id, $change_number, NULL, NULL, $setting_type, $target,
+                    $current_value, $proposed_value, $trigger, $effective_window, $status, $service_impact, $cash_impact,
+                    $risk_level, $created_by, $created_at_utc, $proposal_json, $impact_json);
+                """;
+            command.Parameters.AddWithValue("$change_id", "LEGACY-CHANGE-001");
+            command.Parameters.AddWithValue("$change_number", "MSG-LEGACY-0001");
+            command.Parameters.AddWithValue("$setting_type", proposal.SettingType);
+            command.Parameters.AddWithValue("$target", proposal.Target);
+            command.Parameters.AddWithValue("$current_value", proposal.CurrentValue);
+            command.Parameters.AddWithValue("$proposed_value", proposal.ProposedValue);
+            command.Parameters.AddWithValue("$trigger", proposal.Trigger);
+            command.Parameters.AddWithValue("$effective_window", proposal.EffectiveWindow);
+            command.Parameters.AddWithValue("$status", proposal.Status);
+            command.Parameters.AddWithValue("$service_impact", proposal.ServiceImpact);
+            command.Parameters.AddWithValue("$cash_impact", proposal.CashImpact);
+            command.Parameters.AddWithValue("$risk_level", proposal.RiskLevel);
+            command.Parameters.AddWithValue("$created_by", "历史用户");
+            command.Parameters.AddWithValue("$created_at_utc", "2026-01-01T00:00:00Z");
+            command.Parameters.AddWithValue("$proposal_json", JsonSerializer.Serialize(proposal));
+            command.Parameters.AddWithValue("$impact_json", JsonSerializer.Serialize(new MasterSettingChangeImpact(1m, 0m, "Yellow", "历史")));
+            command.ExecuteNonQuery();
+        }
+
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var service = new MasterSettingsGovernanceService(source, new ScenarioRunPreviewService(source), databasePath);
+        var legacy = service.ListChanges(10).Single();
+
+        AssertTrue(legacy.SourceScenarioRunId is null, "legacy scenario link must remain explicitly unlinked");
+        AssertTrue(legacy.SourceBaselineId is null, "legacy baseline link must remain explicitly unlinked");
+        AssertEqual("Legacy", legacy.CreationMethod, "legacy creation method after additive migration");
+
+        using var verify = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        verify.Open();
+        using var columnsCommand = verify.CreateCommand();
+        columnsCommand.CommandText = "PRAGMA table_info(master_setting_changes);";
+        using var columnsReader = columnsCommand.ExecuteReader();
+        var columns = new HashSet<string>(StringComparer.Ordinal);
+        while (columnsReader.Read())
+        {
+            columns.Add(columnsReader.GetString(1));
+        }
+        AssertTrue(columns.Contains("source_baseline_id"), "legacy table should add source_baseline_id");
+        AssertTrue(columns.Contains("creation_method"), "legacy table should add creation_method");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioChangeAndCoordinationLinksAreQueryableBothDirections()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-bidirectional-lineage-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "双向血缘基线"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparisonService, databasePath);
+        var comparisonRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var runA = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            comparisonRequest, "RESP-LINEAGE-A", "血缘响应 A", null, "DDS&OP 计划员"));
+        var runB = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            comparisonRequest, "RESP-LINEAGE-B", "血缘响应 B", null, "DDS&OP 计划员"));
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+        var changeA = SaveScenarioDerivedChange(governance, frozen.SnapshotId, runA.RunId, "能力保护 A");
+        var changeB = SaveScenarioDerivedChange(governance, frozen.SnapshotId, runA.RunId, "能力保护 B");
+        var coordination = new CoordinationLedgerService(databasePath);
+        var itemA = CreateLineageCoordinationItem(coordination, "行动 A", runA.RunId, changeA.ChangeId);
+        var itemB = CreateLineageCoordinationItem(coordination, "行动 B", runA.RunId, changeA.ChangeId);
+        var itemC = CreateLineageCoordinationItem(coordination, "行动 C", runA.RunId, changeB.ChangeId);
+
+        var runsFromBaselineAndScenario = runs.List(50, frozen.SnapshotId, comparisonRequest.ExternalScenario.ScenarioId);
+        AssertEqual(2, runsFromBaselineAndScenario.Count, "runs filtered by baseline and external scenario");
+        AssertTrue(runsFromBaselineAndScenario.Select(item => item.RunId).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(new[] { runA.RunId, runB.RunId }), "baseline/scenario query should return both saved runs");
+        AssertEqual(0, runs.List(50, frozen.SnapshotId, "' OR 1=1 --").Count, "scenario filter must remain a SQL parameter");
+
+        var changesFromRun = governance.ListChanges(50, frozen.SnapshotId, runA.RunId);
+        AssertEqual(2, changesFromRun.Count, "changes filtered by baseline and run");
+        AssertTrue(changesFromRun.Select(item => item.ChangeId).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(new[] { changeA.ChangeId, changeB.ChangeId }), "run query should return both linked changes");
+        AssertEqual(0, governance.ListChanges(50, "' OR 1=1 --", null).Count, "baseline filter must remain a SQL parameter");
+
+        var coordinationFromRun = coordination.List(50, runA.RunId, null);
+        AssertEqual(3, coordinationFromRun.Count, "coordination items filtered by run");
+        AssertTrue(coordinationFromRun.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(new[] { itemA.ItemId, itemB.ItemId, itemC.ItemId }), "run query should return all linked coordination items");
+        AssertEqual(2, coordination.List(50, null, changeA.ChangeId).Count, "one change may link to multiple coordination items");
+        AssertEqual(2, coordination.List(50, runA.RunId, changeA.ChangeId).Count, "combined run/change filter");
+        AssertEqual(0, coordination.List(50, "' OR 1=1 --", null).Count, "coordination filter must remain a SQL parameter");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestBaselineReferencesExposeRunsChangesAndActions()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-references-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "基线引用查询"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparisonService, databasePath);
+        var comparisonRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            comparisonRequest, "RESP-LINEAGE-A", "基线引用响应", null, "DDS&OP 计划员"));
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "基线引用变更");
+        var coordination = new CoordinationLedgerService(databasePath);
+        var linkedByBoth = CreateLineageCoordinationItem(coordination, "同时关联 run 与 change", savedRun.RunId, change.ChangeId);
+        var linkedByRun = CreateLineageCoordinationItem(coordination, "仅关联 run", savedRun.RunId, null);
+        var linkedByChange = CreateLineageCoordinationItem(coordination, "仅关联 change", null, change.ChangeId);
+        var unlinked = CreateLineageCoordinationItem(coordination, "未关联历史证据", null, null);
+        var query = new BaselineLineageQueryService(runs, governance, coordination);
+
+        var result = query.Get(frozen.SnapshotId);
+
+        AssertEqual(frozen.SnapshotId, result.BaselineSnapshotId, "baseline lineage identity");
+        AssertEqual(1, result.ScenarioRuns.Count, "baseline lineage run count");
+        AssertEqual(savedRun.RunId, result.ScenarioRuns.Single().RunId, "baseline lineage run");
+        AssertEqual(1, result.MasterSettingChanges.Count, "baseline lineage change count");
+        AssertEqual(change.ChangeId, result.MasterSettingChanges.Single().ChangeId, "baseline lineage change");
+        AssertEqual(3, result.CoordinationItems.Count, "baseline lineage coordination count after deduplication");
+        AssertTrue(result.CoordinationItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(new[] { linkedByBoth.ItemId, linkedByRun.ItemId, linkedByChange.ItemId }),
+            "baseline lineage should include direct run/change actions once each");
+        AssertTrue(result.CoordinationItems.All(item => item.ItemId != unlinked.ItemId),
+            "unlinked evidence must not be guessed into baseline references");
+        AssertTrue(result.CoordinationItems.Select(item => item.CreatedAtUtc)
+            .SequenceEqual(result.CoordinationItems.Select(item => item.CreatedAtUtc).OrderBy(value => value, StringComparer.Ordinal)),
+            "baseline lineage coordination items should be sorted by creation time");
+
+        var empty = query.Get("BASELINE-NOT-FOUND");
+        AssertEqual(0, empty.ScenarioRuns.Count, "empty baseline run references");
+        AssertEqual(0, empty.MasterSettingChanges.Count, "empty baseline change references");
+        AssertEqual(0, empty.CoordinationItems.Count, "empty baseline coordination references");
+        AssertArgumentRejected(() => query.Get(" "), "blank baseline lineage query");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-non-automation-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "非自动化验证"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparisonService, databasePath);
+        var comparisonRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            comparisonRequest, "RESP-LINEAGE-A", "非自动化响应", null, "DDS&OP 计划员"));
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "非自动化变更");
+        var coordination = new CoordinationLedgerService(databasePath);
+        var item = CreateLineageCoordinationItem(coordination, "记录实际效果", savedRun.RunId, change.ChangeId);
+        var baselineBefore = JsonSerializer.Serialize(baselineService.GetDetail(frozen.SnapshotId));
+        var runBefore = JsonSerializer.Serialize(runs.GetDetail(savedRun.RunId));
+        var governanceBefore = governance.GetDetail(change.ChangeId)!;
+        var governanceAuditCountBefore = governance.GetAuditEvents(change.ChangeId).Count;
+
+        var decided = coordination.RecordDecision(item.ItemId, new CoordinationDecisionUpdateRequest(
+            "继续观察", "等待下一 DDS&OP 周期人工确认", "运营经理"));
+        var withOutcome = coordination.RecordOutcome(item.ItemId, new CoordinationOutcomeUpdateRequest(
+            "服务水平上升 0.8pp，待下周期复核", "运营经理"));
+
+        AssertEqual("Open", decided.Status, "recording a decision must not advance coordination status");
+        AssertEqual("Open", withOutcome.Status, "recording an outcome must not advance coordination status");
+        AssertTrue(!string.IsNullOrWhiteSpace(withOutcome.ActualOutcome), "coordination item should retain actual outcome evidence");
+        AssertEqual(governanceBefore.Summary.Status, governance.GetDetail(change.ChangeId)!.Summary.Status,
+            "coordination outcome must not advance governance status");
+        AssertEqual("Proposed", governance.GetDetail(change.ChangeId)!.Summary.Status,
+            "linked governance change must remain proposed");
+        AssertEqual(governanceAuditCountBefore, governance.GetAuditEvents(change.ChangeId).Count,
+            "coordination evidence must not append governance audit transitions");
+        AssertEqual(baselineBefore, JsonSerializer.Serialize(baselineService.GetDetail(frozen.SnapshotId)),
+            "coordination outcome must not mutate frozen baseline");
+        AssertEqual(runBefore, JsonSerializer.Serialize(runs.GetDetail(savedRun.RunId)),
+            "coordination outcome must not mutate saved scenario run");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonRuns()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-lineage-api-{Guid.NewGuid():N}.db");
+    try
+    {
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "血缘 API 验证"));
+        var comparisonService = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var comparisonRequest = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var selected = comparisonService.Compare(comparisonRequest).ResponseCases
+            .Single(item => item.ResponseId == "RESP-LINEAGE-A");
+        var validRun = new ScenarioRunSummary(
+            "RUN-API-VALID", "SR-20260715-0100", "API 真实 run", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
+            "2026-07-15T08:00:00Z", 6, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
+            frozen.SnapshotId, selected.ExternalScenarioId, selected.ResponseId);
+        var wrongBaseline = validRun with { RunId = "RUN-API-WRONG-BASELINE", BaselineSnapshotId = "BASELINE-OTHER" };
+        var wrongScenario = validRun with { RunId = "RUN-API-WRONG-SCENARIO", ExternalScenarioId = "EXT-OTHER" };
+        var wrongResponse = validRun with { RunId = "RUN-API-WRONG-RESPONSE", ResponseId = "RESP-LINEAGE-B" };
+        var unsaved = validRun with { RunId = "RUN-API-NOT-SAVED", Status = "Draft" };
+        var governance = new MasterSettingsGovernanceService(
+            source,
+            preview,
+            new FixedScenarioRunLineageReader(validRun, wrongBaseline, wrongScenario, wrongResponse, unsaved),
+            databasePath);
+
+        var generated = governance.ProposeFromFrozenComparison(
+            selected,
+            frozen,
+            validRun.RunId,
+            new GovernanceDecisionContext(Owner: "运营经理"));
+        AssertTrue(generated.Proposals.Count > 0, "valid saved comparison run should generate governance proposals");
+        AssertTrue(generated.Proposals.All(item => item.SourceBaselineId == frozen.SnapshotId),
+            "generated proposals should retain validated baseline");
+        AssertTrue(generated.Proposals.All(item => item.SourceScenarioRunId == validRun.RunId),
+            "generated proposals should retain real saved run ID");
+        AssertTrue(generated.Proposals.All(item => item.CreationMethod == "ScenarioDerived"),
+            "generated proposals should be scenario-derived");
+
+        AssertArgumentRejected(
+            () => governance.ProposeFromFrozenComparison(selected, frozen, "RUN-API-MISSING", new GovernanceDecisionContext()),
+            "unknown frozen-comparison run");
+        AssertArgumentRejected(
+            () => governance.ProposeFromFrozenComparison(selected, frozen, wrongBaseline.RunId, new GovernanceDecisionContext()),
+            "frozen-comparison run from another baseline");
+        AssertArgumentRejected(
+            () => governance.ProposeFromFrozenComparison(selected, frozen, wrongScenario.RunId, new GovernanceDecisionContext()),
+            "frozen-comparison run from another external scenario");
+        AssertArgumentRejected(
+            () => governance.ProposeFromFrozenComparison(selected, frozen, wrongResponse.RunId, new GovernanceDecisionContext()),
+            "frozen-comparison run from another response");
+        AssertArgumentRejected(
+            () => governance.ProposeFromFrozenComparison(selected, frozen, unsaved.RunId, new GovernanceDecisionContext()),
+            "frozen-comparison run that is not saved");
+
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var dto = new FrozenComparisonGovernanceProposalRequest(
+            comparisonRequest,
+            selected.ResponseId,
+            new GovernanceDecisionContext(Owner: "运营经理"),
+            validRun.RunId);
+        var roundTrip = JsonSerializer.Deserialize<FrozenComparisonGovernanceProposalRequest>(
+            JsonSerializer.Serialize(dto, jsonOptions),
+            jsonOptions)!;
+        AssertEqual(validRun.RunId, roundTrip.SourceScenarioRunId, "frozen-comparison request run ID round trip");
+
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+        AssertTrue(program.Contains("/api/current-baselines/{snapshotId}/references", StringComparison.Ordinal),
+            "baseline references endpoint should be exposed");
+        AssertTrue(program.Contains("string? baselineSnapshotId", StringComparison.Ordinal)
+            && program.Contains("string? externalScenarioId", StringComparison.Ordinal),
+            "scenario run endpoint should expose lineage filters");
+        AssertTrue(program.Contains("string? sourceBaselineId", StringComparison.Ordinal)
+            && program.Contains("string? sourceScenarioRunId", StringComparison.Ordinal),
+            "governance endpoint should expose lineage filters");
+        AssertTrue(program.Contains("string? relatedScenarioRunId", StringComparison.Ordinal)
+            && program.Contains("string? relatedMasterSettingChangeId", StringComparison.Ordinal),
+            "coordination endpoint should expose lineage filters");
+        AssertTrue(program.Contains("AddSingleton<IBaselineLineageQueryService, BaselineLineageQueryService>", StringComparison.Ordinal),
+            "baseline lineage query service should be registered");
+        AssertTrue(!program.Contains("MapPost(\"/api/current-baselines/{snapshotId}/references", StringComparison.Ordinal),
+            "baseline references endpoint must remain read-only");
+        AssertTrue(!program.Contains("MapPost(\"/api/master-settings/changes/{changeId}/approve", StringComparison.Ordinal)
+            && !program.Contains("MapPost(\"/api/current-baselines/{snapshotId}/publish", StringComparison.Ordinal)
+            && !program.Contains("MapPost(\"/api/coordination-items/{itemId}/forward", StringComparison.Ordinal),
+            "lineage work must not add approval publish or forwarding automation");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static ScenarioComparisonRequest CreateLineageComparisonRequest(string baselineSnapshotId)
+{
+    return new ScenarioComparisonRequest(
+        baselineSnapshotId,
+        new ExternalScenarioDefinition(
+            "EXT-LINEAGE-001",
+            "血缘查询场景",
+            DemandChanges: new[] { new ExternalDemandChange(null, "星载电子", 2, 5, 1.10m, "血缘查询需求变化") },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual", null, null, "DDS&OP 计划员", "2026-07-15T08:00:00Z",
+                "2026-07-16", "2026-09-30", "血缘查询测试", "人工录入：血缘查询")),
+        new[]
+        {
+            new ResponseConfiguration(
+                "RESP-LINEAGE-A",
+                "能力响应 A",
+                new ScenarioRunParameterSet(
+                    CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 3, 1.10m, "临时能力 A") })),
+            new ResponseConfiguration(
+                "RESP-LINEAGE-B",
+                "库存响应 B",
+                new ScenarioRunParameterSet(
+                    SkuPolicyOverrides: new[] { new SkuPolicyOverride("AV-FPGA-203", MinimumOrderQuantity: 520) }))
+        },
+        6);
+}
+
+static MasterSettingChangeSaveResponse SaveScenarioDerivedChange(
+    MasterSettingsGovernanceService service,
+    string baselineSnapshotId,
+    string runId,
+    string target)
+{
+    return service.SaveChange(new MasterSettingChangeSaveRequest(
+        "DDS&OP 计划员",
+        new MasterSettingChangeRequest(
+            SourceScenarioRunId: runId,
+            SourceTemplateId: null,
+            SettingType: "Capacity Buffer",
+            Target: target,
+            CurrentValue: "当前能力边界",
+            ProposedValue: "提升保护能力 10%",
+            Trigger: "冻结比较响应",
+            EffectiveWindow: "下一 DDS&OP 周期",
+            Status: "Approved",
+            ServiceImpact: 1m,
+            CashImpact: 100_000m,
+            RiskLevel: "Yellow",
+            Rationale: new[] { "基于已保存的冻结比较 run" },
+            SourceBaselineId: baselineSnapshotId,
+            CreationMethod: "ScenarioDerived")));
+}
+
+static CoordinationItem CreateLineageCoordinationItem(
+    CoordinationLedgerService service,
+    string title,
+    string? runId,
+    string? changeId)
+{
+    return service.Create(new CoordinationItemCreateRequest(
+        title,
+        new[] { "能力保护" },
+        runId,
+        changeId,
+        "服务影响 +1pp",
+        "库存影响可控",
+        100_000m,
+        "Yellow",
+        "需人工确认",
+        "运营经理",
+        "2026-07-31",
+        "L1",
+        "2026-08-07",
+        "DDS&OP 计划员"));
 }
 
 static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
@@ -4388,7 +4956,6 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
     try
     {
         var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
-        var service = new MasterSettingsGovernanceService(source, new ScenarioRunPreviewService(source), databasePath);
         var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "治理来源基线"));
         var comparisonService = new ScenarioComparisonService(
@@ -4412,12 +4979,22 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
                     "人工录入：治理测试")),
             new[] { new ResponseConfiguration("RESP-001", "临时能力", new ScenarioRunParameterSet(CapacityAdjustments: new[] { new ResourceCapacityAdjustment("RES-TVAC", 3, 1.2m, "临时能力") })) },
             12));
+        var savedRun = new ScenarioRunSummary(
+            "RUN-SAVED-GOV-001", "SR-20260715-0002", "治理来源场景", null, "DDS&OP 计划员", "Saved", "NotSubmitted",
+            "2026-07-15T08:00:00Z", 12, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
+            frozen.SnapshotId, comparison.ExternalScenario.ScenarioId, "RESP-001");
+        var service = new MasterSettingsGovernanceService(
+            source,
+            new ScenarioRunPreviewService(source),
+            new FixedScenarioRunLineageReader(savedRun),
+            databasePath);
         var generated = service.ProposeFromFrozenComparison(
                 comparison.ResponseCases.Single(),
                 frozen,
+                savedRun.RunId,
                 new GovernanceDecisionContext(
                     frozen.SnapshotId,
-                    "RUN-001/RESP-001",
+                    savedRun.RunId,
                     "运营经理",
                     "执行委员会",
                     "2026-07-20",
@@ -4429,7 +5006,8 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
             .First();
 
         AssertEqual(frozen.SnapshotId, generated.SourceBaselineId, "generated proposal source baseline");
-        AssertEqual("RUN-001/RESP-001", generated.SourceScenarioRunId, "generated proposal source scenario");
+        AssertEqual(savedRun.RunId, generated.SourceScenarioRunId, "generated proposal source scenario");
+        AssertEqual("ScenarioDerived", generated.CreationMethod, "generated proposal creation method");
         AssertEqual("运营经理", generated.Owner, "generated proposal owner");
         AssertEqual("执行委员会", generated.Approver, "generated proposal approver");
         AssertEqual("2026-08-16", generated.EffectiveThrough, "generated proposal expiry");
@@ -4439,7 +5017,7 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
 
         AssertEqual("TemporaryAdjustment", detail.Proposal.ChangeCategory, "governance change category");
         AssertEqual(frozen.SnapshotId, detail.Proposal.SourceBaselineId, "governance source baseline");
-        AssertEqual("RUN-001/RESP-001", detail.Proposal.SourceScenarioRunId, "governance source scenario");
+        AssertEqual(savedRun.RunId, detail.Proposal.SourceScenarioRunId, "governance source scenario");
         AssertEqual("运营经理", detail.Proposal.Owner, "governance owner");
         AssertEqual("执行委员会", detail.Proposal.Approver, "governance approver");
         AssertEqual("Proposed", saved.Status, "saved decision package must remain proposed");
@@ -4450,6 +5028,20 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         DeleteSqliteFiles(databasePath);
     }
+}
+
+static void AssertArgumentRejected(Action action, string label)
+{
+    try
+    {
+        action();
+    }
+    catch (ArgumentException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException($"{label} should be rejected");
 }
 
 internal sealed record LegacyScenarioSource(ValidationData Data);
@@ -4545,6 +5137,19 @@ internal sealed class FixedCurrentBaselineDataSource : ICurrentBaselineDataSourc
     }
 
     public CurrentBaselineCandidate GetCandidate() => _candidate;
+}
+
+internal sealed class FixedScenarioRunLineageReader : IScenarioRunLineageReader
+{
+    private readonly IReadOnlyDictionary<string, ScenarioRunSummary> _runs;
+
+    public FixedScenarioRunLineageReader(params ScenarioRunSummary[] runs)
+    {
+        _runs = runs.ToDictionary(item => item.RunId, StringComparer.Ordinal);
+    }
+
+    public ScenarioRunSummary? GetSummary(string runId) =>
+        _runs.TryGetValue(runId, out var summary) ? summary : null;
 }
 
 internal sealed class StaticScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource

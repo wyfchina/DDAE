@@ -62,8 +62,10 @@ builder.Services.AddSingleton(sp =>
     return new MasterSettingsGovernanceService(
         sp.GetRequiredService<IScenarioWorkspaceDataSource>(),
         sp.GetRequiredService<ScenarioRunPreviewService>(),
+        sp.GetRequiredService<IScenarioRunLineageReader>(),
         databasePath);
 });
+builder.Services.AddSingleton<IBaselineLineageQueryService, BaselineLineageQueryService>();
 
 var app = builder.Build();
 
@@ -316,6 +318,18 @@ app.MapGet("/api/current-baselines/{snapshotId}/audit", (string snapshotId, Curr
     return Results.Ok(service.GetAuditEvents(snapshotId));
 });
 
+app.MapGet("/api/current-baselines/{snapshotId}/references", (string snapshotId, IBaselineLineageQueryService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Get(snapshotId));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
 app.MapGet("/api/scenario-assumptions/templates", (IScenarioAssumptionSource source) =>
 {
     return Results.Ok(source.GetTemplates());
@@ -370,9 +384,13 @@ app.MapPost("/api/scenario-runs", (ScenarioRunSaveRequest request, ScenarioRunPe
     }
 });
 
-app.MapGet("/api/scenario-runs", (int? limit, ScenarioRunPersistenceService service) =>
+app.MapGet("/api/scenario-runs", (
+    int? limit,
+    string? baselineSnapshotId,
+    string? externalScenarioId,
+    ScenarioRunPersistenceService service) =>
 {
-    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+    return Results.Ok(service.List(limit.GetValueOrDefault(50), baselineSnapshotId, externalScenarioId));
 });
 
 app.MapGet("/api/scenario-runs/{runId}", (string runId, ScenarioRunPersistenceService service) =>
@@ -404,6 +422,10 @@ app.MapPost("/api/master-settings/proposals/from-comparison", (
 {
     try
     {
+        if (string.IsNullOrWhiteSpace(request.SourceScenarioRunId))
+        {
+            return Results.BadRequest(new { message = "必须提供已保存的冻结比较 run 标识。" });
+        }
         var baseline = baselineService.GetDetail(request.Comparison.BaselineSnapshotId);
         if (baseline is null)
         {
@@ -418,6 +440,7 @@ app.MapPost("/api/master-settings/proposals/from-comparison", (
         return Results.Ok(governanceService.ProposeFromFrozenComparison(
             selected,
             baseline,
+            request.SourceScenarioRunId,
             request.GovernanceContext ?? new GovernanceDecisionContext()));
     }
     catch (ArgumentException ex)
@@ -442,9 +465,13 @@ app.MapPost("/api/master-settings/changes", (MasterSettingChangeSaveRequest requ
     }
 });
 
-app.MapGet("/api/master-settings/changes", (int? limit, MasterSettingsGovernanceService service) =>
+app.MapGet("/api/master-settings/changes", (
+    int? limit,
+    string? sourceBaselineId,
+    string? sourceScenarioRunId,
+    MasterSettingsGovernanceService service) =>
 {
-    return Results.Ok(service.ListChanges(limit.GetValueOrDefault(50)));
+    return Results.Ok(service.ListChanges(limit.GetValueOrDefault(50), sourceBaselineId, sourceScenarioRunId));
 });
 
 app.MapGet("/api/master-settings/changes/{changeId}", (string changeId, MasterSettingsGovernanceService service) =>
@@ -482,9 +509,13 @@ app.MapPost("/api/coordination-items", (CoordinationItemCreateRequest request, C
     }
 });
 
-app.MapGet("/api/coordination-items", (int? limit, CoordinationLedgerService service) =>
+app.MapGet("/api/coordination-items", (
+    int? limit,
+    string? relatedScenarioRunId,
+    string? relatedMasterSettingChangeId,
+    CoordinationLedgerService service) =>
 {
-    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+    return Results.Ok(service.List(limit.GetValueOrDefault(50), relatedScenarioRunId, relatedMasterSettingChangeId));
 });
 
 app.MapGet("/api/coordination-items/{itemId}", (string itemId, CoordinationLedgerService service) =>

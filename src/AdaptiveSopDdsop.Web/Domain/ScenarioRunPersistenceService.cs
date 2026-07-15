@@ -163,9 +163,14 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         return new ScenarioRunSaveResponse(runId, runNumber, "Saved", "NotSubmitted", true, summary);
     }
 
-    public IReadOnlyList<ScenarioRunSummary> List(int limit)
+    public IReadOnlyList<ScenarioRunSummary> List(
+        int limit,
+        string? baselineSnapshotId = null,
+        string? externalScenarioId = null)
     {
         var boundedLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        var baselineFilter = NormalizeFilter(baselineSnapshotId);
+        var externalScenarioFilter = NormalizeFilter(externalScenarioId);
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -174,9 +179,13 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
                    baseline_snapshot_id, external_scenario_id, response_id
             FROM scenario_runs
+            WHERE ($baseline_snapshot_id IS NULL OR baseline_snapshot_id = $baseline_snapshot_id)
+              AND ($external_scenario_id IS NULL OR external_scenario_id = $external_scenario_id)
             ORDER BY created_at_utc DESC
             LIMIT $limit;
             """;
+        command.Parameters.AddWithValue("$baseline_snapshot_id", (object?)baselineFilter ?? DBNull.Value);
+        command.Parameters.AddWithValue("$external_scenario_id", (object?)externalScenarioFilter ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", boundedLimit);
 
         using var reader = command.ExecuteReader();
@@ -322,6 +331,13 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         EnsureColumn(connection, "baseline_snapshot_id", "TEXT NULL");
         EnsureColumn(connection, "external_scenario_id", "TEXT NULL");
         EnsureColumn(connection, "response_id", "TEXT NULL");
+
+        using var lineageIndexes = connection.CreateCommand();
+        lineageIndexes.CommandText = """
+            CREATE INDEX IF NOT EXISTS ix_scenario_runs_baseline_snapshot ON scenario_runs(baseline_snapshot_id);
+            CREATE INDEX IF NOT EXISTS ix_scenario_runs_external_scenario ON scenario_runs(external_scenario_id);
+            """;
+        lineageIndexes.ExecuteNonQuery();
     }
 
     private static void EnsureColumn(SqliteConnection connection, string columnName, string definition)
@@ -478,4 +494,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             reader.IsDBNull(19) ? null : reader.GetString(19),
             reader.IsDBNull(20) ? null : reader.GetString(20));
     }
+
+    private static string? NormalizeFilter(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

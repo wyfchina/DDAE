@@ -788,7 +788,8 @@ public sealed record MasterSettingChangeRequest(
     string? EffectiveThrough = null,
     string? ReviewOn = null,
     string? ExpectedEffect = null,
-    string? RollbackCondition = null);
+    string? RollbackCondition = null,
+    string CreationMethod = "Legacy");
 
 public sealed record MasterSettingChangeSummary(
     string ChangeId,
@@ -806,7 +807,9 @@ public sealed record MasterSettingChangeSummary(
     decimal CashImpact,
     string RiskLevel,
     string CreatedBy,
-    string CreatedAtUtc);
+    string CreatedAtUtc,
+    string? SourceBaselineId = null,
+    string CreationMethod = "Legacy");
 
 public sealed record MasterSettingChangeDetail(
     MasterSettingChangeSummary Summary,
