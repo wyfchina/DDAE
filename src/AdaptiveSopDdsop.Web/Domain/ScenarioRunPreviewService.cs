@@ -263,6 +263,8 @@ public sealed class ScenarioRunPreviewService
         var capacity = new List<ResourceCapacityAdjustment>(requestParameters?.CapacityAdjustments ?? Array.Empty<ResourceCapacityAdjustment>());
         var policies = new List<SkuPolicyOverride>(requestParameters?.SkuPolicyOverrides ?? Array.Empty<SkuPolicyOverride>());
         var supplierLimits = new List<SupplierCapacityLimit>(requestParameters?.SupplierCapacityLimits ?? Array.Empty<SupplierCapacityLimit>());
+        var timeBufferAdjustments = new List<TimeBufferResponseAdjustment>(
+            requestParameters?.TimeBufferAdjustments ?? Array.Empty<TimeBufferResponseAdjustment>());
 
         if (template is not null)
         {
@@ -297,7 +299,7 @@ public sealed class ScenarioRunPreviewService
             }
         }
 
-        return new ScenarioRunParameterSet(prebuild, capacity, policies, supplierLimits);
+        return new ScenarioRunParameterSet(prebuild, capacity, policies, supplierLimits, timeBufferAdjustments);
     }
 
     private static IReadOnlyList<SkuBufferSetting> ApplySkuPolicyOverrides(

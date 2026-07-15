@@ -40,6 +40,12 @@ var tests = new (string Name, Action Run)[]
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
     ("Scenario assumption and frozen save APIs remain internal only", TestScenarioAssumptionAndFrozenSaveApisRemainInternalOnly),
+    ("Protection analysis separates inventory time capacity and supply scopes", TestProtectionAnalysisSeparatesInventoryTimeCapacityAndSupply),
+    ("Time buffer breach reports penetration recovery and unrecovered horizon", TestTimeBufferBreachReportsPenetrationRecoveryAndUnrecoveredHorizon),
+    ("Time buffer missing evidence is not reported as zero", TestTimeBufferMissingEvidenceIsNotReportedAsZero),
+    ("Time buffer requires explicit product scope evidence", TestTimeBufferRequiresExplicitProductScopeEvidence),
+    ("Supply risk is not classified as a DDOM buffer", TestSupplyRiskIsNotClassifiedAsDdomBuffer),
+    ("FPGA never appears in time or capacity buffer results", TestFpgaNeverAppearsInTimeOrCapacityBufferResults),
     ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
     ("Coordination ledger enforces workflow and audits creation status decision and outcome", TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates),
     ("Coordination ledger rejects invalid direct completion", TestCoordinationLedgerRejectsInvalidDirectCompletion),
@@ -1690,7 +1696,14 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
         AssertTrue(result.NoResponse.Preview.Request.Parameters is null, "no-response case must not carry enterprise responses");
         AssertTrue(result.ResponseCases.All(item => item.Preview.Request.Parameters is not null), "response cases should carry response configuration only");
         AssertTrue(result.AllCases.All(item => item.Preview.Request.ExternalScenario?.Metadata?.SourceKind == "Manual"), "all cases should retain the validated manual source metadata");
-        AssertTrue(result.AllCases.SelectMany(item => item.Breaches).Select(item => item.ScopeType).Distinct().OrderBy(item => item).SequenceEqual(new[] { "Capacity", "Inventory", "Supply" }), "inventory capacity and supply breach analyses should all be present");
+        AssertTrue(
+            result.AllCases
+                .SelectMany(item => item.Breaches)
+                .Select(item => item.ScopeType)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .SequenceEqual(new[] { "CapacityBuffer", "InventoryBuffer", "SupplyRisk", "TimeBuffer" }),
+            "inventory time capacity and supply analyses should expose the four fixed scopes");
 
         var missingMetadataRejected = false;
         try
@@ -1972,10 +1985,11 @@ static void TestScenarioAssumptionAndFrozenSaveApisRemainInternalOnly()
 
 static void TestProtectionBreachAnalysisReportsRecovery()
 {
+    const int horizonWeeks = 4;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
     var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
-        .Preview(new ScenarioRunPreviewRequest(4));
+        .Preview(new ScenarioRunPreviewRequest(horizonWeeks));
     var sku = preview.Scenario.BufferTrend.WeeklyCells.First().Sku;
-    var resource = preview.Scenario.Constraints.CapacityCells.First().ResourceCode;
     var supplier = preview.Scenario.Constraints.SupplyCells.First().Supplier;
     var materialFamily = preview.Scenario.Constraints.SupplyCells.First().MaterialFamily;
     var buffer = preview.Scenario.BufferTrend with
@@ -1987,7 +2001,20 @@ static void TestProtectionBreachAnalysisReportsRecovery()
     var constraints = preview.Scenario.Constraints with
     {
         CapacityCells = preview.Scenario.Constraints.CapacityCells
-            .Select(item => item.ResourceCode == resource ? item with { Status = item.Week >= 3 ? "Red" : "Green" } : item with { Status = "Green" })
+            .Select(item => item.ResourceCode == "RES-AIT"
+                ? item with
+                {
+                    UnconstrainedRequired = item.Week switch
+                    {
+                        1 => 70m,
+                        2 => 90m,
+                        3 => 110m,
+                        _ => 70m
+                    },
+                    ConstrainedAvailable = 100m,
+                    Status = "Green"
+                }
+                : item)
             .ToList(),
         SupplyCells = preview.Scenario.Constraints.SupplyCells
             .Select(item => item.Supplier == supplier && item.MaterialFamily == materialFamily ? item with { Status = item.Week == 1 ? "Red" : "Green" } : item with { Status = "Green" })
@@ -1995,16 +2022,37 @@ static void TestProtectionBreachAnalysisReportsRecovery()
     };
     var controlled = preview with { Scenario = preview.Scenario with { BufferTrend = buffer, Constraints = constraints } };
 
-    var results = ProtectionBreachAnalyzer.Analyze(controlled.Scenario);
-    var inventory = results.Single(item => item.ScopeType == "Inventory" && item.Target == sku);
-    var capacity = results.Single(item => item.ScopeType == "Capacity" && item.Target == resource);
-    var supply = results.Single(item => item.ScopeType == "Supply" && item.Target == $"{supplier}/{materialFamily}");
+    var inventory = new InventoryProtectionAnalyzer().Analyze(controlled.Scenario)
+        .Single(item => item.ScopeType == "InventoryBuffer" && item.Target == sku);
+    var supply = new SupplyRiskAnalyzer().Analyze(controlled.Scenario)
+        .Single(item => item.ScopeType == "SupplyRisk" && item.Target == $"{supplier}/{materialFamily}");
+    var capacityAnalysis = new CapacityBufferProtectionAnalyzer().Analyze(frozenData, controlled.Scenario, horizonWeeks);
+    var capacity = capacityAnalysis.Breaches.Single(item => item.ScopeType == "CapacityBuffer" && item.Target == "RES-AIT");
+    var capacityWeek2 = capacityAnalysis.Projection.Single(item => item.Week == 2);
+    var capacityWeek3 = capacityAnalysis.Projection.Single(item => item.Week == 3);
 
     AssertEqual(2, inventory.EarliestRedWeek, "inventory first red week");
     AssertEqual(2, inventory.ConsecutiveRiskWeeks, "inventory consecutive risk duration");
     AssertEqual(4, inventory.RecoveryWeek, "inventory recovery week");
-    AssertTrue(capacity.IsUnrecovered && capacity.RecoveryWeek is null, "capacity breach through horizon should be explicitly unrecovered");
     AssertEqual(2, supply.RecoveryWeek, "supply recovery week");
+    AssertEqual<decimal?>(20m, capacityWeek2.ProtectionCapacity, "AIT capacity protection size");
+    AssertEqual<decimal?>(10m, capacityWeek2.ConsumedProtection, "AIT partial protection consumption");
+    AssertEqual<decimal?>(10m, capacityWeek2.RemainingProtection, "AIT remaining protection after partial consumption");
+    AssertEqual("Yellow", capacityWeek2.Status, "AIT partial protection status");
+    AssertEqual<decimal?>(20m, capacityWeek3.ConsumedProtection, "AIT full protection consumption");
+    AssertEqual<decimal?>(0m, capacityWeek3.RemainingProtection, "AIT exhausted protection");
+    AssertEqual("Red", capacityWeek3.Status, "AIT exhausted protection status");
+    AssertEqual(3, capacity.EarliestRedWeek, "capacity-buffer first exhausted week");
+    AssertEqual(4, capacity.RecoveryWeek, "capacity-buffer recovery week");
+    AssertTrue(!capacity.IsUnrecovered, "capacity protection should recover when upstream load falls below the protection band");
+    AssertTrue(
+        capacityAnalysis.Projection.All(item =>
+            item.UpstreamResourceCode == "RES-AIT" &&
+            item.ProtectedCcrResourceCode == "RES-HARNESS"),
+        "capacity buffer must contain only the explicit sequenced AIT to HARNESS protection");
+    AssertTrue(
+        !capacity.AffectedProducts.Contains("AV-FPGA-203", StringComparer.Ordinal),
+        "FPGA must not enter AIT to HARNESS capacity protection scope");
 
     var repeatedBuffer = preview.Scenario.BufferTrend with
     {
@@ -2012,11 +2060,208 @@ static void TestProtectionBreachAnalysisReportsRecovery()
             .Select(item => item.Sku == sku ? item with { Status = item.Week is 1 or 3 or 4 ? "Red" : "Green" } : item with { Status = "Green" })
             .ToList()
     };
-    var repeated = ProtectionBreachAnalyzer.Analyze(preview.Scenario with { BufferTrend = repeatedBuffer })
-        .Single(item => item.ScopeType == "Inventory" && item.Target == sku);
+    var repeated = new InventoryProtectionAnalyzer().Analyze(preview.Scenario with { BufferTrend = repeatedBuffer })
+        .Single(item => item.ScopeType == "InventoryBuffer" && item.Target == sku);
     AssertEqual(1, repeated.EarliestRedWeek, "repeated breach should preserve the earliest red week");
     AssertEqual(2, repeated.ConsecutiveRiskWeeks, "repeated breach should report the maximum red streak");
     AssertTrue(repeated.IsUnrecovered && repeated.RecoveryWeek is null, "a final red episode must remain unrecovered even after an earlier recovery");
+
+    var unrecoveredConstraints = constraints with
+    {
+        CapacityCells = constraints.CapacityCells
+            .Select(item => item.ResourceCode == "RES-AIT" && item.Week == 4
+                ? item with { UnconstrainedRequired = 110m }
+                : item)
+            .ToList()
+    };
+    var unrecoveredCapacity = new CapacityBufferProtectionAnalyzer().Analyze(
+            frozenData,
+            preview.Scenario with { Constraints = unrecoveredConstraints },
+            horizonWeeks)
+        .Breaches.Single(item => item.Target == "RES-AIT");
+    AssertEqual(2, unrecoveredCapacity.ConsecutiveRiskWeeks, "capacity-buffer final red streak");
+    AssertTrue(
+        unrecoveredCapacity.IsUnrecovered && unrecoveredCapacity.RecoveryWeek is null,
+        "capacity-buffer breach through the horizon should remain unrecovered");
+}
+
+static void TestProtectionAnalysisSeparatesInventoryTimeCapacityAndSupply()
+{
+    var breaches = CreateScenarioDemoTemplateEffectComparison("Supply").Disturbed.NoResponse.Breaches;
+    var scopes = breaches
+        .Select(item => item.ScopeType)
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(item => item, StringComparer.Ordinal)
+        .ToList();
+
+    AssertEqual(
+        "CapacityBuffer|InventoryBuffer|SupplyRisk|TimeBuffer",
+        string.Join('|', scopes),
+        "fixed protection-analysis scopes");
+}
+
+static void TestTimeBufferBreachReportsPenetrationRecoveryAndUnrecoveredHorizon()
+{
+    const int horizonWeeks = 4;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    frozenData = frozenData with
+    {
+        ControlPointProgress = new[]
+        {
+            new ControlPointProgressFact(definition.BufferId, 1, 1m, "基线准备延迟", "Complete"),
+            new ControlPointProgressFact(definition.BufferId, 2, 1m, "基线准备延迟", "Complete"),
+            new ControlPointProgressFact(definition.BufferId, 3, 0m, "按计划", "Complete"),
+            new ControlPointProgressFact(definition.BufferId, 4, 0m, "按计划", "Complete")
+        }
+    };
+    var recoveredScenario = new ExternalScenarioDefinition(
+        "EXT-TIME-RECOVERED",
+        "时间缓冲恢复场景",
+        TimeDelays: new[] { new ExternalTimeDelay(definition.BufferId, 1, 2, 3m, "试验件到达延迟") });
+    var response = new ScenarioRunParameterSet(
+        TimeBufferAdjustments: new[] { new TimeBufferResponseAdjustment(definition.BufferId, 2, 2, 4m, "增加准备班次") });
+    var analyzer = new TimeBufferProtectionAnalyzer();
+
+    var recovered = analyzer.Analyze(frozenData, recoveredScenario, response, horizonWeeks);
+    var recoveredBreach = recovered.Breaches.Single(item => item.Target == definition.BufferId);
+    var firstWeek = recovered.Projection.Single(item => item.BufferId == definition.BufferId && item.Week == 1);
+    var recoveryWeek = recovered.Projection.Single(item => item.BufferId == definition.BufferId && item.Week == 2);
+
+    AssertEqual<decimal?>(4m, firstWeek.DelayDays, "time-buffer net delay in first red week");
+    AssertEqual<decimal?>(133.3m, firstWeek.PenetrationPercent, "time-buffer maximum penetration percent");
+    AssertEqual("Red", firstWeek.Status, "time-buffer first-week status");
+    AssertEqual<decimal?>(0m, recoveryWeek.DelayDays, "time-buffer response recovery delay");
+    AssertEqual("Green", recoveryWeek.Status, "time-buffer recovered status");
+    AssertEqual(1, recoveredBreach.EarliestRedWeek, "time-buffer earliest red week");
+    AssertEqual(1, recoveredBreach.ConsecutiveRiskWeeks, "time-buffer maximum red streak");
+    AssertEqual(2, recoveredBreach.RecoveryWeek, "time-buffer recovery week");
+    AssertTrue(!recoveredBreach.IsUnrecovered, "recovered time buffer should not remain open through the horizon");
+    AssertEqual<decimal?>(definition.BufferDays, recoveredBreach.BufferSize, "time-buffer size");
+    AssertEqual<decimal?>(133.3m, recoveredBreach.MaximumPenetrationPercent, "time-buffer maximum breach penetration");
+
+    var previewWithResponse = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(horizonWeeks, Parameters: response));
+    AssertEqual(
+        response.TimeBufferAdjustments!.Single(),
+        previewWithResponse.Request.Parameters!.TimeBufferAdjustments!.Single(),
+        "scenario preview should retain the time-buffer response adjustment for frozen comparison analysis");
+
+    var unrecoveredScenario = new ExternalScenarioDefinition(
+        "EXT-TIME-UNRECOVERED",
+        "时间缓冲未恢复场景",
+        TimeDelays: new[] { new ExternalTimeDelay(definition.BufferId, 3, 4, 4m, "展望期末持续延迟") });
+    var unrecovered = analyzer.Analyze(frozenData, unrecoveredScenario, null, horizonWeeks)
+        .Breaches.Single(item => item.Target == definition.BufferId);
+
+    AssertEqual(3, unrecovered.EarliestRedWeek, "unrecovered time-buffer earliest red week");
+    AssertEqual(2, unrecovered.ConsecutiveRiskWeeks, "unrecovered time-buffer red streak");
+    AssertTrue(unrecovered.IsUnrecovered && unrecovered.RecoveryWeek is null, "horizon-ending time-buffer breach should remain unrecovered");
+}
+
+static void TestTimeBufferMissingEvidenceIsNotReportedAsZero()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    frozenData = frozenData with
+    {
+        ControlPointProgress = new[]
+        {
+            new ControlPointProgressFact(definition.BufferId, 1, null, "来源证据缺失", "EvidenceMissing")
+        }
+    };
+    var analyzer = new TimeBufferProtectionAnalyzer();
+    var analysis = analyzer.Analyze(
+        frozenData,
+        new ExternalScenarioDefinition("EXT-TIME-MISSING", "时间证据缺失"),
+        null,
+        horizonWeeks);
+    var breach = analysis.Breaches.Single(item => item.Target == definition.BufferId);
+
+    AssertEqual(horizonWeeks, analysis.Projection.Count, "missing-evidence time-buffer projection length");
+    AssertTrue(
+        analysis.Projection.All(item =>
+            item.EvidenceStatus == "EvidenceMissing" &&
+            item.Status == "EvidenceMissing" &&
+            item.DelayDays is null &&
+            item.PenetrationPercent is null),
+        "missing progress evidence must remain null rather than becoming zero");
+    AssertEqual("EvidenceMissing", breach.EvidenceStatus, "missing time-buffer evidence status");
+    AssertTrue(breach.MaximumPenetrationPercent is null, "missing time-buffer penetration must remain null");
+
+    var notApplicable = analyzer.Analyze(
+        frozenData with { TimeBuffers = Array.Empty<TimeBufferDefinition>() },
+        new ExternalScenarioDefinition("EXT-TIME-NA", "无时间缓冲定义"),
+        null,
+        horizonWeeks);
+    var notApplicableBreach = notApplicable.Breaches.Single();
+    AssertEqual("NotApplicable", notApplicableBreach.EvidenceStatus, "missing time-buffer definition applicability");
+    AssertTrue(notApplicable.Projection.Count == 0 && notApplicableBreach.BufferSize is null, "not-applicable time buffer must not fabricate numeric projection");
+}
+
+static void TestTimeBufferRequiresExplicitProductScopeEvidence()
+{
+    const int horizonWeeks = 2;
+    var frozenData = LoadTask5ProtectionData(horizonWeeks);
+    var definition = frozenData.TimeBuffers!.Single();
+    frozenData = frozenData with
+    {
+        ControlPointProgress = new[]
+        {
+            new ControlPointProgressFact(definition.BufferId, 1, 0m, "按计划", "Complete"),
+            new ControlPointProgressFact(definition.BufferId, 2, 0m, "按计划", "Complete")
+        },
+        TimeBufferProductScopes = Array.Empty<TimeBufferProductScope>()
+    };
+
+    var analysis = new TimeBufferProtectionAnalyzer().Analyze(
+        frozenData,
+        new ExternalScenarioDefinition("EXT-TIME-NO-SCOPE", "产品范围证据缺失"),
+        null,
+        horizonWeeks);
+    var breach = analysis.Breaches.Single(item => item.Target == definition.BufferId);
+
+    AssertEqual("EvidenceMissing", breach.EvidenceStatus, "missing explicit time-buffer product scope status");
+    AssertTrue(breach.AffectedProducts.Count == 0, "missing product scope must not infer products from names or routings");
+    AssertEqual(horizonWeeks, analysis.Projection.Count, "missing-scope time-buffer projection length");
+    AssertTrue(
+        analysis.Projection.All(item => item.DelayDays is null && item.PenetrationPercent is null && item.EvidenceStatus == "EvidenceMissing"),
+        "missing product scope must suppress calculated penetration instead of reporting zero");
+}
+
+static ScenarioWorkspaceDataSet LoadTask5ProtectionData(int horizonWeeks)
+{
+    return new SeedScenarioWorkspaceDataSource(SeedData.Create()).Load(
+        new ScenarioWorkspaceDataRequest(horizonWeeks, new DateOnly(2026, 6, 1)));
+}
+
+static void TestSupplyRiskIsNotClassifiedAsDdomBuffer()
+{
+    var breaches = CreateScenarioDemoTemplateEffectComparison("Supply").Disturbed.NoResponse.Breaches;
+    var supplyTarget = "Microchip Space/进口空间级 FPGA";
+    var supplyResults = breaches.Where(item => item.Target == supplyTarget).ToList();
+
+    AssertTrue(supplyResults.Count > 0, "supply disturbance should produce a supplier/material risk result");
+    AssertTrue(
+        supplyResults.All(item => item.ScopeType == "SupplyRisk"),
+        "supplier/material risk must use the SupplyRisk scope instead of a DDOM buffer scope");
+}
+
+static void TestFpgaNeverAppearsInTimeOrCapacityBufferResults()
+{
+    var breaches = CreateScenarioDemoTemplateEffectComparison("Supply").Disturbed.NoResponse.Breaches;
+    var protectedResults = breaches
+        .Where(item => item.ScopeType is "TimeBuffer" or "CapacityBuffer")
+        .ToList();
+
+    AssertTrue(protectedResults.Count > 0, "time and capacity buffer analyses should both be present");
+    AssertTrue(
+        protectedResults.All(item =>
+            item.Target != "AV-FPGA-203" &&
+            !item.Target.Contains("FPGA", StringComparison.OrdinalIgnoreCase) &&
+            !item.AffectedProducts.Contains("AV-FPGA-203", StringComparer.Ordinal)),
+        "AV-FPGA-203 must remain an independent inventory control point");
 }
 
 static void TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates()
@@ -2935,7 +3180,6 @@ static void TestMasterSettingsGovernanceGeneratesProposalsFromPreview()
         AssertTrue(source.LoadCount >= 3, "proposal generation should rerun preview and reload data through data source");
         AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Inventory Buffer"), "MOQ/order cycle/prebuild should create inventory buffer proposals");
         AssertTrue(proposals.Proposals.Any(item => item.SettingType == "Capacity Buffer"), "capacity multiplier should create capacity buffer proposals");
-        AssertTrue(proposals.Proposals.Any(item => item.SettingType is "Supplier Master Setting" or "Time Buffer"), "supplier limit should create supplier or time buffer proposals");
         AssertTrue(proposals.Proposals.Any(item => item.Rationale.Any(reason => reason.Contains("Scenario Preview", StringComparison.Ordinal))), "proposals should explain preview origin");
         AssertTrue(proposals.Trace.Any(item => item.Stage == "MasterSettings"), "proposal response should include master settings trace");
     }
