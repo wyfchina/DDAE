@@ -178,14 +178,14 @@
                 <div class="panel-heading"><div><span class="panel-kicker">当前状态基线</span><h2>证据检查</h2></div></div>
                 <section class="stage-card">
                     <div class="panel-heading compact-heading"><div><span class="panel-kicker">候选证据</span><h2 id="baseline-candidate-title">来源、新鲜度与完整性</h2></div></div>
-                    <div class="table-scroll"><table class="data-table"><thead><tr><th>部分</th><th>来源</th><th>截止时间</th><th>新鲜度</th><th>完整性</th><th>条目</th><th>证据</th></tr></thead><tbody id="baseline-evidence-body"></tbody></table></div>
+                    <div class="table-scroll"><table class="data-table"><thead><tr><th>部分</th><th>来源</th><th>截止时间</th><th>新鲜度</th><th>完整性</th><th>条目</th><th>证据</th><th>缺失原因</th></tr></thead><tbody id="baseline-evidence-body"></tbody></table></div>
                 </section>
             </section>
 
             <section id="baseline-version-freeze-view" class="workspace-section workspace-route-view" data-workspace-route="#current-baseline-panel/version-freeze" hidden>
                 <div class="panel-heading"><div><span class="panel-kicker">当前状态基线</span><h2>版本冻结</h2></div></div>
                 <div class="readiness-banner">
-                    <div><span class="context-label">冻结规则</span><strong>关键证据缺失时禁止冻结；缺失不得按零处理</strong><p>冻结快照不可编辑，只能基于新截止时间生成下一版本。演示适配器数据明确标记 DemoFixture。</p></div>
+                    <div><span class="context-label">冻结规则</span><strong>关键证据缺失时禁止冻结；缺失不得按零处理</strong><p>冻结快照不可编辑，只能基于新截止时间生成下一版本。演示适配器数据明确标记为“演示数据”。</p></div>
                     <div class="baseline-freeze-actions">
                         <input id="baseline-created-by" type="text" value="DDS&OP 计划员" aria-label="冻结人">
                         <input id="baseline-note" type="text" placeholder="冻结说明" aria-label="冻结说明">
@@ -201,6 +201,10 @@
             <section id="baseline-audit-records-view" class="workspace-section workspace-route-view" data-workspace-route="#current-baseline-panel/audit-records" hidden>
                 <div class="panel-heading"><div><span class="panel-kicker">当前状态基线</span><h2>审计记录</h2></div></div>
                 <div id="baseline-audit-list" class="diagnostics-list"></div>
+                <section class="stage-card baseline-reference-card">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">只读关联</span><h2>场景、配置与行动</h2></div></div>
+                    <div id="baseline-reference-list" class="diagnostics-list"></div>
+                </section>
             </section>
 
             <section id="future-scenario-panel" class="workspace-section stage-workspace workspace-route-view" data-workspace-route="#future-scenario-panel" hidden>
@@ -219,9 +223,6 @@
                 <div class="stage-heading"><div><span class="stage-number">04</span><p class="panel-kicker">人工治理，不自动生效</p><h2>DDOM 配置决策</h2></div><span class="status-chip is-paused">人工状态推进</span></div>
                 <div class="readiness-banner">
                     <div><span class="context-label">03 → 04</span><strong>场景结果只能成为人工治理证据</strong><p>结构设置、参数决策、临时调整和变更记录分别查看；任何建议都不会自动批准、生效或发布。</p></div>
-                </div>
-                <div class="readiness-banner governance-boundary">
-                    <div><span class="context-label">只读评审证据</span><strong>SDBR 反馈不能修改当前或已批准主设置</strong><p>所有变更包均保持人工提出、评审、批准、生效、失效状态流；不存在自动采纳、自动审批或自动生效。</p></div>
                 </div>
             </section>
 
@@ -244,6 +245,8 @@
                         <label><span>截止日期</span><input id="coordination-due-date" type="date" value="2026-07-20"></label>
                         <label><span>升级层级</span><input id="coordination-escalation-level" type="text" value="S&OP 执行层"></label>
                         <label><span>下次验证点</span><input id="coordination-next-review" type="date" value="2026-07-17"></label>
+                        <label><span>关联场景</span><select id="coordination-related-scenario"><option value="">不关联</option></select></label>
+                        <label><span>关联变更</span><select id="coordination-related-change"><option value="">不关联</option></select></label>
                         <label class="form-wide"><span>决策要求</span><input id="coordination-decision-required" type="text" value="决定是否启用第二来源或临时能力"></label>
                     </div>
                     <button id="create-coordination-item" class="button primary" type="button">创建事项并留痕</button>
@@ -275,38 +278,14 @@
                     <section class="decision-category-card"><span class="category-code">B</span><h3>参数决策</h3><p>主参数治理在独立视图中记录来源基线、场景、责任、审批、有效期和回滚条件。</p><a class="button secondary" href="#ddom-decision-panel/parameter-decision">打开参数决策</a></section>
                 </div>
             <section id="overview-panel" class="workspace-section">
-                <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标"></div>
-                <div id="network-structure-entry-card" class="network-product-entry">
+                <div id="workspace-kpis" class="schedule-kpis" aria-label="场景工作台关键指标" hidden></div>
+                <div id="network-structure-entry-card" class="network-product-entry opaque-product-entry">
                     <div class="panel-heading">
                         <div>
                             <span class="panel-kicker">独立产品入口</span>
-                            <h2>网络结构评分</h2>
+                            <h2>Network 候选入口</h2>
                         </div>
-                        <a class="button secondary" href="@Model.NetworkStructureProductUrl">打开网络结构评分工作台</a>
-                    </div>
-                    <div class="readiness-banner">
-                        <div>
-                            <span class="context-label">跨产品协同</span>
-                            <strong>网络结构评分已从 DDS&OP 主流程拆出</strong>
-                            <p>网络结构评分独立读取已发布 BOM 快照、供应来源、资源路线、库存位置和缓冲设置，输出候选控制点、缓冲点、证据链与不采纳风险。</p>
-                        </div>
-                    </div>
-                    <div class="metadata-grid">
-                        <div class="metadata-card">
-                            <span>从 DDS&OP 传入</span>
-                            <strong>SKU / 产品族 / 周度运行上下文</strong>
-                            <small>用于解释候选动作对服务、库存、RCCP 和供应风险的影响。</small>
-                        </div>
-                        <div class="metadata-card">
-                            <span>网络评分返回</span>
-                            <strong>候选建议 + 证据链</strong>
-                            <small>候选进入 DDS&OP 后仍需通过白盒场景预览重新验证。</small>
-                        </div>
-                        <div class="metadata-card">
-                            <span>求解器边界</span>
-                            <strong>只选择候选动作组合</strong>
-                            <small>Gurobi / OR-Tools 不生成计划，不自动采纳、不保存、不审批。</small>
-                        </div>
+                        <a class="button secondary" href="@Model.NetworkStructureProductUrl">打开独立产品</a>
                     </div>
                 </div>
             </section>
@@ -322,7 +301,7 @@
                     </div>
                 </div>
                 <div id="history-review-kpis" class="rccp-kpis" aria-label="历史经营结果"></div>
-            <section id="product-family-dashboard-panel" class="workspace-section">
+            <section id="product-family-dashboard-panel" class="workspace-section" hidden>
                 <div class="panel-heading">
                     <div><span class="panel-kicker">管理层聚合视图</span><h2>产品族看板</h2></div>
                     <span id="product-family-case-chip" class="status-chip neutral">基准方案</span>
@@ -367,6 +346,7 @@
                         <span id="current-baseline-chip" class="status-chip neutral">等待读取</span>
                     </div>
                 </div>
+                <div id="current-baseline-kpis" class="rccp-kpis" aria-label="会前状态关键指标：服务、库存、在制品、积压、供应覆盖与峰值负荷"></div>
             <section id="data-readiness-panel" class="workspace-section">
                 <div class="result-context-bar" aria-label="筛选条件">
                     <label><span>产品族</span><select id="family-filter"></select></label>
@@ -422,12 +402,20 @@
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">外部场景</span><h2>需求、供应、能力损失与已知事件</h2></div></div>
                         <div class="form-grid compact">
                             <label><span>冻结基线</span><select id="future-baseline-select"></select></label>
+                            <label><span>输入方式</span><select id="future-assumption-mode"><option value="Manual">人工录入</option><option value="DemoFixture">演示模板</option></select></label>
+                            <label data-assumption-template-field hidden><span>演示模板</span><select id="future-assumption-template"></select></label>
+                            <label data-assumption-manual-field><span>记录人</span><input id="future-assumption-entered-by" type="text" value="DDS&amp;OP 计划员"></label>
+                            <label data-assumption-manual-field><span>有效期开始</span><input id="future-assumption-effective-from" type="date" value="2026-07-15"></label>
+                            <label data-assumption-manual-field><span>有效期结束</span><input id="future-assumption-effective-through" type="date" value="2026-09-30"></label>
+                            <label class="form-wide"><span>依据与理由</span><input id="future-assumption-evidence" type="text" value="会议确认的人工场景假设"></label>
                             <label><span>场景名称</span><input id="external-scenario-name" type="text" value="需求上升与供应能力风险"></label>
                             <label><span>需求倍率</span><input id="external-demand-multiplier" type="number" min="0" max="3" step="0.05" value="1.20"></label>
                             <label><span>能力损失资源</span><select id="external-capacity-resource"></select></label>
                             <label><span>剩余能力倍率</span><input id="external-capacity-multiplier" type="number" min="0" max="1" step="0.05" value="0.75"></label>
                             <label><span>供应风险对象</span><select id="external-supplier-risk"></select></label>
                             <label><span>供应剩余倍率</span><input id="external-supply-multiplier" type="number" min="0" max="1" step="0.05" value="0.70"></label>
+                            <label><span>时间控制点</span><select id="external-time-control-point"></select></label>
+                            <label><span>延误天数</span><input id="external-time-delay-days" type="number" min="0" max="90" step="0.5" value="2"></label>
                         </div>
                     </section>
                     <section class="stage-card response-scenario-card">
@@ -498,9 +486,18 @@
             <section id="scenario-comparison" class="scenario-comparison workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/plan-comparison" hidden>
                 <div class="panel-heading">
                     <div><span class="panel-kicker">基准方案与预览方案</span><h2>方案比较</h2></div>
-                    <button id="generate-master-settings" class="button secondary" type="button">生成主设置变更建议</button>
                 </div>
                 <div id="future-comparison-cards" class="comparison-grid"></div>
+                <section class="stage-card comparison-save-card">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">显式留痕</span><h2>保存所选比较方案</h2></div><span id="future-comparison-save-status" class="status-chip neutral">尚未保存</span></div>
+                    <div class="form-grid compact">
+                        <label><span>方案</span><select id="future-comparison-save-response-id"><option value="">请先运行比较</option></select></label>
+                        <label><span>名称</span><input id="future-comparison-save-name" type="text" maxlength="80" value="未来场景比较方案"></label>
+                        <label><span>创建人</span><input id="future-comparison-save-created-by" type="text" maxlength="40" value="计划员"></label>
+                    </div>
+                    <button id="save-future-comparison" class="button primary" type="button" disabled>保存为真实场景运行</button>
+                    <p class="muted-note">只有后端保存并返回真实运行编号后，才可关联配置建议或行动事项。</p>
+                </section>
                 <div id="scenario-comparison-result" class="comparison-grid"></div>
                 <section id="multi-scenario-comparison-panel" class="budget-panel">
                     <div class="panel-heading compact-heading">
@@ -537,6 +534,7 @@
                 <section class="stage-card coordination-detail-card">
                     <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中事项</span><h2 id="coordination-detail-title">尚未选择</h2></div><span id="coordination-detail-status" class="status-chip neutral">-</span></div>
                     <div id="coordination-detail-summary" class="metadata-list"></div>
+                    <div id="coordination-lineage-list" class="diagnostics-list"></div>
                     <div class="coordination-status-actions">
                         <button class="button secondary" type="button" data-coordination-status="InProgress">转为进行中</button>
                         <button class="button secondary" type="button" data-coordination-status="Escalated">升级</button>
@@ -578,10 +576,14 @@
                         <label><span>复查日期</span><input id="governance-review-on" type="date" value="2026-08-03"></label>
                         <label class="form-wide"><span>预期效果</span><input id="governance-expected-effect" type="text" value="服务、现金与保护能力按白盒场景比较结果改善"></label>
                         <label class="form-wide"><span>回滚条件</span><input id="governance-rollback-condition" type="text" value="服务未改善、现金超过边界或保护能力恶化时人工回滚"></label>
+                        <label class="form-wide"><span>来源基线</span><select id="governance-baseline-id"><option value="">请选择冻结基线</option></select></label>
                         <label class="form-wide"><span>冻结比较方案</span><select id="governance-response-id"><option value="">请先运行未来场景比较</option></select></label>
                     </div>
-                    <button id="generate-comparison-master-settings" class="button primary" type="button">从冻结场景比较生成治理建议</button>
-                    <p class="muted-note">来源基线、外部场景和响应方案由后端重新核验；保存后仍为 Proposed，不自动审批或生效。</p>
+                    <div class="panel-inline-actions">
+                        <button id="generate-comparison-master-settings" class="button primary" type="button">从已保存比较生成建议</button>
+                        <button id="generate-master-settings" class="button secondary" type="button">从人工预览生成建议</button>
+                    </div>
+                    <p class="muted-note">来源基线、外部场景和响应方案由后端重新核验；保存后仍为待评审，不自动审批或生效。</p>
                 </section>
             <section id="master-settings-panel" class="workspace-section">
                 <div class="panel-heading">
@@ -634,7 +636,7 @@
                 <div class="master-settings-layout">
                     <section class="master-settings-block">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">已保存变更</span><h2>治理记录</h2></div></div>
-                        <div class="table-scroll"><table class="data-table"><thead><tr><th>编号</th><th>类型</th><th>目标</th><th>状态</th><th>风险</th><th>生效窗口</th></tr></thead><tbody id="master-setting-change-body"></tbody></table></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>编号</th><th>类型</th><th>目标</th><th>来源基线</th><th>来源运行</th><th>状态</th><th>风险</th><th>生效窗口</th></tr></thead><tbody id="master-setting-change-body"></tbody></table></div>
                     </section>
                     <section class="master-settings-block">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中变更详情</span><h2 id="master-setting-detail-title">主设置变更详情</h2></div><button id="advance-master-setting-status" class="button secondary" type="button">推进状态</button></div>
@@ -681,7 +683,7 @@
                         </section>
                         <section class="buffer-visual-panel">
                             <div class="panel-heading compact-heading">
-                                <div><span class="panel-kicker">单 SKU 仿真工作台</span><h2>活动、属性、缓冲 sizing、BOM 与订单明细</h2></div>
+                                <div><span class="panel-kicker">单 SKU 仿真工作台</span><h2>活动、属性、缓冲定容、BOM 与订单明细</h2></div>
                             </div>
                             <div id="buffer-sku-metadata" class="buffer-sku-metadata"></div>
                             <div id="single-sku-workbench" class="single-sku-workbench">
@@ -699,7 +701,7 @@
                                 </section>
                                 <section class="single-sku-card">
                                     <div class="panel-heading compact-heading">
-                                        <div><span class="panel-kicker">缓冲 sizing</span><h2>红黄绿区计算</h2></div>
+                                        <div><span class="panel-kicker">缓冲定容</span><h2>红黄绿区计算</h2></div>
                                     </div>
                                     <div class="table-scroll"><table class="data-table"><thead><tr><th>组成</th><th>公式</th><th>值</th><th>业务解释</th></tr></thead><tbody id="single-sku-sizing-body"></tbody></table></div>
                                 </section>
@@ -713,7 +715,7 @@
                                     <div class="panel-heading compact-heading">
                                         <div><span class="panel-kicker">订单明细</span><h2>需求、补货与供应追溯</h2></div>
                                     </div>
-                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>订单号</th><th>类型</th><th>周</th><th>释放周</th><th>到货周</th><th>数量</th><th>金额</th><th>状态</th><th>来源规则</th><th>供应商</th><th>资源</th><th>能力占用</th><th>供应缺口</th><th>Trace</th></tr></thead><tbody id="single-sku-order-body"></tbody></table></div>
+                                    <div class="table-scroll"><table class="data-table"><thead><tr><th>订单号</th><th>类型</th><th>周</th><th>释放周</th><th>到货周</th><th>数量</th><th>金额</th><th>状态</th><th>来源规则</th><th>供应商</th><th>资源</th><th>能力占用</th><th>供应缺口</th><th>追踪</th></tr></thead><tbody id="single-sku-order-body"></tbody></table></div>
                                 </section>
                             </div>
                             <div class="buffer-detail-grid">
@@ -726,10 +728,16 @@
                 </section>
 
                 <section id="time-buffer-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/time-buffer" hidden>
-                    <div class="panel-heading"><div><span class="panel-kicker">未来场景模拟</span><h2>时间缓冲</h2></div><span class="status-chip neutral">待补充证据</span></div>
-                    <div class="readiness-banner">
-                        <div><span class="context-label">第 9 项补充</span><strong>时间缓冲计算与数据将在下一阶段接入</strong><p>当前仅保留独立视图和业务边界，不伪造穿透、恢复周期或产品范围结果。</p></div>
-                    </div>
+                    <div class="panel-heading"><div><span class="panel-kicker">控制点保护</span><h2>时间缓冲</h2></div><span id="time-buffer-evidence-chip" class="status-chip neutral">等待场景比较</span></div>
+                    <div id="time-buffer-kpis" class="rccp-kpis" aria-label="时间缓冲关键指标"></div>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">后端击穿结果</span><h2>控制点与保护活动</h2></div></div>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>控制点</th><th>保护活动</th><th>缓冲天数</th><th>最早红周</th><th>最大侵入</th><th>连续风险</th><th>恢复周</th><th>影响产品</th><th>证据</th></tr></thead><tbody id="time-buffer-summary-body"></tbody></table></div>
+                    </section>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">周度状态</span><h2>控制点周矩阵</h2></div></div>
+                        <div id="time-buffer-weekly-grid" class="rccp-heatmap table-scroll" aria-label="时间缓冲控制点周矩阵"></div>
+                    </section>
                 </section>
 
                 <section id="rccp-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/capacity-buffer" hidden>
@@ -738,6 +746,10 @@
                         <span id="rccp-case-chip" class="status-chip neutral">基准方案</span>
                     </div>
                     <div id="rccp-kpis" class="rccp-kpis" aria-label="RCCP 关键指标"></div>
+                    <div class="future-capacity-separation">
+                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">上游保护资源</span><h2>负荷与保护消耗</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>上游资源</th><th>保护 CCR</th><th>周</th><th>计划可用</th><th>承诺负荷</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>状态</th></tr></thead><tbody id="future-capacity-protection-body"></tbody></table></div></section>
+                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">CCR 单列</span><h2>CCR 利用率</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>CCR</th><th>平均负荷</th><th>峰值负荷</th><th>状态</th></tr></thead><tbody id="future-ccr-utilization-body"></tbody></table></div></section>
+                    </div>
                     <div class="rccp-workbench">
                         <section class="rccp-block">
                             <div class="panel-heading compact-heading">

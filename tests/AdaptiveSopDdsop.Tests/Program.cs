@@ -62,6 +62,9 @@ var tests = new (string Name, Action Run)[]
     ("Five-stage navigation uses hierarchical view switching", TestFiveStageNavigationUsesHierarchicalViewSwitching),
     ("Workspace navigation removes scroll observer and uses hash state", TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState),
     ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
+    ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
+    ("Five-stage UI has no external import or protocol input", TestFiveStageUiHasNoExternalImportOrProtocolInput),
+    ("Time-buffer view uses backend results only", TestTimeBufferViewUsesBackendResultsOnly),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
     ("Scenario exceeding AS&OP guardrails is blocked from adoption", TestAsopGuardrailBlocksExcessiveScenario),
     ("Moderate scenario is routed to integrated reconciliation", TestAsopGuardrailRoutesModerateScenario),
@@ -3338,8 +3341,8 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(!page.Contains("自由布局", StringComparison.Ordinal), "page should not expose free layout in first UX version");
     AssertTrue(page.Contains("流速优先", StringComparison.Ordinal), "adoption constraints should include a flow-first mode");
     AssertTrue(page.Contains("id=\"network-structure-entry-card\"", StringComparison.Ordinal), "DDS&OP main should expose a minimal network structure scoring entry card");
-    AssertTrue(page.Contains("打开网络结构评分工作台", StringComparison.Ordinal), "network entry card should link to the independent product workspace");
-    AssertTrue(page.Contains("只选择候选动作组合", StringComparison.Ordinal), "network entry card should explain candidate action combination selection");
+    AssertTrue(page.Contains("打开独立产品", StringComparison.Ordinal), "network entry card should link to the independent product workspace");
+    AssertTrue(!page.Contains("从 DDS&OP 传入", StringComparison.Ordinal) && !page.Contains("网络评分返回", StringComparison.Ordinal), "network entry card should remain opaque inside DDAE");
     AssertTrue(page.Contains("id=\"public-demo-golden-loop-panel\"", StringComparison.Ordinal), "homepage should expose public demo golden loop panel");
     AssertTrue(page.Contains("公开演示闭环", StringComparison.Ordinal), "homepage should expose public demo golden loop navigation label");
     AssertTrue(page.IndexOf("href=\"#public-demo-golden-loop-panel\"", StringComparison.Ordinal) > page.IndexOf("href=\"#trace-panel\"", StringComparison.Ordinal), "public demo navigation item should be last in the left navigation");
@@ -3612,6 +3615,28 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
         "exception-summary-body",
         "exception-signal-body",
         "apply-exception-to-scenario",
+        "current-baseline-kpis",
+        "baseline-reference-list",
+        "future-assumption-mode",
+        "future-assumption-template",
+        "future-assumption-entered-by",
+        "future-assumption-effective-from",
+        "future-assumption-effective-through",
+        "future-assumption-evidence",
+        "external-time-control-point",
+        "external-time-delay-days",
+        "future-comparison-save-name",
+        "future-comparison-save-created-by",
+        "save-future-comparison",
+        "future-comparison-save-status",
+        "governance-baseline-id",
+        "coordination-related-scenario",
+        "coordination-related-change",
+        "coordination-lineage-list",
+        "time-buffer-evidence-chip",
+        "time-buffer-kpis",
+        "time-buffer-summary-body",
+        "time-buffer-weekly-grid",
         "trace-panel"
     };
 
@@ -3630,7 +3655,7 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
     AssertTrue(page.Contains("需求脉冲", StringComparison.Ordinal), "page should expose demand pulse label");
     AssertTrue(page.Contains("单 SKU 仿真工作台", StringComparison.Ordinal), "page should expose single SKU simulation workbench");
     AssertTrue(page.Contains("活动列表", StringComparison.Ordinal), "page should expose SKU activity list");
-    AssertTrue(page.Contains("缓冲 sizing", StringComparison.Ordinal), "page should expose buffer sizing");
+    AssertTrue(page.Contains("缓冲定容", StringComparison.Ordinal), "page should expose Chinese buffer sizing label");
     AssertTrue(page.Contains("BOM", StringComparison.Ordinal), "page should expose BOM detail");
     AssertTrue(page.Contains("订单明细", StringComparison.Ordinal), "page should expose order detail");
     AssertTrue(page.Contains("受限 / 不受限", StringComparison.Ordinal), "page should expose constrained versus unconstrained label");
@@ -4127,6 +4152,120 @@ static void TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         DeleteSqliteFiles(databasePath);
     }
+}
+
+static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var businessStart = page.IndexOf("id=\"history-review-panel\"", StringComparison.Ordinal);
+    var protectedStart = page.IndexOf("id=\"saved-scenarios-panel\"", businessStart, StringComparison.Ordinal);
+    AssertTrue(businessStart >= 0 && protectedStart > businessStart, "business region should precede protected validation pages");
+    var businessPage = page.Substring(businessStart, protectedStart - businessStart);
+    var actualHistory = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    AssertTrue(actualHistory.EvidenceLabel.Contains("DemoFixture /", StringComparison.Ordinal)
+        && actualHistory.EvidenceLabel.Contains("SourceAuthority=", StringComparison.Ordinal)
+        && actualHistory.EvidenceLabel.Contains("AsOf=", StringComparison.Ordinal),
+        "real history evidence should exercise the composite internal label shape handled by the UI");
+
+    foreach (var helper in new[] { "baselineSourceLabel", "freshnessLabel", "completenessLabel", "baselineStatusLabel", "coordinationStatusLabel", "breachScopeLabel", "metricOrEvidenceMissing" })
+    {
+        AssertTrue(script.Contains($"function {helper}(", StringComparison.Ordinal), $"business script should centralize {helper}");
+    }
+
+    foreach (var mapping in new[]
+    {
+        "DemoFixture: \"演示数据\"", "Fresh: \"截止时间有效\"", "Complete: \"完整\"", "Frozen: \"已冻结\"",
+        "Open: \"待处理\"", "InProgress: \"进行中\"", "Escalated: \"已升级\"", "Completed: \"已完成\"",
+        "InventoryBuffer: \"库存缓冲\"", "TimeBuffer: \"时间缓冲\"", "CapacityBuffer: \"能力缓冲\"", "SupplyRisk: \"供应风险\""
+    })
+    {
+        AssertTrue(script.Contains(mapping, StringComparison.Ordinal), $"business translation should contain {mapping}");
+    }
+
+    foreach (var forbidden in new[] { "当前占用", "库存口径", "红色供应窗口", "缓冲 sizing", ">Trace<", "??", "\uFFFD" })
+    {
+        AssertTrue(!businessPage.Contains(forbidden, StringComparison.Ordinal), $"business page should not expose {forbidden}");
+    }
+    AssertTrue(businessPage.Contains("在制品", StringComparison.Ordinal), "business page should use the Chinese WIP label");
+    AssertTrue(businessPage.Contains("缓冲定容", StringComparison.Ordinal), "business page should use the approved buffer-sizing label");
+    AssertTrue(businessPage.Contains("追踪", StringComparison.Ordinal), "business page should use the Chinese trace label");
+    AssertTrue(script.Contains("normalized.includes(\"DemoFixture\")", StringComparison.Ordinal), "composite history evidence should translate DemoFixture instead of leaking its internal key");
+    AssertTrue(script.Contains("historyEvidenceSummary(history.evidenceLabel)", StringComparison.Ordinal), "history renderer should invoke the composite evidence translator on the real API field");
+    AssertTrue(script.Contains("function historyEvidenceSummary(", StringComparison.Ordinal)
+        && script.Contains("SourceAuthority=", StringComparison.Ordinal)
+        && script.Contains("来源：", StringComparison.Ordinal)
+        && script.Contains("截止：", StringComparison.Ordinal),
+        "history evidence should preserve source and as-of meaning with Chinese labels");
+    foreach (var sectionMapping in new[]
+    {
+        "\"Time-buffer definitions\": \"时间缓冲定义\"",
+        "\"Time-buffer product scopes\": \"时间缓冲产品范围\"",
+        "\"Time-buffer control-point progress\": \"时间缓冲控制点进度\""
+    })
+    {
+        AssertTrue(script.Contains(sectionMapping, StringComparison.Ordinal), $"baseline section should translate {sectionMapping}");
+    }
+    AssertTrue(script.Contains(".replace(/\\bCurrent\\b/g, \"当前\")", StringComparison.Ordinal)
+        && script.Contains(".replace(/\\bReviewed\\b/g, \"已评审\")", StringComparison.Ordinal)
+        && script.Contains(".replace(/\\bApproved\\b/g, \"已批准\")", StringComparison.Ordinal),
+        "business evidence should translate governance evidence states");
+    AssertTrue(script.Contains("历史烟测记录已由纠正审计保留", StringComparison.Ordinal), "legacy corrupt audit display should be masked without changing stored data");
+    AssertTrue(script.Contains("DataRepairApplied", StringComparison.Ordinal), "repair audit event should have a business label");
+}
+
+static void TestFiveStageUiHasNoExternalImportOrProtocolInput()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var businessStart = page.IndexOf("id=\"history-review-panel\"", StringComparison.Ordinal);
+    var protectedStart = page.IndexOf("id=\"saved-scenarios-panel\"", businessStart, StringComparison.Ordinal);
+    var businessPage = page.Substring(businessStart, protectedStart - businessStart);
+
+    foreach (var forbidden in new[]
+    {
+        "type=\"file\"", "CSV 导入", "JSON 导入", "external-import", "network-scoring-input", "sdbr-input",
+        "SDBR", "id=\"auto-adopt\"", "id=\"auto-approve\"", "id=\"auto-effect\"", "id=\"auto-save\""
+    })
+    {
+        AssertTrue(!businessPage.Contains(forbidden, StringComparison.OrdinalIgnoreCase), $"five-stage business UI should not contain {forbidden}");
+    }
+
+    AssertTrue(businessPage.Contains("id=\"future-assumption-mode\"", StringComparison.Ordinal), "scenario source must be chosen explicitly");
+    AssertTrue(businessPage.Contains("value=\"Manual\"", StringComparison.Ordinal) && businessPage.Contains("value=\"DemoFixture\"", StringComparison.Ordinal), "only manual and internal demo inputs should be offered");
+    AssertTrue(script.Contains("/api/scenario-assumptions/templates", StringComparison.Ordinal), "demo assumptions should come from the internal template endpoint");
+    AssertTrue(script.Contains("/api/scenario-runs/compare/save", StringComparison.Ordinal), "comparison must be saved explicitly through the internal save endpoint");
+    AssertTrue(script.Contains("sourceScenarioRunId: savedRun.runId", StringComparison.Ordinal), "scenario-derived governance must use the real saved run id");
+    AssertTrue(!script.Contains("`${state.futureComparisonRequest.externalScenario.scenarioId}/${byId(\"governance-response-id\").value}`", StringComparison.Ordinal), "external scenario and response ids must never be fabricated into a run id");
+}
+
+static void TestTimeBufferViewUsesBackendResultsOnly()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    foreach (var id in new[] { "time-buffer-panel", "time-buffer-evidence-chip", "time-buffer-kpis", "time-buffer-summary-body", "time-buffer-weekly-grid" })
+    {
+        AssertTrue(page.Contains($"id=\"{id}\"", StringComparison.Ordinal), $"time-buffer page should expose {id}");
+    }
+
+    AssertTrue(script.Contains("function renderTimeBufferView(", StringComparison.Ordinal), "time-buffer page should have a dedicated renderer");
+    AssertTrue(script.Contains("renderTimeBufferView(result, state.futureComparisonBaseline)", StringComparison.Ordinal), "future comparison renderer should invoke the time-buffer renderer with frozen-baseline evidence");
+    foreach (var backendField in new[] { ".timeBufferProjection", ".breaches", ".maximumPenetrationPercent", ".earliestRedWeek", ".consecutiveRiskWeeks", ".recoveryWeek", ".isUnrecovered" })
+    {
+        AssertTrue(script.Contains(backendField, StringComparison.Ordinal), $"time-buffer renderer should use backend field {backendField}");
+    }
+    AssertTrue(script.Contains("planningInputs.timeBuffers", StringComparison.Ordinal), "time-buffer renderer should use frozen baseline protection definitions");
+    AssertTrue(!script.Contains("penetrationPercent =", StringComparison.Ordinal) && !script.Contains("delayDays /", StringComparison.Ordinal) && !script.Contains("/ point.bufferDays", StringComparison.Ordinal), "front end must not calculate time-buffer penetration");
+    AssertTrue(script.Contains("const evidenceComplete = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "time-buffer display should distinguish missing evidence from a complete non-breach");
+    AssertTrue(script.Contains("item.evidenceStatus === \"NotApplicable\" ? \"不适用\" : \"证据缺失\"", StringComparison.Ordinal), "time-buffer display should distinguish not applicable from missing evidence");
+    AssertTrue(script.Contains("!item.isBreached ? \"不适用\"", StringComparison.Ordinal), "a complete non-breach should show recovery as not applicable");
+    AssertTrue(script.Contains("[\"击穿记录\"", StringComparison.Ordinal) && script.Contains("[\"未恢复记录\"", StringComparison.Ordinal), "time-buffer KPIs should summarize unambiguous backend record counts");
+    AssertTrue(!script.Contains("const firstBreach =", StringComparison.Ordinal), "time-buffer KPIs must not label the first array item as the global earliest or maximum result");
 }
 
 static void TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario()
@@ -4932,7 +5071,7 @@ static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
     AssertTrue(page.Contains("id=\"master-setting-board\"", StringComparison.Ordinal), "page should expose master setting board");
     AssertTrue(page.Contains("id=\"master-setting-detail\"", StringComparison.Ordinal), "page should expose master setting detail");
     AssertTrue(page.Contains("id=\"master-setting-audit-list\"", StringComparison.Ordinal), "page should expose master setting audit chain");
-    AssertTrue(page.Contains("生成主设置变更建议", StringComparison.Ordinal), "page should expose proposal generation action");
+    AssertTrue(page.Contains("从已保存比较生成建议", StringComparison.Ordinal) && page.Contains("从人工预览生成建议", StringComparison.Ordinal), "page should separate saved-comparison and manual proposal generation actions");
     AssertTrue(page.Contains("当前主设置", StringComparison.Ordinal), "page should expose current master settings");
     AssertTrue(page.Contains("DDOM 主设置", StringComparison.Ordinal), "page should expose Chinese DDOM master settings label");
     AssertTrue(!page.Contains("Inventory Buffer", StringComparison.Ordinal), "page should not expose English inventory buffer label");

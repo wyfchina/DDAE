@@ -909,6 +909,7 @@ body.has-focus-panel { overflow: hidden; }
 .buffer-heat-cell.is-yellow { background: #fff8eb; border-color: #edc996; color: var(--color-warning); }
 .buffer-heat-cell.is-red { background: #fff2f0; border-color: #f0b8b3; color: var(--color-danger); }
 .buffer-heat-cell.is-blue { background: #eef4ff; border-color: #b2ccff; color: #1849a9; }
+.buffer-heat-cell.is-missing { background: #f5f6f7; border: 1px dashed var(--color-border-strong); color: var(--color-muted); }
 .buffer-sku-metadata {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1448,6 +1449,33 @@ body.has-focus-panel { overflow: hidden; }
 .response-option-list small { color: var(--color-muted); line-height: 1.4; }
 .no-response-case { border-top: 4px solid #667085; }
 .button.is-selected { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary-strong); }
+.comparison-save-card,
+.baseline-reference-card { margin-top: 14px; }
+#current-baseline-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.comparison-save-card { border-top: 4px solid var(--color-primary); }
+.opaque-product-entry { padding-bottom: 0; }
+.future-capacity-separation {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr);
+  gap: 14px;
+  margin: 14px 0;
+}
+.future-capacity-separation .stage-card { min-width: 0; }
+.capacity-layer-track.is-missing {
+  border: 1px dashed var(--color-border-strong);
+  background: repeating-linear-gradient(135deg, #f4f6f8 0, #f4f6f8 6px, #fff 6px, #fff 12px);
+}
+#time-buffer-weekly-grid .heatmap-table th small {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-weight: 500;
+}
+#time-buffer-weekly-grid .buffer-heat-cell {
+  min-width: 72px;
+  font-variant-numeric: tabular-nums;
+}
+#coordination-lineage-list { margin-top: 2px; }
 
 .decision-category-grid {
   display: grid;
@@ -1516,6 +1544,7 @@ body.has-focus-panel { overflow: hidden; }
   .saved-run-layout { grid-template-columns: 1fr; }
   .stage-grid.two-column,
   .scenario-separation-grid,
+  .future-capacity-separation,
   .decision-category-grid,
   .coordination-grid { grid-template-columns: 1fr; }
   .baseline-freeze-actions { grid-template-columns: 1fr; min-width: 0; width: 100%; }
@@ -1523,6 +1552,7 @@ body.has-focus-panel { overflow: hidden; }
   .comparison-column + .comparison-column { border-left: 0; border-top: 1px solid var(--color-border); }
   .schedule-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rccp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #current-baseline-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .schedule-kpis div { border-bottom: 1px solid var(--color-border); }
   .rccp-kpis div { border-bottom: 1px solid var(--color-border); }
   .load-row { grid-template-columns: minmax(90px, 120px) minmax(0, 1fr) 60px; }
@@ -1535,6 +1565,7 @@ body.has-focus-panel { overflow: hidden; }
   .result-context-bar, .metadata-list, .case-card-meta, .comparison-metrics, .form-grid.compact { grid-template-columns: 1fr; }
   .schedule-kpis { grid-template-columns: 1fr; }
   .rccp-kpis { grid-template-columns: 1fr; }
+  #current-baseline-kpis { grid-template-columns: 1fr; }
   .buffer-comparison-strip, .buffer-sku-metadata { grid-template-columns: 1fr; }
   .business-demo-flow { grid-template-columns: 1fr; }
   h1 { font-size: 23px; }

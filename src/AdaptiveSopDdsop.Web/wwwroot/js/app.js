@@ -19,8 +19,11 @@ const state = {
   historyReview: null,
   currentBaselineCandidate: null,
   currentBaselines: [],
+  scenarioAssumptionTemplates: [],
   futureComparison: null,
   futureComparisonRequest: null,
+  futureComparisonBaseline: null,
+  savedFutureComparisons: {},
   coordinationItems: [],
   selectedCoordinationItemId: null,
   selectedBufferSku: null,
@@ -115,7 +118,7 @@ const previewControls = {
 
 const navigationHelp = {
   historyReview: "用累计提前期确定详细窗口，并回顾经营结果、保护关系、区域停留、能力保护和约束类型。",
-  currentBaseline: "核对库存、在途、积压、WIP、供应承诺、资源能力、临时措施和当前主设置证据，再冻结不可变版本。",
+  currentBaseline: "核对库存、在途、积压、在制品、供应承诺、资源能力、临时措施和当前主设置证据，再冻结不可变版本。",
   futureScenario: "严格分开外部事件和企业响应，在同一冻结基线下比较不采取措施与多个响应方案。",
   ddomDecision: "将结构设置、主参数和临时调整组成可审计变更包，由人工评审、批准和生效。",
   coordination: "记录问题、影响、负责人、截止日期、升级、决策和最终实际效果。",
@@ -647,6 +650,172 @@ function statusLabel(status) {
   })[status] || valueOr(status, "-");
 }
 
+function baselineSourceLabel(source) {
+  const normalized = String(valueOr(source, ""));
+  const mapped = ({
+    DemoFixture: "演示数据",
+    Manual: "人工录入",
+    "DDAE Governance": "DDAE 治理记录",
+    "DDAE Demo Inventory Adapter": "DDAE 库存演示适配器",
+    "DDAE Demo Supply Adapter": "DDAE 供应演示适配器",
+    "DDAE Demo Demand Adapter": "DDAE 需求演示适配器",
+    "DDAE Demo WIP Evidence": "DDAE 在制品演示证据",
+    "DDAE Demo Supplier Evidence": "DDAE 供应商演示证据",
+    "DDAE Demo Capacity Evidence": "DDAE 能力演示证据",
+    "DDAE Demo Governance": "DDAE 治理演示证据",
+    "DDAE Demo Planning Snapshot": "DDAE 计划快照演示证据",
+    "DDAE Demo Meeting Snapshot": "DDAE 会前快照演示证据",
+    "DDAE Demo Time Evidence": "DDAE 时间缓冲演示证据",
+    "DDAE DemoFixture explicit historical operating ledger": "DDAE 历史演示台账",
+  })[source];
+  if (mapped) return mapped;
+  if (normalized.includes("DemoFixture")) return "演示数据";
+  if (normalized.startsWith("DDAE Demo")) return "DDAE 演示证据";
+  return valueOr(source, "证据缺失");
+}
+
+function freshnessLabel(status) {
+  return ({
+    Fresh: "截止时间有效",
+    Stale: "已过截止时间",
+    EvidenceMissing: "证据缺失",
+    NotApplicable: "不适用",
+  })[status] || valueOr(status, "证据缺失");
+}
+
+function completenessLabel(status) {
+  return ({
+    Complete: "完整",
+    Incomplete: "不完整",
+    Missing: "证据缺失",
+    EvidenceMissing: "证据缺失",
+    NotApplicable: "不适用",
+  })[status] || valueOr(status, "证据缺失");
+}
+
+function baselineStatusLabel(status) {
+  return ({
+    Frozen: "已冻结",
+    Proposed: "待评审",
+  })[status] || valueOr(status, "证据缺失");
+}
+
+function coordinationStatusLabel(status) {
+  return ({
+    Open: "待处理",
+    InProgress: "进行中",
+    Escalated: "已升级",
+    Completed: "已完成",
+  })[status] || valueOr(status, "证据缺失");
+}
+
+function breachScopeLabel(scopeType) {
+  return ({
+    InventoryBuffer: "库存缓冲",
+    TimeBuffer: "时间缓冲",
+    CapacityBuffer: "能力缓冲",
+    SupplyRisk: "供应风险",
+    Inventory: "库存缓冲",
+    Time: "时间缓冲",
+    Capacity: "能力缓冲",
+    Supply: "供应风险",
+  })[scopeType] || valueOr(scopeType, "证据缺失");
+}
+
+function metricOrEvidenceMissing(value, formatter = item => String(item)) {
+  return value === null || value === undefined || value === ""
+    ? "证据缺失"
+    : formatter(value);
+}
+
+function evidenceStatusLabel(status) {
+  return completenessLabel(status);
+}
+
+function baselineSectionLabel(name) {
+  return ({
+    "Meeting snapshot KPIs": "会前状态指标",
+    "Sequenced resource-routing evidence": "资源顺序证据",
+    "Upstream capacity-protection evidence": "上游能力保护证据",
+    "Time-buffer definitions": "时间缓冲定义",
+    "Time-buffer product scopes": "时间缓冲产品范围",
+    "Time-buffer control-point progress": "时间缓冲控制点进度",
+  })[name] || valueOr(name, "证据缺失");
+}
+
+function businessEvidenceLabel(value) {
+  return String(metricOrEvidenceMissing(value))
+    .replace(/\bDemoFixture\b/g, "演示数据")
+    .replace(/\bEvidenceMissing\b/g, "证据缺失")
+    .replace(/\bNotApplicable\b/g, "不适用")
+    .replace(/\bInProgress\b/g, "进行中")
+    .replace(/\bEscalated\b/g, "已升级")
+    .replace(/\bCompleted\b/g, "已完成")
+    .replace(/\bProposed\b/g, "待评审")
+    .replace(/\bCurrent\b/g, "当前")
+    .replace(/\bReviewed\b/g, "已评审")
+    .replace(/\bApproved\b/g, "已批准")
+    .replace(/\bEffective\b/g, "已生效")
+    .replace(/\bExpired\b/g, "已失效")
+    .replace(/\bIncomplete\b/g, "不完整")
+    .replace(/\bStale\b/g, "已过截止时间")
+    .replace(/\bApplicable\b/g, "适用")
+    .replace(/\bCritical\b/g, "关键")
+    .replace(/\bFrozen\b/g, "已冻结")
+    .replace(/\bOpen\b/g, "待处理")
+    .replace(/\bComplete\b/g, "完整")
+    .replace(/\bFresh\b/g, "截止时间有效")
+    .replace(/(\d+)-week rolling window/g, "$1 周滚动窗口")
+    .replace(/Week (\d+): ObservedDelayDays is missing/g, "第 $1 周：实测延误天数缺失")
+    .replace(/Week (\d+): EvidenceStatus=/g, "第 $1 周：证据状态=")
+    .replaceAll("BufferDays is missing or invalid", "缓冲天数缺失或无效")
+    .replaceAll("Product scope evidence is missing", "产品范围证据缺失")
+    .replaceAll("Control-point progress evidence is missing", "控制点进度证据缺失")
+    .replaceAll("No time-buffer definitions are configured.", "未配置时间缓冲定义。")
+    .replaceAll("Resource-routing sequence evidence is missing.", "资源顺序证据缺失。")
+    .replaceAll("Sequenced upstream capacity-protection evidence is missing.", "上游能力保护顺序证据缺失。");
+}
+
+function historyEvidenceSummary(value) {
+  const evidence = String(valueOr(value, ""));
+  if (!evidence) return "证据缺失";
+  const sourceAuthority = evidence.match(/(?:^| \/ )SourceAuthority=([^/]+?)(?= \/ |$)/)?.[1]?.trim();
+  const asOf = evidence.match(/(?:^| \/ )AsOf=([^/]+?)(?= \/ |$)/)?.[1]?.trim();
+  const summary = [baselineSourceLabel(evidence.split(" / ")[0])];
+  if (sourceAuthority) summary.push(`来源：${baselineSourceLabel(sourceAuthority)}`);
+  if (asOf) summary.push(`截止：${asOf}`);
+  return summary.join(" · ");
+}
+
+function protectionStateLabel(status) {
+  return ({
+    Designed: "已设计",
+    Available: "可用",
+    Effective: "有效",
+    NotApplicable: "不适用",
+    EvidenceMissing: "证据缺失",
+    Complete: "完整",
+  })[status] || valueOr(status, "证据缺失");
+}
+
+function capacityRoleLabel(role, protectedCcrResourceCode) {
+  return ({
+    UpstreamProtection: `上游保护资源 · 保护 ${valueOr(protectedCcrResourceCode, "CCR")}`,
+    CcrUtilization: "CCR 利用率（单列观察）",
+    ObservedResource: "一般观察资源",
+  })[role] || valueOr(role, "证据缺失");
+}
+
+function constraintExposureLabel(type) {
+  return ({
+    CurrentCcr: "当前 CCR",
+    HighLoadResource: "高负荷资源",
+    PotentialCcr: "场景潜在 CCR",
+    EventConstraint: "事件型约束",
+    ExternalConstraint: "外部约束",
+  })[type] || valueOr(type, "证据缺失");
+}
+
 function mapLabel(dictionary, value) {
   const key = String(valueOr(value, ""));
   return dictionary[key] || key || "-";
@@ -851,7 +1020,15 @@ function auditEventLabel(eventType) {
     DecisionRecorded: "决策已记录",
     OutcomeRecorded: "实际效果已记录",
     BaselineFrozen: "基线已冻结",
+    DataRepairApplied: "历史数据纠正已留痕",
   })[eventType] || valueOr(eventType, "-");
+}
+
+function baselineAuditMessage(event) {
+  const message = valueOr(event.message, "");
+  const isKnownCorruptFreeze = event.eventType === "BaselineFrozen"
+    && (/\?{2,}/.test(message) || message.includes("\uFFFD"));
+  return isKnownCorruptFreeze ? "历史烟测记录已由纠正审计保留" : message;
 }
 
 function nextMasterSettingStatus(status) {
@@ -865,7 +1042,7 @@ function nextMasterSettingStatus(status) {
 
 function bufferCellClass(status) {
   const normalized = String(valueOr(status, "Green"));
-  return `buffer-heat-cell ${normalized === "Red" ? "is-red" : normalized === "Yellow" ? "is-yellow" : normalized === "Blue" ? "is-blue" : "is-green"}`;
+  return `buffer-heat-cell ${normalized === "Red" ? "is-red" : normalized === "Yellow" ? "is-yellow" : normalized === "Blue" ? "is-blue" : normalized === "EvidenceMissing" ? "is-missing" : "is-green"}`;
 }
 
 function setWorkspaceStatus(status, message) {
@@ -1162,7 +1339,7 @@ function renderSelectedProductFamily(dashboard) {
     ? detail.recommendations.map(item => `
       <div class="diagnostic-item ${item.severity === "Red" ? "is-error" : ""}">
         <strong>${escapeHtml(item.actionType)}</strong>
-        <span>${escapeHtml(item.message)}</span>
+        <span>${escapeHtml(businessEvidenceLabel(item.message))}</span>
       </div>
     `).join("")
     : `<div class="table-empty"><strong>没有建议动作</strong></div>`;
@@ -1356,7 +1533,7 @@ function renderDdmrpParameterDetail(skuCode) {
       ],
     },
     {
-      title: "缓冲 sizing 结果",
+      title: "缓冲定容结果",
       items: [
         ["红区上沿", number(item.topOfRed)],
         ["黄区上沿", number(item.topOfYellow)],
@@ -1442,7 +1619,7 @@ function renderScenarioComparison(data) {
     ["基准方案", "当前主数据基准", [
       ["覆盖 SKU", data.skus.length],
       ["峰值负荷", percent(baselinePeak)],
-      ["红色供应窗口", supplyRisk],
+      ["供应风险周", supplyRisk],
       ["业务栅栏", data.guardrails.length],
     ], false],
     ["预览方案", valueOr(template?.name, "候选方案"), [
@@ -1851,7 +2028,7 @@ function renderBufferSkuDetail(detail) {
     byId("buffer-trace-list").innerHTML = "";
     byId("single-sku-activity-body").innerHTML = emptyRow("没有活动数据", 10);
     byId("single-sku-attribute-body").innerHTML = emptyRow("没有属性数据", 4);
-    byId("single-sku-sizing-body").innerHTML = emptyRow("没有缓冲 sizing 数据", 4);
+    byId("single-sku-sizing-body").innerHTML = emptyRow("没有缓冲定容数据", 4);
     byId("single-sku-bom-body").innerHTML = emptyRow("没有 BOM 数据", 9);
     byId("single-sku-order-body").innerHTML = emptyRow("没有订单明细", 14);
     return;
@@ -1936,7 +2113,7 @@ function renderSingleSkuSimulation(detail) {
       number(item.value),
       escapeHtml(item.explanation),
     ])).join("")
-    : emptyRow("没有缓冲 sizing 数据", 4);
+    : emptyRow("没有缓冲定容数据", 4);
 
   byId("single-sku-bom-body").innerHTML = detail.bom?.length
     ? detail.bom.map(item => row([
@@ -2077,6 +2254,7 @@ function renderSavedScenarioRuns(runs) {
       </tr>
     `).join("")
     : emptyRow("暂无已保存场景。运行预览后可以保存为审计记录。", 7);
+  configureCoordinationLineageSelectors();
 }
 
 function renderScenarioAudit(detail, events) {
@@ -2088,7 +2266,7 @@ function renderScenarioAudit(detail, events) {
     ? events.map(item => `
       <div class="diagnostic-item">
         <strong>${item.sequence}. ${traceStageLabel(item.stage)} / ${escapeHtml(auditEventLabel(item.eventType))}</strong>
-        <span>${escapeHtml(item.message)}</span>
+        <span>${escapeHtml(businessEvidenceLabel(item.message))}</span>
       </div>
     `).join("")
     : `<div class="table-empty"><strong>选择一条已保存场景后查看审计链</strong></div>`;
@@ -2570,7 +2748,7 @@ function renderMasterSettings(workspace) {
     masterSettingControls.board.innerHTML = `<div class="table-empty"><strong>主设置治理数据尚未加载</strong></div>`;
     masterSettingControls.currentBody.innerHTML = emptyRow("没有当前主设置", 6);
     masterSettingControls.proposalBody.innerHTML = emptyRow("运行预览后可生成主设置变更建议", 6);
-    masterSettingControls.changeBody.innerHTML = emptyRow("没有已保存变更", 6);
+    masterSettingControls.changeBody.innerHTML = emptyRow("没有已保存变更", 8);
     return;
   }
 
@@ -2604,6 +2782,7 @@ function renderMasterSettingBoard(workspace) {
             <button class="master-setting-card" type="button" data-master-change-id="${escapeHtml(item.changeId)}">
               <strong>${escapeHtml(item.target)}</strong>
               <span>${escapeHtml(masterSettingTypeLabel(item.settingType))} / ${escapeHtml(item.changeNumber)}</span>
+              <small>基线 ${escapeHtml(item.sourceBaselineId || "未关联")} · ${item.creationMethod === "ScenarioDerived" ? `运行 ${escapeHtml(item.sourceScenarioRunId || "证据缺失")}` : "人工创建"}</small>
               <small>${escapeHtml(statusLabel(item.riskLevel))} · ${escapeHtml(item.effectiveWindow)}</small>
             </button>
           `).join("")
@@ -2647,11 +2826,14 @@ function renderMasterSettingChanges(changes) {
       `<button class="link-button" type="button" data-master-change-id="${escapeHtml(item.changeId)}"><strong>${escapeHtml(item.changeNumber)}</strong><small>${escapeHtml(item.createdBy)}</small></button>`,
       escapeHtml(masterSettingTypeLabel(item.settingType)),
       escapeHtml(item.target),
+      escapeHtml(item.sourceBaselineId || "未关联"),
+      escapeHtml(item.creationMethod === "ScenarioDerived" ? item.sourceScenarioRunId || "证据缺失" : "不适用"),
       `<span class="${statusClass(item.status)}">${masterSettingStatusLabel(item.status)}</span>`,
       `<span class="${statusClass(item.riskLevel)}">${statusLabel(item.riskLevel)}</span>`,
       escapeHtml(item.effectiveWindow),
     ])).join("")
-    : emptyRow("没有已保存主设置变更", 6);
+    : emptyRow("没有已保存主设置变更", 8);
+  configureCoordinationLineageSelectors();
 }
 
 function renderMasterSettingProposalDetail(proposal) {
@@ -2711,7 +2893,7 @@ function renderMasterSettingDetail(detail, auditEvents) {
     ? auditEvents.map(item => `
       <div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}">
         <strong>${item.sequence}. ${escapeHtml(auditEventLabel(item.eventType))} / ${traceStageLabel(item.stage)}</strong>
-        <span>${escapeHtml(item.message)}</span>
+        <span>${escapeHtml(businessEvidenceLabel(item.message))}</span>
       </div>
     `).join("")
     : `<div class="table-empty"><strong>没有审计事件</strong></div>`;
@@ -2741,27 +2923,31 @@ async function generateMasterSettingProposals() {
     return;
   }
 
+  const sourceBaselineId = byId("governance-baseline-id").value;
+  if (!sourceBaselineId) throw new Error("人工创建配置建议必须选择冻结基线。");
   masterSettingControls.status.className = "status-chip is-warning";
   masterSettingControls.status.textContent = "正在生成建议";
+  const request = {
+    ...state.preview.request,
+    governanceContext: governanceDecisionContext(null, sourceBaselineId),
+  };
   const response = await fetch("/api/master-settings/proposals/from-preview", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(state.preview.request),
+    body: JSON.stringify(request),
   });
   if (!response.ok) {
     throw new Error(`主设置建议接口失败：${response.status}`);
   }
 
   const result = await response.json();
-  useMasterSettingProposalResponse(result, "实时预览建议仅供评审；从冻结场景比较生成后方可保存");
+  useMasterSettingProposalResponse(result, "人工配置建议已关联冻结基线，可人工保存");
 }
 
-function governanceDecisionContext() {
+function governanceDecisionContext(sourceScenarioRunId = null, sourceBaselineId = null) {
   return {
-    sourceBaselineId: state.futureComparisonRequest?.baselineSnapshotId || null,
-    sourceScenarioRunId: state.futureComparisonRequest
-      ? `${state.futureComparisonRequest.externalScenario.scenarioId}/${byId("governance-response-id").value}`
-      : null,
+    sourceBaselineId: sourceBaselineId || state.futureComparisonRequest?.baselineSnapshotId || null,
+    sourceScenarioRunId,
     owner: byId("governance-owner").value || null,
     approver: byId("governance-approver").value || null,
     effectiveFrom: byId("governance-effective-from").value || null,
@@ -2788,6 +2974,11 @@ async function generateMasterSettingProposalsFromComparison() {
   }
   const responseId = byId("governance-response-id").value;
   if (!responseId) throw new Error("请选择冻结比较方案。");
+  const savedRun = savedFutureComparison(responseId);
+  if (!savedRun?.runId) throw new Error("所选方案必须先在 03 中显式保存为真实场景运行。");
+  if (savedRun.summary?.baselineSnapshotId !== state.futureComparisonRequest.baselineSnapshotId || savedRun.summary?.responseId !== responseId) {
+    throw new Error("已保存运行与当前冻结基线或响应方案不一致，请重新保存。");
+  }
   masterSettingControls.status.className = "status-chip is-warning";
   masterSettingControls.status.textContent = "正在从冻结比较重算建议";
   const response = await fetch("/api/master-settings/proposals/from-comparison", {
@@ -2796,7 +2987,8 @@ async function generateMasterSettingProposalsFromComparison() {
     body: JSON.stringify({
       comparison: state.futureComparisonRequest,
       responseId,
-      governanceContext: governanceDecisionContext(),
+      governanceContext: governanceDecisionContext(savedRun.runId, state.futureComparisonRequest.baselineSnapshotId),
+      sourceScenarioRunId: savedRun.runId,
     }),
   });
   const result = await response.json();
@@ -3297,27 +3489,27 @@ function stageKpi(label, value, note) {
 function renderHistoryReview(history) {
   state.historyReview = history;
   byId("history-evidence-chip").className = "status-chip is-valid";
-  byId("history-evidence-chip").textContent = `${history.evidenceLabel} · ${history.trendMonths} 个月`;
+  byId("history-evidence-chip").textContent = `${historyEvidenceSummary(history.evidenceLabel)} · ${history.observedTrendWeeks} 周实际`;
   const outcomes = history.operatingOutcomes;
   byId("history-review-kpis").innerHTML = [
-    ["服务水平", percent(outcomes.serviceLevelPercent), "历史实际结果"],
-    ["库存金额", money(outcomes.inventoryValue), "当前占用"],
-    ["WIP", number(outcomes.workInProcessUnits), "在制数量"],
-    ["流动时间", `${number(outcomes.averageFlowTimeDays)} 天`, `详细窗口 ${history.detailWindowWeeks} 周`],
-    ["现金占用", money(outcomes.cashOccupied), "库存口径"],
-    ["异常费用", money(outcomes.expediteCost), "红色供应窗口"],
-    ["剩余保护", percent(outcomes.remainingProtectionPercent), "能力保护余额"],
+    ["服务水平", metricOrEvidenceMissing(outcomes.serviceLevelPercent, percent), `${history.observedTrendWeeks} 周历史实际`],
+    ["平均库存金额", metricOrEvidenceMissing(outcomes.inventoryValue, money), "所选历史窗口平均"],
+    ["在制品", metricOrEvidenceMissing(outcomes.workInProcessUnits, number), "所选历史窗口平均"],
+    ["流动时间", metricOrEvidenceMissing(outcomes.averageFlowTimeDays, value => `${number(value)} 天`), `详细窗口 ${history.detailWindowWeeks} 周`],
+    ["现金占用", metricOrEvidenceMissing(outcomes.cashOccupied, money), "历史经营结果"],
+    ["异常费用", metricOrEvidenceMissing(outcomes.expediteCost, money), "可追溯异常处置"],
+    ["剩余保护", metricOrEvidenceMissing(outcomes.remainingProtectionPercent, percent), "上游能力保护余额"],
   ].map(item => stageKpi(...item)).join("");
 
   byId("history-protection-body").innerHTML = history.protectionRelationships.length
     ? history.protectionRelationships.map(item => row([
         escapeHtml(item.controlPoint),
         escapeHtml(item.protectedObject),
-        escapeHtml(item.protectionType),
-        escapeHtml(item.designStatus),
-        escapeHtml(item.availabilityStatus),
-        escapeHtml(item.effectivenessStatus),
-        escapeHtml(item.evidence),
+        escapeHtml(breachScopeLabel(item.protectionType)),
+        escapeHtml(protectionStateLabel(item.designStatus)),
+        escapeHtml(protectionStateLabel(item.availabilityStatus)),
+        escapeHtml(protectionStateLabel(item.effectivenessStatus)),
+        escapeHtml(businessEvidenceLabel(item.evidence)),
       ])).join("")
     : emptyRow("没有保护关系证据", 7);
   byId("history-zone-body").innerHTML = history.zoneResidence.length
@@ -3328,23 +3520,30 @@ function renderHistoryReview(history) {
         `<span class="status-chip is-warning">${number(item.yellowPeriods)} / ${percent(item.yellowPercent)}</span>`,
         `<span class="status-chip is-valid">${number(item.greenPeriods)} / ${percent(item.greenPercent)}</span>`,
         `${number(item.maximumRedStreak)} 周 · 进入 ${number(item.redEntryCount)} 次`,
-        item.recoveryPeriods == null ? "展望期未恢复" : `${number(item.recoveryPeriods)} 周期`,
-        escapeHtml(item.primaryCause),
+        item.recoveryPeriods == null ? "历史窗口内未恢复" : `${number(item.recoveryPeriods)} 周期`,
+        escapeHtml(metricOrEvidenceMissing(item.primaryCause)),
       ])).join("")
     : emptyRow("没有区域停留证据", 8);
 
   byId("history-capacity-layers").innerHTML = history.capacityProtection.map(item => {
-    const scale = Math.max(1, Number(item.theoreticalCapacity));
-    const bar = (label, value, cssClass) => `<div class="capacity-layer-row"><span>${label}</span><div class="capacity-layer-track"><i class="${cssClass}" style="width:${Math.min(100, Number(value) * 100 / scale)}%"></i></div><strong>${number(value)}</strong></div>`;
-    return `<article class="capacity-layer-item"><div><strong>${escapeHtml(item.resourceName)}</strong><small>${escapeHtml(item.resourceCode)} · ${escapeHtml(item.lossReason)}</small></div>${bar("理论", item.theoreticalCapacity, "is-theoretical")}${bar("标准", item.standardCapacity, "is-standard")}${bar("经验证", item.demonstratedCapacity, "is-demonstrated")}${bar("计划可用", item.plannedAvailableCapacity, "is-available")}${bar("承诺负荷", item.committedLoad, "is-load")}${bar("保护能力", item.protectiveCapacity, "is-protection")}</article>`;
+    const scaleCandidate = [item.theoreticalCapacity, item.standardCapacity, item.demonstratedCapacity, item.plannedAvailableCapacity]
+      .find(value => value !== null && value !== undefined);
+    const scale = Math.max(1, Number(valueOr(scaleCandidate, 1)));
+    const bar = (label, value, cssClass) => value === null || value === undefined
+      ? `<div class="capacity-layer-row"><span>${label}</span><div class="capacity-layer-track is-missing"></div><strong>证据缺失</strong></div>`
+      : `<div class="capacity-layer-row"><span>${label}</span><div class="capacity-layer-track"><i class="${cssClass}" style="width:${Math.min(100, Number(value) * 100 / scale)}%"></i></div><strong>${number(value)}</strong></div>`;
+    const protectionRows = item.relationshipRole === "UpstreamProtection"
+      ? `${bar("保护能力", item.protectiveCapacity, "is-protection")}${bar("已消耗保护", item.consumedProtection, "is-load")}${bar("剩余保护", item.remainingProtection, "is-available")}`
+      : "";
+    return `<article class="capacity-layer-item"><div><strong>${escapeHtml(item.resourceName)}</strong><small>${escapeHtml(item.resourceCode)} · ${escapeHtml(capacityRoleLabel(item.relationshipRole, item.protectedCcrResourceCode))}</small><small>${escapeHtml(businessEvidenceLabel(item.lossReason))} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}</small></div>${bar("理论", item.theoreticalCapacity, "is-theoretical")}${bar("标准", item.standardCapacity, "is-standard")}${bar("经验证", item.demonstratedCapacity, "is-demonstrated")}${bar("计划可用", item.plannedAvailableCapacity, "is-available")}${bar(item.relationshipRole === "CcrUtilization" ? "CCR 承诺负荷" : "承诺负荷", item.committedLoad, "is-load")}${protectionRows}</article>`;
   }).join("");
   byId("history-constraint-body").innerHTML = history.constraintExposure.length
     ? history.constraintExposure.map(item => row([
-        escapeHtml(item.exposureType),
+        escapeHtml(constraintExposureLabel(item.exposureType)),
         escapeHtml(item.target),
         `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`,
-        percent(item.loadPercent),
-        escapeHtml(item.evidence),
+        metricOrEvidenceMissing(item.loadPercent, percent),
+        escapeHtml(businessEvidenceLabel(item.evidence)),
       ])).join("")
     : emptyRow("没有约束暴露证据", 5);
 }
@@ -3358,35 +3557,50 @@ async function loadHistoryReview(trendMonths = 6) {
 }
 
 function configureFutureBaselineSelect() {
-  const select = byId("future-baseline-select");
-  const previous = select.value;
-  select.innerHTML = state.currentBaselines.length
-    ? state.currentBaselines.map(item => `<option value="${escapeHtml(item.snapshotId)}">${escapeHtml(item.snapshotNumber)} · ${escapeHtml(item.asOfUtc)}</option>`).join("")
-    : `<option value="">请先冻结当前基线</option>`;
-  if (state.currentBaselines.some(item => item.snapshotId === previous)) select.value = previous;
+  ["future-baseline-select", "governance-baseline-id"].forEach(id => {
+    const select = byId(id);
+    const previous = select.value;
+    select.innerHTML = state.currentBaselines.length
+      ? [`<option value="">请选择冻结基线</option>`, ...state.currentBaselines.map(item => `<option value="${escapeHtml(item.snapshotId)}">${escapeHtml(item.snapshotNumber)} · ${escapeHtml(item.asOfUtc)} · ${baselineStatusLabel(item.status)}</option>`)].join("")
+      : `<option value="">请先冻结当前基线</option>`;
+    if (state.currentBaselines.some(item => item.snapshotId === previous)) select.value = previous;
+  });
 }
 
 function renderCurrentBaselineWorkspace() {
   const candidate = state.currentBaselineCandidate;
   if (!candidate) return;
-  const missing = candidate.sections.filter(item => item.isRequired && item.completenessStatus !== "Complete");
+  const missing = candidate.sections.filter(item => item.isRequired && (item.completenessStatus !== "Complete" || item.freshnessStatus !== "Fresh"));
   byId("current-baseline-chip").className = `status-chip ${missing.length ? "is-invalid" : "is-valid"}`;
-  byId("current-baseline-chip").textContent = missing.length ? `缺少 ${missing.length} 个关键部分` : `${candidate.evidenceLabel} · 可冻结`;
+  byId("current-baseline-chip").textContent = missing.length ? `缺少 ${missing.length} 个关键部分` : `${baselineSourceLabel(candidate.evidenceLabel)} · 可冻结`;
   byId("freeze-current-baseline").disabled = missing.length > 0;
   byId("baseline-candidate-title").textContent = `截止 ${candidate.asOfUtc} · 主设置 ${candidate.masterSettingVersion}`;
+  const kpis = candidate.payload?.kpis;
+  byId("current-baseline-kpis").innerHTML = kpis ? [
+    ["会前截止时刻", metricOrEvidenceMissing(kpis.asOfUtc), baselineSourceLabel(kpis.sourceAuthority)],
+    ["服务统计窗口", businessEvidenceLabel(kpis.serviceWindow), evidenceStatusLabel(kpis.evidenceStatus)],
+    ["服务水平", metricOrEvidenceMissing(kpis.serviceLevelPercent, percent), "会前事实"],
+    ["库存金额", metricOrEvidenceMissing(kpis.inventoryValue, money), "会前事实"],
+    ["在制品", metricOrEvidenceMissing(kpis.workInProcessUnits, number), "会前事实"],
+    ["积压", metricOrEvidenceMissing(kpis.backlogUnits, number), "会前事实"],
+    ["供应覆盖", metricOrEvidenceMissing(kpis.supplyCoverageWeeks, value => `${number(value)} 周`), "会前事实"],
+    ["峰值负荷", metricOrEvidenceMissing(kpis.peakResourceLoadPercent, percent), "会前事实"],
+  ].map(item => stageKpi(...item)).join("") : stageKpi("会前证据", "证据缺失", "未按零处理");
   byId("baseline-evidence-body").innerHTML = candidate.sections.map(item => row([
-    `<strong>${escapeHtml(item.name)}</strong><small>${item.isRequired ? "关键" : "辅助"}</small>`,
-    escapeHtml(item.sourceAuthority),
+    `<strong>${escapeHtml(baselineSectionLabel(item.name))}</strong><small>${item.isRequired ? "关键" : "辅助"}</small>`,
+    escapeHtml(baselineSourceLabel(item.sourceAuthority)),
     escapeHtml(item.asOfUtc),
-    escapeHtml(item.freshnessStatus),
-    `<span class="${statusClass(item.completenessStatus === "Complete" ? "Green" : "Red")}">${escapeHtml(item.completenessStatus)}</span>`,
-    number(item.itemCount),
-    escapeHtml(item.evidenceLabel),
+    escapeHtml(freshnessLabel(item.freshnessStatus)),
+    `<span class="${statusClass(item.completenessStatus === "Complete" ? "Green" : "Red")}">${escapeHtml(completenessLabel(item.completenessStatus))}</span>`,
+    item.completenessStatus === "Complete" ? number(item.itemCount) : item.completenessStatus === "NotApplicable" ? "不适用" : "证据缺失",
+    escapeHtml(baselineSourceLabel(item.evidenceLabel)),
+    escapeHtml(item.missingReason ? businessEvidenceLabel(item.missingReason) : "不适用"),
   ])).join("");
   byId("baseline-snapshot-body").innerHTML = state.currentBaselines.length
-    ? state.currentBaselines.map(item => `<tr class="interactive-row" tabindex="0" data-baseline-snapshot-id="${escapeHtml(item.snapshotId)}"><td><strong>${escapeHtml(item.snapshotNumber)}</strong></td><td>${escapeHtml(item.asOfUtc)}</td><td>${escapeHtml(item.masterSettingVersion)}</td><td>${escapeHtml(item.createdBy)}</td><td>${number(item.completeSectionCount)} / ${number(item.sectionCount)}</td><td><span class="status-chip is-valid">${escapeHtml(item.status)}</span></td></tr>`).join("")
+    ? state.currentBaselines.map(item => `<tr class="interactive-row" tabindex="0" data-baseline-snapshot-id="${escapeHtml(item.snapshotId)}"><td><strong>${escapeHtml(item.snapshotNumber)}</strong></td><td>${escapeHtml(item.asOfUtc)}</td><td>${escapeHtml(item.masterSettingVersion)}</td><td>${escapeHtml(item.createdBy)}</td><td>${number(item.completeSectionCount)} / ${number(item.sectionCount)}</td><td><span class="status-chip is-valid">${escapeHtml(baselineStatusLabel(item.status))}</span></td></tr>`).join("")
     : emptyRow("尚未冻结基线", 6);
   configureFutureBaselineSelect();
+  configureCoordinationLineageSelectors();
 }
 
 async function loadCurrentBaselineWorkspace() {
@@ -3398,6 +3612,12 @@ async function loadCurrentBaselineWorkspace() {
   state.currentBaselineCandidate = await candidateResponse.json();
   state.currentBaselines = await listResponse.json();
   renderCurrentBaselineWorkspace();
+  if (state.currentBaselines.length) {
+    await loadBaselineAudit(state.currentBaselines[0].snapshotId);
+  } else {
+    byId("baseline-audit-list").innerHTML = `<div class="table-empty"><strong>冻结基线后生成审计记录</strong></div>`;
+    byId("baseline-reference-list").innerHTML = `<div class="table-empty"><strong>尚无可反查的冻结基线</strong></div>`;
+  }
 }
 
 async function freezeCurrentBaseline() {
@@ -3415,10 +3635,29 @@ async function freezeCurrentBaseline() {
 }
 
 async function loadBaselineAudit(snapshotId) {
-  const response = await fetch(`/api/current-baselines/${snapshotId}/audit`, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`基线审计接口失败：${response.status}`);
-  const audit = await response.json();
-  byId("baseline-audit-list").innerHTML = audit.map(item => `<div class="diagnostic-item"><strong>${number(item.sequence)}. ${escapeHtml(item.eventType)}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(item.createdAtUtc)}</small></div>`).join("");
+  const [auditResponse, referenceResponse] = await Promise.all([
+    fetch(`/api/current-baselines/${snapshotId}/audit`, { headers: { Accept: "application/json" } }),
+    fetch(`/api/current-baselines/${snapshotId}/references`, { headers: { Accept: "application/json" } }),
+  ]);
+  if (!auditResponse.ok) throw new Error(`基线审计接口失败：${auditResponse.status}`);
+  if (!referenceResponse.ok) throw new Error(`基线关联接口失败：${referenceResponse.status}`);
+  const audit = await auditResponse.json();
+  const references = await referenceResponse.json();
+  byId("baseline-audit-list").innerHTML = audit.length
+    ? audit.map(item => `<div class="diagnostic-item"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(baselineAuditMessage(item))}</span><small>${escapeHtml(item.createdAtUtc)}</small></div>`).join("")
+    : `<div class="table-empty"><strong>没有审计记录</strong></div>`;
+  renderBaselineReferences(references);
+}
+
+function renderBaselineReferences(references) {
+  const groups = [
+    ["场景运行", references.scenarioRuns || [], item => `${item.runNumber} · ${item.name}`],
+    ["配置变更", references.masterSettingChanges || [], item => `${item.changeNumber} · ${item.target}`],
+    ["行动事项", references.coordinationItems || [], item => `${item.itemNumber} · ${item.title}`],
+  ];
+  byId("baseline-reference-list").innerHTML = groups.map(([label, items, describe]) => `
+    <div class="diagnostic-item"><strong>${label} · ${number(items.length)}</strong><span>${items.length ? items.map(describe).map(escapeHtml).join("；") : "未关联"}</span></div>
+  `).join("");
 }
 
 function configureFiveStageScenarioControls() {
@@ -3429,13 +3668,40 @@ function configureFiveStageScenarioControls() {
     const [supplier, family] = value.split("|");
     return `<option value="${escapeHtml(value)}">${escapeHtml(supplier)} / ${escapeHtml(family)}</option>`;
   }).join("");
+  const timeBuffers = state.data?.timeBuffers || [];
+  byId("external-time-control-point").innerHTML = timeBuffers.length
+    ? timeBuffers.map(item => `<option value="${escapeHtml(item.bufferId)}">${escapeHtml(item.controlPoint)} · ${escapeHtml(item.protectedActivity)}</option>`).join("")
+    : `<option value="">没有可用时间控制点</option>`;
+  setAssumptionModeUi();
 }
 
-function buildScenarioComparisonRequest() {
-  const baselineSnapshotId = byId("future-baseline-select").value;
-  if (!baselineSnapshotId) throw new Error("请先在当前状态基线中冻结一个版本。");
-  const resourceCode = byId("external-capacity-resource").value;
-  const [supplier, materialFamily] = (byId("external-supplier-risk").value || "|").split("|");
+async function loadScenarioAssumptionTemplates() {
+  const response = await fetch("/api/scenario-assumptions/templates", { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`演示场景模板接口失败：${response.status}`);
+  state.scenarioAssumptionTemplates = await response.json();
+  byId("future-assumption-template").innerHTML = state.scenarioAssumptionTemplates.length
+    ? state.scenarioAssumptionTemplates.map(item => `<option value="${escapeHtml(item.templateId)}">${escapeHtml(item.name)}</option>`).join("")
+    : `<option value="">没有内置演示模板</option>`;
+  setAssumptionModeUi();
+}
+
+function setAssumptionModeUi() {
+  const isDemo = byId("future-assumption-mode").value === "DemoFixture";
+  document.querySelectorAll("[data-assumption-template-field]").forEach(field => { field.hidden = !isDemo; });
+  document.querySelectorAll("[data-assumption-manual-field]").forEach(field => { field.hidden = isDemo; });
+  const evidence = byId("future-assumption-evidence");
+  if (!evidence.readOnly || !evidence.dataset.manualValue) evidence.dataset.manualValue = evidence.value;
+  if (isDemo) {
+    const template = state.scenarioAssumptionTemplates.find(item => item.templateId === byId("future-assumption-template").value);
+    evidence.value = template ? `版本 ${template.templateVersion} · ${baselineSourceLabel("DemoFixture")}` : baselineSourceLabel("DemoFixture");
+    evidence.readOnly = true;
+  } else {
+    evidence.value = evidence.dataset.manualValue;
+    evidence.readOnly = false;
+  }
+}
+
+function buildResponseConfigurations(resourceCode) {
   const sku = state.data?.skus?.[0];
   const responseOptions = [];
   if (byId("response-temporary-capacity").checked && resourceCode) {
@@ -3447,6 +3713,34 @@ function buildScenarioComparisonRequest() {
   if (byId("response-prebuild").checked && sku) {
     responseOptions.push({ responseId: "RESP-PREBUILD", name: "提前建库", parameters: { prebuildCampaigns: [{ campaignId: "FUTURE-PREBUILD", sku: sku.sku, buildWeek: 1, protectFromWeek: 3, protectThroughWeek: 8, quantity: Math.max(1, Number(sku.minimumOrderQuantity)) }] } });
   }
+  return responseOptions;
+}
+
+function buildScenarioComparisonRequest() {
+  const baselineSnapshotId = byId("future-baseline-select").value;
+  if (!baselineSnapshotId) throw new Error("请先在当前状态基线中冻结一个版本。");
+  const resourceCode = byId("external-capacity-resource").value;
+  const [supplier, materialFamily] = (byId("external-supplier-risk").value || "|").split("|");
+  const responseOptions = buildResponseConfigurations(resourceCode);
+  if (byId("future-assumption-mode").value === "DemoFixture") {
+    const template = state.scenarioAssumptionTemplates.find(item => item.templateId === byId("future-assumption-template").value);
+    if (!template) throw new Error("请选择 DDAE 内置演示模板。");
+    return {
+      baselineSnapshotId,
+      horizonWeeks: 12,
+      externalScenario: JSON.parse(JSON.stringify(template.externalScenario)),
+      responseOptions,
+    };
+  }
+  const recordedBy = byId("future-assumption-entered-by").value.trim();
+  const effectiveFrom = byId("future-assumption-effective-from").value;
+  const effectiveThrough = byId("future-assumption-effective-through").value;
+  const rationale = byId("future-assumption-evidence").value.trim();
+  if (!recordedBy || !effectiveFrom || !effectiveThrough || !rationale) {
+    throw new Error("人工场景必须填写记录人、有效期和依据。");
+  }
+  const timeBufferId = byId("external-time-control-point").value;
+  const delayDays = Number(byId("external-time-delay-days").value);
   return {
     baselineSnapshotId,
     horizonWeeks: 12,
@@ -3457,17 +3751,121 @@ function buildScenarioComparisonRequest() {
       supplyRisks: supplier ? [{ supplier, materialFamily, startWeek: 3, endWeek: 8, availableCapacityMultiplier: Number(byId("external-supply-multiplier").value), reason: "供应能力风险" }] : [],
       capacityLosses: resourceCode ? [{ resourceCode, startWeek: 3, endWeek: 6, availableCapacityMultiplier: Number(byId("external-capacity-multiplier").value), reason: "已知能力损失" }] : [],
       knownEvents: [{ eventId: "EVENT-UI-001", name: "已知业务窗口", startWeek: 2, endWeek: 8 }],
+      timeDelays: timeBufferId && delayDays > 0 ? [{ bufferId: timeBufferId, startWeek: 2, endWeek: 8, delayDays, reason: rationale }] : [],
+      metadata: {
+        sourceKind: "Manual",
+        templateId: null,
+        templateVersion: null,
+        recordedBy,
+        recordedAtUtc: new Date().toISOString(),
+        effectiveFrom,
+        effectiveThrough,
+        rationale,
+        evidenceLabel: `人工录入：${rationale}`,
+      },
     },
     responseOptions,
   };
 }
 
+function renderTimeBufferView(result, baselineDetail) {
+  const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
+  const planningInputs = baselineDetail?.payload?.planningInputs;
+  const definitions = planningInputs && planningInputs.timeBuffers ? planningInputs.timeBuffers : [];
+  const definitionById = new Map(definitions.map(item => [item.bufferId, item]));
+  const timeBreaches = cases.flatMap(item => (item.breaches || [])
+    .filter(breach => breach.scopeType === "TimeBuffer" || breach.scopeType === "Time")
+    .map(breach => ({ caseName: item.name, ...breach })));
+  const notApplicable = !definitions.length && timeBreaches.length > 0 && timeBreaches.every(item => item.evidenceStatus === "NotApplicable");
+  const noEvidence = !notApplicable && (!definitions.length || !timeBreaches.length || cases.every(item => !(item.timeBufferProjection || []).length));
+  const hasMissingEvidence = noEvidence || timeBreaches.some(item => item.evidenceStatus !== "Complete")
+    || cases.some(item => (item.timeBufferProjection || []).some(point => point.evidenceStatus !== "Complete"));
+  byId("time-buffer-evidence-chip").className = `status-chip ${notApplicable ? "neutral" : hasMissingEvidence ? "is-warning" : "is-valid"}`;
+  byId("time-buffer-evidence-chip").textContent = notApplicable ? "不适用" : noEvidence ? "证据缺失" : hasMissingEvidence ? "部分证据缺失" : "后端证据完整";
+  byId("time-buffer-kpis").innerHTML = [
+    ["控制点", number(definitions.length), "冻结基线定义"],
+    ["比较方案", number(cases.length), "同一冻结基线"],
+    ["击穿记录", number(timeBreaches.filter(item => item.evidenceStatus === "Complete" && item.isBreached).length), "逐项后端结果见下表"],
+    ["未恢复记录", number(timeBreaches.filter(item => item.evidenceStatus === "Complete" && item.isUnrecovered).length), "逐项后端结果见下表"],
+  ].map(item => stageKpi(...item)).join("");
+  byId("time-buffer-summary-body").innerHTML = timeBreaches.length
+    ? timeBreaches.map(item => {
+      const definition = definitionById.get(item.target);
+      const evidenceComplete = item.evidenceStatus === "Complete";
+      const evidenceUnavailable = item.evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
+      return row([
+        escapeHtml(item.caseName),
+        escapeHtml(definition?.controlPoint || evidenceUnavailable),
+        escapeHtml(definition?.protectedActivity || evidenceUnavailable),
+        evidenceComplete ? metricOrEvidenceMissing(item.bufferSize, value => `${number(value)} 天`) : evidenceUnavailable,
+        !evidenceComplete ? evidenceUnavailable : item.isBreached ? metricOrEvidenceMissing(item.earliestRedWeek, value => `第 ${number(value)} 周`) : "未击穿",
+        evidenceComplete ? metricOrEvidenceMissing(item.maximumPenetrationPercent, percent) : evidenceUnavailable,
+        !evidenceComplete ? evidenceUnavailable : item.isBreached ? `${number(item.consecutiveRiskWeeks)} 周` : "不适用",
+        !evidenceComplete ? evidenceUnavailable : !item.isBreached ? "不适用" : item.isUnrecovered ? `<span class="status-chip is-invalid">展望期未恢复</span>` : metricOrEvidenceMissing(item.recoveryWeek, value => `第 ${number(value)} 周`),
+        escapeHtml((item.affectedProducts || []).join("、") || evidenceUnavailable),
+        escapeHtml(evidenceStatusLabel(item.evidenceStatus)),
+      ]);
+    }).join("")
+    : emptyRow("没有时间缓冲后端结果", 10);
+
+  const projectionRows = cases.flatMap(item => (item.timeBufferProjection || []).map(point => ({ caseName: item.name, ...point })));
+  const weeks = [...new Set(projectionRows.map(item => item.week))].sort((left, right) => left - right);
+  const groups = [...new Set(projectionRows.map(item => `${item.caseName}|${item.bufferId}`))];
+  byId("time-buffer-weekly-grid").innerHTML = projectionRows.length
+    ? `<table class="heatmap-table"><thead><tr><th>方案 / 控制点</th>${weeks.map(week => `<th>第 ${number(week)} 周</th>`).join("")}</tr></thead><tbody>${groups.map(group => {
+      const separator = group.indexOf("|");
+      const caseName = group.slice(0, separator);
+      const bufferId = group.slice(separator + 1);
+      const points = projectionRows.filter(item => item.caseName === caseName && item.bufferId === bufferId);
+      const controlPoint = points[0]?.controlPoint || definitionById.get(bufferId)?.controlPoint || bufferId;
+      return `<tr><th>${escapeHtml(caseName)}<small>${escapeHtml(controlPoint)}</small></th>${weeks.map(week => {
+        const point = points.find(item => item.week === week);
+        return point
+          ? `<td><span class="${bufferCellClass(point.status)}" title="${escapeHtml(point.cause)}">${metricOrEvidenceMissing(point.penetrationPercent, percent)}</span></td>`
+          : `<td><span class="buffer-heat-cell">证据缺失</span></td>`;
+      }).join("")}</tr>`;
+    }).join("")}</tbody></table>`
+    : `<div class="table-empty"><strong>运行冻结基线比较后显示时间缓冲周矩阵</strong></div>`;
+}
+
+function renderFutureCapacityProtection(result) {
+  const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
+  const projectionRows = cases.flatMap(item => (item.capacityProtectionProjection || []).map(point => ({ caseName: item.name, ...point })));
+  byId("future-capacity-protection-body").innerHTML = projectionRows.length
+    ? projectionRows.map(item => row([
+      escapeHtml(item.caseName), escapeHtml(item.upstreamResourceCode), escapeHtml(item.protectedCcrResourceCode), `第 ${number(item.week)} 周`,
+      metricOrEvidenceMissing(item.plannedAvailableCapacity, number), metricOrEvidenceMissing(item.committedLoad, number),
+      metricOrEvidenceMissing(item.protectionCapacity, number), metricOrEvidenceMissing(item.consumedProtection, number),
+      metricOrEvidenceMissing(item.remainingProtection, number), `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`,
+    ])).join("")
+    : emptyRow("没有上游能力保护证据", 10);
+  const protectedCcrCodes = new Set(projectionRows.map(item => item.protectedCcrResourceCode).filter(Boolean));
+  const ccrRows = cases.flatMap(item => (item.preview?.scenario?.rccp?.resourceSummaries || [])
+    .filter(resource => protectedCcrCodes.has(resource.resourceCode))
+    .map(resource => ({ caseName: item.name, ...resource })));
+  byId("future-ccr-utilization-body").innerHTML = ccrRows.length
+    ? ccrRows.map(item => row([escapeHtml(item.caseName), escapeHtml(item.resourceName), percent(item.averageLoadPercent), percent(item.peakLoadPercent), `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`])).join("")
+    : emptyRow("没有 CCR 利用率证据", 5);
+}
+
+function futureComparisonKey(responseId) {
+  return `${state.futureComparisonRequest?.baselineSnapshotId || ""}|${state.futureComparisonRequest?.externalScenario?.scenarioId || ""}|${responseId || ""}`;
+}
+
+function savedFutureComparison(responseId) {
+  return state.savedFutureComparisons[futureComparisonKey(responseId)] || null;
+}
+
 function renderFutureComparison(result) {
   state.futureComparison = result;
   const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
-  byId("governance-response-id").innerHTML = cases
-    .map(item => `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)} · ${escapeHtml(item.responseId)}</option>`)
-    .join("");
+  const options = cases.map(item => `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)}</option>`).join("");
+  byId("governance-response-id").innerHTML = options;
+  byId("future-comparison-save-response-id").innerHTML = options;
+  byId("governance-baseline-id").value = result.baselineSnapshotId;
+  byId("save-future-comparison").disabled = false;
+  byId("future-comparison-save-status").className = "status-chip is-paused";
+  byId("future-comparison-save-status").textContent = "比较完成，尚未保存";
   byId("future-compare-status").className = "status-chip is-valid";
   byId("future-compare-status").textContent = `${result.baselineSnapshotNumber} · ${cases.length} 个方案`;
   byId("future-comparison-cards").innerHTML = cases.map(item => {
@@ -3479,7 +3877,7 @@ function renderFutureComparison(result) {
   byId("future-breach-body").innerHTML = breachRows.length
     ? breachRows.map(item => row([
         escapeHtml(item.caseName),
-        escapeHtml(({ Inventory: "库存", Capacity: "能力", Supply: "供应" })[item.scopeType] || item.scopeType),
+        escapeHtml(breachScopeLabel(item.scopeType)),
         escapeHtml(item.target),
         item.isBreached ? `第 ${number(item.earliestRedWeek)} 周` : "未击穿",
         item.isBreached ? `${number(item.consecutiveRiskWeeks)} 周` : "-",
@@ -3488,6 +3886,35 @@ function renderFutureComparison(result) {
         escapeHtml(item.primaryCause),
       ])).join("")
     : emptyRow("没有可计算的保护击穿证据", 8);
+  renderTimeBufferView(result, state.futureComparisonBaseline);
+  renderFutureCapacityProtection(result);
+}
+
+async function saveFutureComparison() {
+  if (!state.futureComparison || !state.futureComparisonRequest) throw new Error("请先运行冻结基线比较。");
+  const responseId = byId("future-comparison-save-response-id").value;
+  if (!responseId) throw new Error("请选择要保存的比较方案。");
+  byId("future-comparison-save-status").className = "status-chip is-warning";
+  byId("future-comparison-save-status").textContent = "后端重新计算并保存中";
+  const response = await fetch("/api/scenario-runs/compare/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      comparison: state.futureComparisonRequest,
+      responseId,
+      name: byId("future-comparison-save-name").value,
+      description: "由未来场景比较显式保存",
+      createdBy: byId("future-comparison-save-created-by").value,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || `冻结比较保存失败：${response.status}`);
+  state.savedFutureComparisons[futureComparisonKey(responseId)] = payload;
+  state.selectedScenarioRunId = payload.runId;
+  byId("future-comparison-save-status").className = "status-chip is-valid";
+  byId("future-comparison-save-status").textContent = `${payload.runNumber} 已保存`;
+  await loadSavedScenarioRuns(payload.runId);
+  configureCoordinationLineageSelectors();
 }
 
 async function runScenarioComparison() {
@@ -3501,7 +3928,11 @@ async function runScenarioComparison() {
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.message || `场景比较失败：${response.status}`);
+  const baselineResponse = await fetch(`/api/current-baselines/${encodeURIComponent(request.baselineSnapshotId)}`, { headers: { Accept: "application/json" } });
+  if (!baselineResponse.ok) throw new Error(`冻结基线详情接口失败：${baselineResponse.status}`);
   state.futureComparisonRequest = request;
+  state.futureComparisonBaseline = await baselineResponse.json();
+  state.savedFutureComparisons = {};
   renderFutureComparison(payload);
 }
 
@@ -3509,8 +3940,22 @@ function renderCoordinationItems() {
   byId("coordination-status-chip").className = "status-chip is-valid";
   byId("coordination-status-chip").textContent = `${state.coordinationItems.length} 个事项`;
   byId("coordination-item-body").innerHTML = state.coordinationItems.length
-    ? state.coordinationItems.map(item => `<tr class="interactive-row" tabindex="0" data-coordination-item-id="${escapeHtml(item.itemId)}"><td><strong>${escapeHtml(item.itemNumber)}</strong></td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.dueDate)}</td><td>${escapeHtml(item.escalationLevel)}</td><td>${escapeHtml(item.nextReviewDate)}</td><td>${escapeHtml(item.relatedScenarioRunId || "-")}</td><td>${escapeHtml(item.relatedMasterSettingChangeId || "-")}</td><td><span class="${statusClass(item.status === "Completed" ? "Green" : item.status === "Escalated" ? "Red" : "Yellow")}">${escapeHtml(item.status)}</span></td></tr>`).join("")
+    ? state.coordinationItems.map(item => `<tr class="interactive-row" tabindex="0" data-coordination-item-id="${escapeHtml(item.itemId)}"><td><strong>${escapeHtml(item.itemNumber)}</strong></td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.dueDate)}</td><td>${escapeHtml(item.escalationLevel)}</td><td>${escapeHtml(item.nextReviewDate)}</td><td>${escapeHtml(item.relatedScenarioRunId || "-")}</td><td>${escapeHtml(item.relatedMasterSettingChangeId || "-")}</td><td><span class="${statusClass(item.status === "Completed" ? "Green" : item.status === "Escalated" ? "Red" : "Yellow")}">${escapeHtml(coordinationStatusLabel(item.status))}</span></td></tr>`).join("")
     : emptyRow("尚未创建协调事项", 9);
+}
+
+function configureCoordinationLineageSelectors() {
+  const scenarioSelect = byId("coordination-related-scenario");
+  const changeSelect = byId("coordination-related-change");
+  if (!scenarioSelect || !changeSelect) return;
+  const previousScenario = scenarioSelect.value;
+  const previousChange = changeSelect.value;
+  const comparableRuns = (state.savedScenarioRuns || []).filter(item => item.baselineSnapshotId && item.externalScenarioId && item.responseId);
+  scenarioSelect.innerHTML = [`<option value="">不关联</option>`, ...comparableRuns.map(item => `<option value="${escapeHtml(item.runId)}">${escapeHtml(item.runNumber)} · ${escapeHtml(item.name)}</option>`)].join("");
+  const changes = state.masterSettings?.recentChanges || [];
+  changeSelect.innerHTML = [`<option value="">不关联</option>`, ...changes.map(item => `<option value="${escapeHtml(item.changeId)}">${escapeHtml(item.changeNumber)} · ${escapeHtml(item.target)}</option>`)].join("");
+  if (comparableRuns.some(item => item.runId === previousScenario)) scenarioSelect.value = previousScenario;
+  if (changes.some(item => item.changeId === previousChange)) changeSelect.value = previousChange;
 }
 
 async function loadCoordinationItems(selectFirst = false) {
@@ -3525,7 +3970,7 @@ function renderCoordinationDetail(item, audit) {
   state.selectedCoordinationItemId = item.itemId;
   byId("coordination-detail-title").textContent = `${item.itemNumber} · ${item.title}`;
   byId("coordination-detail-status").className = statusClass(item.status === "Completed" ? "Green" : item.status === "Escalated" ? "Red" : "Yellow");
-  byId("coordination-detail-status").textContent = item.status;
+  byId("coordination-detail-status").textContent = coordinationStatusLabel(item.status);
   byId("coordination-detail-summary").innerHTML = [
     ["影响对象", item.impactObjects.join("、")], ["负责人", item.owner], ["截止日期", item.dueDate], ["升级层级", item.escalationLevel],
     ["决策要求", item.decisionRequired], ["场景运行", item.relatedScenarioRunId || "未关联"], ["主设置变更包", item.relatedMasterSettingChangeId || "未关联"], ["实际效果", item.actualOutcome || "待验证"],
@@ -3533,7 +3978,23 @@ function renderCoordinationDetail(item, audit) {
   byId("coordination-decision").value = item.decision || "";
   byId("coordination-rationale").value = item.decisionRationale || "";
   byId("coordination-outcome").value = item.actualOutcome || "";
-  byId("coordination-audit-list").innerHTML = audit.map(event => `<div class="diagnostic-item"><strong>${number(event.sequence)}. ${escapeHtml(auditEventLabel(event.eventType))}</strong><span>${escapeHtml(event.message)}</span><small>${escapeHtml(event.actor)} · ${escapeHtml(event.createdAtUtc)}</small></div>`).join("");
+  byId("coordination-audit-list").innerHTML = audit.map(event => `<div class="diagnostic-item"><strong>${number(event.sequence)}. ${escapeHtml(auditEventLabel(event.eventType))}</strong><span>${escapeHtml(businessEvidenceLabel(event.message))}</span><small>${escapeHtml(event.actor)} · ${escapeHtml(event.createdAtUtc)}</small></div>`).join("");
+}
+
+async function renderCoordinationLineage(item) {
+  const requests = [];
+  if (item.relatedScenarioRunId) requests.push(fetch(`/api/coordination-items?limit=50&relatedScenarioRunId=${encodeURIComponent(item.relatedScenarioRunId)}`, { headers: { Accept: "application/json" } }));
+  if (item.relatedMasterSettingChangeId) requests.push(fetch(`/api/coordination-items?limit=50&relatedMasterSettingChangeId=${encodeURIComponent(item.relatedMasterSettingChangeId)}`, { headers: { Accept: "application/json" } }));
+  if (!requests.length) {
+    byId("coordination-lineage-list").innerHTML = `<div class="diagnostic-item"><strong>只读反查</strong><span>当前事项未关联场景或配置变更</span></div>`;
+    return;
+  }
+  const responses = await Promise.all(requests);
+  if (responses.some(response => !response.ok)) throw new Error("协调事项只读反查失败。");
+  const relatedGroups = await Promise.all(responses.map(response => response.json()));
+  const relatedCount = new Set(relatedGroups.flat().map(related => related.itemId)).size;
+  byId("coordination-lineage-list").innerHTML = `
+    <div class="diagnostic-item"><strong>只读反查</strong><span>关联场景：${escapeHtml(item.relatedScenarioRunId || "未关联")}；关联变更：${escapeHtml(item.relatedMasterSettingChangeId || "未关联")}</span><small>反查到 ${number(relatedCount)} 条行动事项</small></div>`;
 }
 
 async function loadCoordinationDetail(itemId) {
@@ -3542,15 +4003,17 @@ async function loadCoordinationDetail(itemId) {
     fetch(`/api/coordination-items/${itemId}/audit`, { headers: { Accept: "application/json" } }),
   ]);
   if (!detailResponse.ok || !auditResponse.ok) throw new Error("协调事项详情接口失败。");
-  renderCoordinationDetail(await detailResponse.json(), await auditResponse.json());
+  const detail = await detailResponse.json();
+  renderCoordinationDetail(detail, await auditResponse.json());
+  await renderCoordinationLineage(detail);
 }
 
 async function createCoordinationItem() {
   const request = {
     title: byId("coordination-title").value,
     impactObjects: byId("coordination-impact-objects").value.split(/[,，]/).map(item => item.trim()).filter(Boolean),
-    relatedScenarioRunId: state.selectedScenarioRunId || null,
-    relatedMasterSettingChangeId: state.selectedMasterChangeId || null,
+    relatedScenarioRunId: byId("coordination-related-scenario").value || null,
+    relatedMasterSettingChangeId: byId("coordination-related-change").value || null,
     serviceImpact: "服务影响待验证",
     inventoryImpact: "库存与保护带影响待验证",
     cashImpact: null,
@@ -3612,6 +4075,7 @@ async function loadWorkspace() {
     loadHistoryReview(6),
     loadCurrentBaselineWorkspace(),
     loadCoordinationItems(true),
+    loadScenarioAssumptionTemplates(),
   ]);
   const productFamilyDashboardResponse = await fetch("/api/product-family-dashboard?horizonWeeks=12", {
     headers: { Accept: "application/json" },
@@ -3675,7 +4139,7 @@ async function loadWorkspace() {
   await loadSavedScenarioRuns();
   applyFilters();
   fiveStageDataPromise.then(fiveStageResults => {
-    const fiveStageChips = ["history-evidence-chip", "current-baseline-chip", "coordination-status-chip"];
+    const fiveStageChips = ["history-evidence-chip", "current-baseline-chip", "coordination-status-chip", "future-compare-status"];
     fiveStageResults.forEach((result, index) => {
       if (result.status === "rejected") {
         const chip = byId(fiveStageChips[index]);
@@ -3985,6 +4449,13 @@ byId("freeze-current-baseline").addEventListener("click", () => freezeCurrentBas
 byId("run-scenario-comparison").addEventListener("click", () => runScenarioComparison().catch(error => {
   byId("future-compare-status").className = "status-chip is-invalid";
   byId("future-compare-status").textContent = "比较失败";
+  showWorkspaceError(error);
+}));
+byId("future-assumption-mode").addEventListener("change", setAssumptionModeUi);
+byId("future-assumption-template").addEventListener("change", setAssumptionModeUi);
+byId("save-future-comparison").addEventListener("click", () => saveFutureComparison().catch(error => {
+  byId("future-comparison-save-status").className = "status-chip is-invalid";
+  byId("future-comparison-save-status").textContent = "保存失败";
   showWorkspaceError(error);
 }));
 byId("create-coordination-item").addEventListener("click", () => createCoordinationItem().catch(showWorkspaceError));
