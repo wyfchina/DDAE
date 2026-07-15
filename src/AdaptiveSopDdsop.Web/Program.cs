@@ -65,9 +65,22 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IScenarioRunLineageReader>(),
         databasePath);
 });
+builder.Services.AddSingleton<ILocalDatabaseRepairService>(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new LocalDatabaseRepairService(databasePath);
+});
 builder.Services.AddSingleton<IBaselineLineageQueryService, BaselineLineageQueryService>();
 
 var app = builder.Build();
+
+_ = app.Services.GetRequiredService<CurrentBaselineService>();
+_ = app.Services.GetRequiredService<CoordinationLedgerService>();
+_ = app.Services.GetRequiredService<ScenarioRunPersistenceService>();
+_ = app.Services.GetRequiredService<MasterSettingsGovernanceService>();
+var repair = app.Services.GetRequiredService<ILocalDatabaseRepairService>();
+repair.Apply();
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())

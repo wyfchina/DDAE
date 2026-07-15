@@ -56,6 +56,8 @@ var tests = new (string Name, Action Run)[]
     ("Protection breach analysis reports first red duration recovery and unrecovered horizon", TestProtectionBreachAnalysisReportsRecovery),
     ("Coordination ledger enforces workflow and audits creation status decision and outcome", TestCoordinationLedgerEnforcesWorkflowAndAuditsUpdates),
     ("Coordination ledger rejects invalid direct completion", TestCoordinationLedgerRejectsInvalidDirectCompletion),
+    ("Known local smoke record repair is scoped audited and idempotent", TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent),
+    ("SQLite round trips Chinese text without question marks", TestSqliteRoundTripsChineseWithoutQuestionMarks),
     ("Five-stage navigation preserves independent white-box and public demo validation pages", TestFiveStageNavigationPreservesValidationPages),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
     ("Scenario exceeding AS&OP guardrails is blocked from adoption", TestAsopGuardrailBlocksExcessiveScenario),
@@ -2721,6 +2723,306 @@ static void TestCoordinationLedgerRejectsInvalidDirectCompletion()
     }
 }
 
+static void TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent()
+{
+    const string repairId = "2026-07-15-smoke-mojibake-v1";
+    const string firstTargetItemId = "09944ca75dfa4efab765d1481c860709";
+    const string secondTargetItemId = "8aead2083210423db98e9f35924c7f8e";
+    const string similarItemId = "09944ca75dfa4efab765d1481c860708";
+    const string targetSnapshotId = "baseline-smoke-target";
+    const string targetSnapshotNumber = "BASE-20260714-002";
+    const string existingAuditMessage = "原始中文审计：不得改写。";
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-{Guid.NewGuid():N}.db");
+    var controlDatabasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-control-{Guid.NewGuid():N}.db");
+    var failureDatabasePath = Path.Combine(Path.GetTempPath(), $"ddae-local-repair-rollback-{Guid.NewGuid():N}.db");
+    try
+    {
+        var services = EnsureInternalSqliteSchemas(databasePath);
+        var normalItem = services.Coordination.Create(new CoordinationItemCreateRequest(
+            "正常中文协调事项",
+            new[] { "用户数据" },
+            null,
+            null,
+            "服务正常",
+            "库存正常",
+            null,
+            "无额外风险",
+            "保持观察",
+            "王经理",
+            "2026-07-25",
+            "部门层",
+            "2026-07-20",
+            "李计划员"));
+        SeedRepairCoordinationItem(databasePath, firstTargetItemId, "SMOKE-001", "已知烟测乱码一", "烟测人员", "Codex ??",
+            "烟测审计一", "烟测审计二");
+        SeedRepairCoordinationItem(databasePath, secondTargetItemId, "SMOKE-002", "已知烟测乱码二", "烟测人员", "Codex ??",
+            "烟测审计三");
+        SeedRepairCoordinationItem(databasePath, similarItemId, "CONTROL-001", "只差一字符的正常事项", "陈经理", "周计划员",
+            "相似 ID 审计必须保留");
+        SeedRepairBaseline(databasePath, targetSnapshotId, targetSnapshotNumber, "Codex ??", existingAuditMessage, 7);
+        SeedRepairBaseline(databasePath, "baseline-same-old-value", "BASE-20260714-003", "Codex ??", null, null);
+        SeedRepairBaseline(databasePath, "baseline-normal-chinese", "BASE-20260714-004", "王计划员", null, null);
+
+        var triggerSqlBefore = Convert.ToString(ReadSqliteScalar(
+            databasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update")))!;
+        AssertTrue(!string.IsNullOrWhiteSpace(triggerSqlBefore), "baseline no-update trigger should exist before repair");
+
+        ILocalDatabaseRepairService service = new LocalDatabaseRepairService(databasePath);
+        var constructors = typeof(LocalDatabaseRepairService).GetConstructors();
+        AssertEqual(1, constructors.Length, "local repair service public constructor count");
+        AssertTrue(
+            constructors[0].GetParameters() is [{ ParameterType: var parameterType }] && parameterType == typeof(string),
+            "local repair service constructor should accept only databasePath");
+        var result = service.Apply();
+
+        AssertEqual(repairId, result.RepairId, "fixed local repair ID");
+        AssertTrue(!result.WasAlreadyApplied, "first repair should apply");
+        AssertEqual(2, result.DeletedCoordinationItems, "deleted exact coordination item count");
+        AssertEqual(3, result.DeletedCoordinationAuditEvents, "deleted exact coordination audit count");
+        AssertEqual(1, result.RepairedBaselines, "repaired baseline count");
+        AssertEqual(1, result.AddedBaselineAuditEvents, "added corrective baseline audit count");
+
+        AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM coordination_items WHERE item_id IN ($first, $second);",
+            ("$first", firstTargetItemId), ("$second", secondTargetItemId))), "only exact smoke items should be deleted");
+        AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM coordination_item_audit_events WHERE item_id IN ($first, $second);",
+            ("$first", firstTargetItemId), ("$second", secondTargetItemId))), "all exact smoke item audits should be deleted");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM coordination_items WHERE item_id = $item_id;", ("$item_id", similarItemId))), "similar coordination item should remain");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM coordination_item_audit_events WHERE item_id = $item_id;", ("$item_id", similarItemId))), "similar coordination audit should remain");
+        AssertTrue(services.Coordination.GetDetail(normalItem.ItemId) is not null, "normal coordination item should remain");
+        AssertEqual(1, services.Coordination.GetAuditEvents(normalItem.ItemId).Count, "normal coordination audit should remain");
+
+        AssertEqual("Codex 烟测", Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", targetSnapshotId))),
+            "double-condition target baseline creator");
+        AssertEqual("Codex ??", Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", "baseline-same-old-value"))),
+            "same old creator on another snapshot number should remain");
+        AssertEqual("王计划员", Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", "baseline-normal-chinese"))),
+            "normal Chinese baseline should remain");
+        AssertEqual(existingAuditMessage, Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT message FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND sequence = 7;", ("$snapshot_id", targetSnapshotId))),
+            "existing baseline audit message should remain byte-for-byte");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND event_type = 'DataRepairApplied';",
+            ("$snapshot_id", targetSnapshotId))), "one corrective baseline audit should be appended");
+        var correctiveAuditMessage = Convert.ToString(ReadSqliteScalar(databasePath,
+            "SELECT message FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND event_type = 'DataRepairApplied';",
+            ("$snapshot_id", targetSnapshotId)))!;
+        AssertTrue(!correctiveAuditMessage.Contains("??", StringComparison.Ordinal),
+            "corrective baseline audit must not repeat the known consecutive-question-mark corruption");
+        AssertTrue(!correctiveAuditMessage.Contains('\uFFFD'),
+            "corrective baseline audit must not contain the Unicode replacement character");
+        AssertEqual(8L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT sequence FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND event_type = 'DataRepairApplied';",
+            ("$snapshot_id", targetSnapshotId))), "corrective audit sequence should follow the current maximum");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM local_data_repairs WHERE repair_id = $repair_id;", ("$repair_id", repairId))), "repair journal should be written");
+        AssertEqual(triggerSqlBefore, Convert.ToString(ReadSqliteScalar(
+            databasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update"))), "no-update trigger SQL should be restored exactly");
+        AssertEqual(4L, Convert.ToInt64(ReadSqliteScalar(databasePath,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_current_baseline%';")),
+            "the other immutable baseline triggers should remain untouched");
+        AssertBaselineUpdateTriggerBlocks(databasePath, targetSnapshotId);
+
+        var firstState = ReadRepairDatabaseState(databasePath);
+        var secondResult = service.Apply();
+        AssertEqual(repairId, secondResult.RepairId, "idempotent repair ID");
+        AssertTrue(secondResult.WasAlreadyApplied, "second repair should report already applied");
+        AssertEqual(0, secondResult.DeletedCoordinationItems, "second repair deleted coordination items");
+        AssertEqual(0, secondResult.DeletedCoordinationAuditEvents, "second repair deleted coordination audits");
+        AssertEqual(0, secondResult.RepairedBaselines, "second repair repaired baselines");
+        AssertEqual(0, secondResult.AddedBaselineAuditEvents, "second repair added baseline audits");
+        AssertEqual(firstState, ReadRepairDatabaseState(databasePath), "second repair should leave database contents unchanged");
+
+        _ = EnsureInternalSqliteSchemas(failureDatabasePath);
+        SeedRepairCoordinationItem(failureDatabasePath, firstTargetItemId, "ROLLBACK-SMOKE-001", "回滚烟测事项一", "烟测人员", "Codex ??",
+            "回滚审计一", "回滚审计二");
+        SeedRepairCoordinationItem(failureDatabasePath, secondTargetItemId, "ROLLBACK-SMOKE-002", "回滚烟测事项二", "烟测人员", "Codex ??",
+            "回滚审计三");
+        SeedRepairBaseline(failureDatabasePath, targetSnapshotId, targetSnapshotNumber, "Codex ??", existingAuditMessage, 7);
+        var failureTriggerSqlBefore = Convert.ToString(ReadSqliteScalar(
+            failureDatabasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update")))!;
+        using (var failureConnection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={failureDatabasePath}"))
+        {
+            failureConnection.Open();
+            using var failureTrigger = failureConnection.CreateCommand();
+            failureTrigger.CommandText = """
+                CREATE TRIGGER trg_test_block_data_repair_audit
+                BEFORE INSERT ON current_baseline_audit_events
+                WHEN NEW.event_type = 'DataRepairApplied'
+                BEGIN
+                    SELECT RAISE(ABORT, 'test blocks corrective audit');
+                END;
+                """;
+            failureTrigger.ExecuteNonQuery();
+        }
+        string? repairFailureMessage = null;
+        try
+        {
+            new LocalDatabaseRepairService(failureDatabasePath).Apply();
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex)
+        {
+            repairFailureMessage = ex.Message;
+        }
+        AssertTrue(repairFailureMessage?.Contains("test blocks corrective audit", StringComparison.Ordinal) == true,
+            "the test-only corrective-audit trigger should be the exact repair failure");
+        AssertEqual(2L, Convert.ToInt64(ReadSqliteScalar(failureDatabasePath,
+            "SELECT COUNT(*) FROM coordination_items WHERE item_id IN ($first, $second);",
+            ("$first", firstTargetItemId), ("$second", secondTargetItemId))),
+            "failed repair should roll back both coordination item deletions");
+        AssertEqual(3L, Convert.ToInt64(ReadSqliteScalar(failureDatabasePath,
+            "SELECT COUNT(*) FROM coordination_item_audit_events WHERE item_id IN ($first, $second);",
+            ("$first", firstTargetItemId), ("$second", secondTargetItemId))),
+            "failed repair should roll back all coordination audit deletions");
+        AssertEqual("Codex ??", Convert.ToString(ReadSqliteScalar(failureDatabasePath,
+            "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", targetSnapshotId))),
+            "failed repair should roll back baseline creator update");
+        AssertEqual(existingAuditMessage, Convert.ToString(ReadSqliteScalar(failureDatabasePath,
+            "SELECT message FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND sequence = 7;", ("$snapshot_id", targetSnapshotId))),
+            "failed repair should preserve the existing baseline audit");
+        AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(failureDatabasePath,
+            "SELECT COUNT(*) FROM current_baseline_audit_events WHERE event_type = 'DataRepairApplied';")),
+            "failed repair should not leave a corrective baseline audit");
+        AssertEqual(failureTriggerSqlBefore, Convert.ToString(ReadSqliteScalar(
+            failureDatabasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update"))),
+            "failed repair should roll back to the original no-update trigger SQL");
+        AssertBaselineUpdateTriggerBlocks(failureDatabasePath, targetSnapshotId);
+        AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(failureDatabasePath,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'local_data_repairs';")),
+            "failed first repair should roll back journal table creation and leave no repair row");
+
+        _ = EnsureInternalSqliteSchemas(controlDatabasePath);
+        SeedRepairBaseline(controlDatabasePath, "baseline-same-number-normal", targetSnapshotNumber, "赵计划员", "正常审计必须保留", 3);
+        var controlTriggerSqlBefore = Convert.ToString(ReadSqliteScalar(
+            controlDatabasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update")))!;
+        var controlService = new LocalDatabaseRepairService(controlDatabasePath);
+        var controlFirst = controlService.Apply();
+        AssertTrue(!controlFirst.WasAlreadyApplied, "zero-match control repair should still journal its first attempt");
+        AssertEqual(0, controlFirst.DeletedCoordinationItems, "zero-match control deleted coordination items");
+        AssertEqual(0, controlFirst.DeletedCoordinationAuditEvents, "zero-match control deleted coordination audits");
+        AssertEqual(0, controlFirst.RepairedBaselines, "same-number normal creator should not be repaired");
+        AssertEqual(0, controlFirst.AddedBaselineAuditEvents, "same-number normal creator should not receive corrective audit");
+        AssertEqual("赵计划员", Convert.ToString(ReadSqliteScalar(controlDatabasePath,
+            "SELECT created_by FROM current_baseline_snapshots WHERE snapshot_id = $snapshot_id;", ("$snapshot_id", "baseline-same-number-normal"))),
+            "same-number normal Chinese creator should remain");
+        AssertEqual("正常审计必须保留", Convert.ToString(ReadSqliteScalar(controlDatabasePath,
+            "SELECT message FROM current_baseline_audit_events WHERE snapshot_id = $snapshot_id AND sequence = 3;", ("$snapshot_id", "baseline-same-number-normal"))),
+            "zero-match control audit should remain");
+        AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(controlDatabasePath,
+            "SELECT COUNT(*) FROM current_baseline_audit_events WHERE event_type = 'DataRepairApplied';")),
+            "zero-match control should not append corrective audit");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(controlDatabasePath,
+            "SELECT COUNT(*) FROM local_data_repairs WHERE repair_id = $repair_id;", ("$repair_id", repairId))),
+            "zero-match control should write journal");
+        AssertEqual(controlTriggerSqlBefore, Convert.ToString(ReadSqliteScalar(
+            controlDatabasePath,
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = $name;",
+            ("$name", "trg_current_baseline_snapshots_no_update"))), "zero-match repair should restore no-update trigger SQL exactly");
+        var controlFirstState = ReadRepairDatabaseState(controlDatabasePath);
+        var controlSecond = controlService.Apply();
+        AssertTrue(controlSecond.WasAlreadyApplied, "zero-match control second repair should report already applied");
+        AssertEqual(0, controlSecond.DeletedCoordinationItems, "zero-match control second deleted coordination items");
+        AssertEqual(0, controlSecond.DeletedCoordinationAuditEvents, "zero-match control second deleted coordination audits");
+        AssertEqual(0, controlSecond.RepairedBaselines, "zero-match control second repaired baselines");
+        AssertEqual(0, controlSecond.AddedBaselineAuditEvents, "zero-match control second added baseline audits");
+        AssertEqual(controlFirstState, ReadRepairDatabaseState(controlDatabasePath), "zero-match control second repair should leave database contents unchanged");
+
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+        var buildIndex = program.IndexOf("var app = builder.Build();", StringComparison.Ordinal);
+        var baselineResolveIndex = program.IndexOf("GetRequiredService<CurrentBaselineService>()", buildIndex, StringComparison.Ordinal);
+        var coordinationResolveIndex = program.IndexOf("GetRequiredService<CoordinationLedgerService>()", baselineResolveIndex, StringComparison.Ordinal);
+        var scenarioResolveIndex = program.IndexOf("GetRequiredService<ScenarioRunPersistenceService>()", coordinationResolveIndex, StringComparison.Ordinal);
+        var governanceResolveIndex = program.IndexOf("GetRequiredService<MasterSettingsGovernanceService>()", scenarioResolveIndex, StringComparison.Ordinal);
+        var repairResolveIndex = program.IndexOf("GetRequiredService<ILocalDatabaseRepairService>()", governanceResolveIndex, StringComparison.Ordinal);
+        var repairApplyIndex = program.IndexOf("repair.Apply();", repairResolveIndex, StringComparison.Ordinal);
+        AssertTrue(program.Contains("AddSingleton<ILocalDatabaseRepairService>", StringComparison.Ordinal), "local repair service should be registered as its interface");
+        AssertTrue(buildIndex >= 0 && baselineResolveIndex > buildIndex && coordinationResolveIndex > baselineResolveIndex
+            && scenarioResolveIndex > coordinationResolveIndex && governanceResolveIndex > scenarioResolveIndex
+            && repairResolveIndex > governanceResolveIndex && repairApplyIndex > repairResolveIndex,
+            "startup should explicitly resolve four SQLite singletons in order before one repair Apply");
+        AssertTrue(!program.Contains("MapGet(\"/api/local-data-repair", StringComparison.Ordinal)
+            && !program.Contains("MapPost(\"/api/local-data-repair", StringComparison.Ordinal),
+            "local repair must not expose an API endpoint");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+        DeleteSqliteFiles(controlDatabasePath);
+        DeleteSqliteFiles(failureDatabasePath);
+    }
+}
+
+static void TestSqliteRoundTripsChineseWithoutQuestionMarks()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-unicode-round-trip-{Guid.NewGuid():N}.db");
+    try
+    {
+        var services = EnsureInternalSqliteSchemas(databasePath);
+        var service = services.Coordination;
+        var created = service.Create(new CoordinationItemCreateRequest(
+            "跨部门协调：星载设备补货",
+            new[] { "星载设备", "华东供应商" },
+            null,
+            null,
+            "服务水平保持在目标带",
+            "库存维持健康区间",
+            86000m,
+            "供应连续性风险",
+            "确认第二来源启用窗口",
+            "供应链经理",
+            "2026-07-22",
+            "执行层",
+            "2026-07-19",
+            "DDS&OP 计划员"));
+        service.RecordDecision(created.ItemId, new CoordinationDecisionUpdateRequest(
+            "启用第二来源并限定四周",
+            "兼顾服务、库存与现金风险",
+            "执行委员会"));
+        service.RecordOutcome(created.ItemId, new CoordinationOutcomeUpdateRequest(
+            "两周后缺料风险下降，交付恢复稳定",
+            "DDS&OP 计划员"));
+        var loaded = service.GetDetail(created.ItemId)!;
+        var frozen = services.Baseline.Freeze(new CurrentBaselineFreezeRequest("张计划员", "月度例会中文基线"));
+        var loadedBaseline = services.Baseline.GetDetail(frozen.SnapshotId)!;
+
+        AssertEqual("跨部门协调：星载设备补货", loaded.Title, "coordination Chinese title round trip");
+        AssertEqual("供应链经理", loaded.Owner, "coordination Chinese owner round trip");
+        AssertEqual("启用第二来源并限定四周", loaded.Decision, "coordination Chinese decision round trip");
+        AssertEqual("兼顾服务、库存与现金风险", loaded.DecisionRationale, "coordination Chinese rationale round trip");
+        AssertEqual("两周后缺料风险下降，交付恢复稳定", loaded.ActualOutcome, "coordination Chinese outcome round trip");
+        AssertEqual("DDS&OP 计划员", loaded.CreatedBy, "coordination Chinese creator round trip");
+        AssertEqual("张计划员", loadedBaseline.CreatedBy, "baseline Chinese creator round trip");
+        foreach (var value in new[] { loaded.Title, loaded.Owner, loaded.Decision!, loaded.DecisionRationale!, loaded.ActualOutcome!, loaded.CreatedBy, loadedBaseline.CreatedBy })
+        {
+            AssertTrue(!value.Contains('\uFFFD'), "round-tripped Chinese must not contain the Unicode replacement character");
+            AssertTrue(!value.Contains("??", StringComparison.Ordinal), "round-tripped Chinese must not contain consecutive question marks");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
 static void TestFiveStageNavigationPreservesValidationPages()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -5192,6 +5494,206 @@ static void DeleteSqliteFiles(string databasePath)
             File.Delete(file);
         }
     }
+}
+
+static (CurrentBaselineService Baseline, CoordinationLedgerService Coordination) EnsureInternalSqliteSchemas(string databasePath)
+{
+    var seed = SeedData.Create();
+    var workspaceDataSource = new SeedScenarioWorkspaceDataSource(seed);
+    var baseline = new CurrentBaselineService(new SeedCurrentBaselineDataSource(seed), databasePath);
+    var coordination = new CoordinationLedgerService(databasePath);
+    var preview = new ScenarioRunPreviewService(workspaceDataSource);
+    var comparison = new ScenarioComparisonService(baseline, preview, new SeedScenarioAssumptionSource());
+    var persistence = new ScenarioRunPersistenceService(preview, comparison, databasePath);
+    _ = new MasterSettingsGovernanceService(workspaceDataSource, preview, persistence, databasePath);
+    return (baseline, coordination);
+}
+
+static void SeedRepairCoordinationItem(
+    string databasePath,
+    string itemId,
+    string itemNumber,
+    string title,
+    string owner,
+    string createdBy,
+    params string[] auditMessages)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using (var foreignKeys = connection.CreateCommand())
+    {
+        foreignKeys.CommandText = "PRAGMA foreign_keys = ON;";
+        foreignKeys.ExecuteNonQuery();
+    }
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = """
+            INSERT INTO coordination_items (
+                item_id, item_number, title, impact_objects_json, related_scenario_run_id,
+                related_master_setting_change_id, service_impact, inventory_impact, cash_impact,
+                risk_impact, decision_required, owner, due_date, escalation_level, next_review_date,
+                status, decision, decision_rationale, actual_outcome, created_by, created_at_utc, updated_at_utc)
+            VALUES (
+                $item_id, $item_number, $title, $impact_objects_json, NULL,
+                NULL, $service_impact, $inventory_impact, NULL,
+                $risk_impact, $decision_required, $owner, $due_date, $escalation_level, $next_review_date,
+                'Open', NULL, NULL, NULL, $created_by, $created_at_utc, $updated_at_utc);
+            """;
+        command.Parameters.AddWithValue("$item_id", itemId);
+        command.Parameters.AddWithValue("$item_number", itemNumber);
+        command.Parameters.AddWithValue("$title", title);
+        command.Parameters.AddWithValue("$impact_objects_json", JsonSerializer.Serialize(new[] { "烟测控制范围" }));
+        command.Parameters.AddWithValue("$service_impact", "服务影响待处理");
+        command.Parameters.AddWithValue("$inventory_impact", "库存影响待处理");
+        command.Parameters.AddWithValue("$risk_impact", "本地烟测数据");
+        command.Parameters.AddWithValue("$decision_required", "清理精确烟测记录");
+        command.Parameters.AddWithValue("$owner", owner);
+        command.Parameters.AddWithValue("$due_date", "2026-07-18");
+        command.Parameters.AddWithValue("$escalation_level", "本地烟测");
+        command.Parameters.AddWithValue("$next_review_date", "2026-07-17");
+        command.Parameters.AddWithValue("$created_by", createdBy);
+        command.Parameters.AddWithValue("$created_at_utc", "2026-07-14T08:00:00.0000000+00:00");
+        command.Parameters.AddWithValue("$updated_at_utc", "2026-07-14T08:00:00.0000000+00:00");
+        command.ExecuteNonQuery();
+    }
+
+    for (var index = 0; index < auditMessages.Length; index++)
+    {
+        using var audit = connection.CreateCommand();
+        audit.CommandText = """
+            INSERT INTO coordination_item_audit_events (
+                event_id, item_id, sequence, event_type, actor, message, created_at_utc)
+            VALUES ($event_id, $item_id, $sequence, 'SmokeAudit', $actor, $message, $created_at_utc);
+            """;
+        audit.Parameters.AddWithValue("$event_id", $"{itemId}-audit-{index + 1}");
+        audit.Parameters.AddWithValue("$item_id", itemId);
+        audit.Parameters.AddWithValue("$sequence", index + 1);
+        audit.Parameters.AddWithValue("$actor", createdBy);
+        audit.Parameters.AddWithValue("$message", auditMessages[index]);
+        audit.Parameters.AddWithValue("$created_at_utc", "2026-07-14T08:05:00.0000000+00:00");
+        audit.ExecuteNonQuery();
+    }
+}
+
+static void SeedRepairBaseline(
+    string databasePath,
+    string snapshotId,
+    string snapshotNumber,
+    string createdBy,
+    string? auditMessage,
+    int? auditSequence)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using (var foreignKeys = connection.CreateCommand())
+    {
+        foreignKeys.CommandText = "PRAGMA foreign_keys = ON;";
+        foreignKeys.ExecuteNonQuery();
+    }
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = """
+            INSERT INTO current_baseline_snapshots (
+                snapshot_id, snapshot_number, status, as_of_utc, master_setting_version,
+                created_by, note, created_at_utc, sections_json, payload_json, evidence_label)
+            VALUES (
+                $snapshot_id, $snapshot_number, 'Frozen', $as_of_utc, 'MASTER-SMOKE-V1',
+                $created_by, NULL, $created_at_utc, '[]', '{}', 'LocalSmoke');
+            """;
+        command.Parameters.AddWithValue("$snapshot_id", snapshotId);
+        command.Parameters.AddWithValue("$snapshot_number", snapshotNumber);
+        command.Parameters.AddWithValue("$created_by", createdBy);
+        command.Parameters.AddWithValue("$as_of_utc", "2026-07-14T08:00:00.0000000+00:00");
+        command.Parameters.AddWithValue("$created_at_utc", "2026-07-14T08:00:00.0000000+00:00");
+        command.ExecuteNonQuery();
+    }
+
+    if (auditMessage is null || auditSequence is null)
+    {
+        return;
+    }
+
+    using var audit = connection.CreateCommand();
+    audit.CommandText = """
+        INSERT INTO current_baseline_audit_events (
+            event_id, snapshot_id, sequence, event_type, message, created_at_utc, payload_json)
+        VALUES ($event_id, $snapshot_id, $sequence, 'BaselineFrozen', $message, $created_at_utc, NULL);
+        """;
+    audit.Parameters.AddWithValue("$event_id", $"{snapshotId}-audit-{auditSequence.Value}");
+    audit.Parameters.AddWithValue("$snapshot_id", snapshotId);
+    audit.Parameters.AddWithValue("$sequence", auditSequence.Value);
+    audit.Parameters.AddWithValue("$message", auditMessage);
+    audit.Parameters.AddWithValue("$created_at_utc", "2026-07-14T08:01:00.0000000+00:00");
+    audit.ExecuteNonQuery();
+}
+
+static object? ReadSqliteScalar(
+    string databasePath,
+    string sql,
+    params (string Name, object? Value)[] parameters)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var command = connection.CreateCommand();
+    command.CommandText = sql;
+    foreach (var parameter in parameters)
+    {
+        command.Parameters.AddWithValue(parameter.Name, parameter.Value ?? DBNull.Value);
+    }
+    return command.ExecuteScalar();
+}
+
+static string ReadRepairDatabaseState(string databasePath)
+{
+    var queries = new[]
+    {
+        "SELECT * FROM coordination_items ORDER BY item_id;",
+        "SELECT * FROM coordination_item_audit_events ORDER BY item_id, sequence;",
+        "SELECT * FROM current_baseline_snapshots ORDER BY snapshot_id;",
+        "SELECT * FROM current_baseline_audit_events ORDER BY snapshot_id, sequence;",
+        "SELECT * FROM local_data_repairs ORDER BY repair_id;",
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_current_baseline%' ORDER BY name;"
+    };
+    var rows = new List<string>();
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    foreach (var query in queries)
+    {
+        rows.Add(query);
+        using var command = connection.CreateCommand();
+        command.CommandText = query;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var values = new string[reader.FieldCount];
+            for (var index = 0; index < reader.FieldCount; index++)
+            {
+                values[index] = reader.IsDBNull(index) ? "<NULL>" : Convert.ToString(reader.GetValue(index))!;
+            }
+            rows.Add(JsonSerializer.Serialize(values));
+        }
+    }
+    return string.Join("\n", rows);
+}
+
+static void AssertBaselineUpdateTriggerBlocks(string databasePath, string snapshotId)
+{
+    var blocked = false;
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var command = connection.CreateCommand();
+    command.CommandText = "UPDATE current_baseline_snapshots SET created_by = $created_by WHERE snapshot_id = $snapshot_id;";
+    command.Parameters.AddWithValue("$created_by", "不应写入");
+    command.Parameters.AddWithValue("$snapshot_id", snapshotId);
+    try
+    {
+        command.ExecuteNonQuery();
+    }
+    catch (Microsoft.Data.Sqlite.SqliteException)
+    {
+        blocked = true;
+    }
+    AssertTrue(blocked, "restored baseline no-update trigger should still enforce immutability");
 }
 
 static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
