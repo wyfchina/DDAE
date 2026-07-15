@@ -59,6 +59,9 @@ var tests = new (string Name, Action Run)[]
     ("Known local smoke record repair is scoped audited and idempotent", TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent),
     ("SQLite round trips Chinese text without question marks", TestSqliteRoundTripsChineseWithoutQuestionMarks),
     ("Five-stage navigation preserves independent white-box and public demo validation pages", TestFiveStageNavigationPreservesValidationPages),
+    ("Five-stage navigation uses hierarchical view switching", TestFiveStageNavigationUsesHierarchicalViewSwitching),
+    ("Workspace navigation removes scroll observer and uses hash state", TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState),
+    ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
     ("Scenario exceeding AS&OP guardrails is blocked from adoption", TestAsopGuardrailBlocksExcessiveScenario),
     ("Moderate scenario is routed to integrated reconciliation", TestAsopGuardrailRoutesModerateScenario),
@@ -3029,11 +3032,11 @@ static void TestFiveStageNavigationPreservesValidationPages()
     var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
     var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
 
-    var historyNav = page.IndexOf("href=\"#history-review-panel\"", StringComparison.Ordinal);
-    var baselineNav = page.IndexOf("href=\"#current-baseline-panel\"", StringComparison.Ordinal);
-    var futureNav = page.IndexOf("href=\"#future-scenario-panel\"", StringComparison.Ordinal);
-    var ddomNav = page.IndexOf("href=\"#ddom-decision-panel\"", StringComparison.Ordinal);
-    var coordinationNav = page.IndexOf("href=\"#coordination-panel\"", StringComparison.Ordinal);
+    var historyNav = page.IndexOf("data-stage-route=\"#history-review-panel\"", StringComparison.Ordinal);
+    var baselineNav = page.IndexOf("data-stage-route=\"#current-baseline-panel\"", StringComparison.Ordinal);
+    var futureNav = page.IndexOf("data-stage-route=\"#future-scenario-panel\"", StringComparison.Ordinal);
+    var ddomNav = page.IndexOf("data-stage-route=\"#ddom-decision-panel\"", StringComparison.Ordinal);
+    var coordinationNav = page.IndexOf("data-stage-route=\"#coordination-panel\"", StringComparison.Ordinal);
     var validationGroup = page.IndexOf("验证与追踪", StringComparison.Ordinal);
     var traceNav = page.IndexOf("href=\"#trace-panel\"", StringComparison.Ordinal);
     var publicDemoNav = page.IndexOf("href=\"#public-demo-golden-loop-panel\"", StringComparison.Ordinal);
@@ -3065,6 +3068,226 @@ static void TestFiveStageNavigationPreservesValidationPages()
     AssertTrue(!page.Contains("id=\"auto-adopt\"", StringComparison.Ordinal) && !page.Contains("id=\"auto-approve\"", StringComparison.Ordinal) && !page.Contains("id=\"auto-effect\"", StringComparison.Ordinal), "UI must not expose automatic governance operations");
 }
 
+static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var css = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css"));
+    var navigationStart = page.IndexOf("<nav class=\"nav-list\"", StringComparison.Ordinal);
+    var navigationEnd = page.IndexOf("</nav>", navigationStart, StringComparison.Ordinal);
+
+    AssertTrue(navigationStart >= 0 && navigationEnd > navigationStart, "page should contain the left navigation");
+    var navigation = page.Substring(navigationStart, navigationEnd - navigationStart);
+    var stages = new (string Route, string Label, string SubmenuId, (string Route, string Label)[] Children)[]
+    {
+        ("#history-review-panel", "历史回顾", "history-review-submenu", new[]
+        {
+            ("#history-review-panel/operating-results", "经营结果"),
+            ("#history-review-panel/buffer-performance", "缓冲表现"),
+            ("#history-review-panel/capacity-constraints", "能力约束")
+        }),
+        ("#current-baseline-panel", "当前状态基线", "current-baseline-submenu", new[]
+        {
+            ("#current-baseline-panel/meeting-snapshot", "会前快照"),
+            ("#current-baseline-panel/evidence-review", "证据检查"),
+            ("#current-baseline-panel/version-freeze", "版本冻结"),
+            ("#current-baseline-panel/audit-records", "审计记录")
+        }),
+        ("#future-scenario-panel", "未来场景模拟", "future-scenario-submenu", new[]
+        {
+            ("#future-scenario-panel/scenario-config", "场景配置"),
+            ("#future-scenario-panel/plan-comparison", "方案比较"),
+            ("#future-scenario-panel/inventory-buffer", "库存缓冲"),
+            ("#future-scenario-panel/time-buffer", "时间缓冲"),
+            ("#future-scenario-panel/capacity-buffer", "能力缓冲"),
+            ("#future-scenario-panel/supply-risk", "供应风险"),
+            ("#future-scenario-panel/breach-analysis", "击穿分析")
+        }),
+        ("#ddom-decision-panel", "DDOM 配置决策", "ddom-decision-submenu", new[]
+        {
+            ("#ddom-decision-panel/structure-settings", "结构设置"),
+            ("#ddom-decision-panel/parameter-decision", "参数决策"),
+            ("#ddom-decision-panel/temporary-adjustment", "临时调整"),
+            ("#ddom-decision-panel/change-records", "变更记录")
+        }),
+        ("#coordination-panel", "行动和决策", "coordination-submenu", new[]
+        {
+            ("#coordination-panel/issue-list", "问题清单"),
+            ("#coordination-panel/action-tracking", "行动跟踪"),
+            ("#coordination-panel/decision-records", "决策记录"),
+            ("#coordination-panel/outcome-validation", "结果验证")
+        })
+    };
+
+    AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-group\""), "primary navigation stage group count");
+    AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-toggle nav-item\""), "primary navigation stage toggle count");
+    AssertEqual(22, CountExactOccurrences(navigation, "class=\"nav-subitem\""), "secondary navigation item count");
+
+    var previousStagePosition = -1;
+    foreach (var stage in stages)
+    {
+        var stageMarker = $"data-stage-route=\"{stage.Route}\"";
+        var stagePosition = navigation.IndexOf(stageMarker, StringComparison.Ordinal);
+        AssertTrue(stagePosition > previousStagePosition, $"stage {stage.Label} should appear in the required order");
+        previousStagePosition = stagePosition;
+
+        var toggleTag = OpeningTagContaining(navigation, stageMarker);
+        AssertTrue(toggleTag.StartsWith("<button ", StringComparison.Ordinal), $"stage {stage.Label} should use a button");
+        AssertTrue(toggleTag.Contains("aria-expanded=", StringComparison.Ordinal), $"stage {stage.Label} should expose expanded state");
+        AssertTrue(toggleTag.Contains($"aria-controls=\"{stage.SubmenuId}\"", StringComparison.Ordinal), $"stage {stage.Label} should control its submenu");
+        AssertTrue(navigation.Contains($"id=\"{stage.SubmenuId}\" class=\"nav-submenu\"", StringComparison.Ordinal), $"stage {stage.Label} should have a unique submenu");
+        AssertTrue(navigation.Contains($">{stage.Label}</span>", StringComparison.Ordinal), $"stage {stage.Label} should use the approved title");
+
+        var previousChildPosition = stagePosition;
+        foreach (var child in stage.Children)
+        {
+            AssertTrue(child.Label.Length <= 6, $"secondary title {child.Label} should not exceed six Chinese characters");
+            var childMarker = $"href=\"{child.Route}\"";
+            var childPosition = navigation.IndexOf(childMarker, previousChildPosition, StringComparison.Ordinal);
+            AssertTrue(childPosition > previousChildPosition, $"secondary route {child.Route} should appear in the required order");
+            AssertTrue(navigation.IndexOf($">{child.Label}</a>", childPosition, StringComparison.Ordinal) >= childPosition, $"secondary route {child.Route} should use its approved title");
+            previousChildPosition = childPosition;
+        }
+    }
+
+    var validationGroup = navigation.IndexOf("验证与追踪", previousStagePosition, StringComparison.Ordinal);
+    var traceNavigation = navigation.IndexOf("href=\"#trace-panel\"", validationGroup, StringComparison.Ordinal);
+    var publicDemoNavigation = navigation.IndexOf("href=\"#public-demo-golden-loop-panel\"", traceNavigation, StringComparison.Ordinal);
+    AssertTrue(validationGroup > previousStagePosition && traceNavigation > validationGroup && publicDemoNavigation > traceNavigation, "validation entries should follow all five stage groups");
+    AssertTrue(navigation.IndexOf("class=\"nav-item\"", publicDemoNavigation + 1, StringComparison.Ordinal) < 0, "public demo should remain the last navigation item");
+    foreach (var selector in new[] { ".nav-stage-group", ".nav-submenu", ".nav-subitem", ".nav-stage-indicator", ".workspace-breadcrumb" })
+    {
+        AssertTrue(css.Contains(selector, StringComparison.Ordinal), $"CSS should style hierarchical navigation selector {selector}");
+    }
+    AssertTrue(css.Contains("overflow-y: auto", StringComparison.Ordinal), "the selected workspace view should scroll inside the application area");
+    AssertTrue(css.Contains(".nav-subitem:focus-visible", StringComparison.Ordinal), "secondary navigation should expose a visible keyboard focus state");
+}
+
+static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var expectedFunctions = new[]
+    {
+        "parseWorkspaceRoute",
+        "formatWorkspaceHash",
+        "resolveWorkspaceRoute",
+        "navigateWorkspace",
+        "applyWorkspaceRoute",
+        "setExpandedStageNavigation",
+        "setActiveWorkspaceNavigation",
+        "renderWorkspaceBreadcrumb",
+        "handleWorkspaceHashChange"
+    };
+
+    AssertTrue(script.Contains("workspaceRoutes = Object.freeze", StringComparison.Ordinal), "workspace routes should be a frozen explicit registry");
+    foreach (var functionName in expectedFunctions)
+    {
+        AssertTrue(script.Contains($"function {functionName}(", StringComparison.Ordinal), $"script should implement {functionName}");
+    }
+
+    AssertTrue(script.Contains("addEventListener(\"hashchange\", handleWorkspaceHashChange)", StringComparison.Ordinal), "workspace route should react to browser hash changes");
+    AssertTrue(script.Contains("history.replaceState", StringComparison.Ordinal), "workspace route should canonicalize defaults and aliases without adding history entries");
+    AssertTrue(script.Contains("navigateWorkspace(\"future-scenario-panel\", \"scenario-config\", false)", StringComparison.Ordinal), "exception action should navigate to future scenario configuration");
+    AssertTrue(script.Contains("navigateWorkspace(\"ddom-decision-panel\", \"parameter-decision\", false)", StringComparison.Ordinal), "governance action should navigate to DDOM parameter decision");
+    AssertTrue(script.Contains("\"#overview-panel\": \"#ddom-decision-panel/structure-settings\"", StringComparison.Ordinal), "legacy overview hash should have a read-only canonical alias");
+    AssertTrue(script.Contains("\"#saved-scenarios-panel\": \"#coordination-panel/action-tracking\"", StringComparison.Ordinal), "legacy saved scenario hash should point to action tracking");
+    AssertEqual(1, CountExactOccurrences(script, "requiredHostId: \"saved-scenarios-panel\""), "only white-box trace should require the saved scenarios host");
+    AssertEqual(28, CountExactOccurrences(script, "requiredHostId: null"), "all other workspace routes should be host independent");
+
+    foreach (var forbidden in new[] { "state.activeTab", "normalizeWorkspaceFlow", "IntersectionObserver", "setActiveNav", "function activateTab(", "[data-tab]" })
+    {
+        AssertTrue(!script.Contains(forbidden, StringComparison.Ordinal), $"hash navigation should remove legacy runtime {forbidden}");
+    }
+}
+
+static void TestOnlySelectedStageOrChildViewIsVisible()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var routes = new (string Hash, string TargetId)[]
+    {
+        ("#history-review-panel", "history-review-panel"),
+        ("#history-review-panel/operating-results", "history-operating-results-view"),
+        ("#history-review-panel/buffer-performance", "history-buffer-performance-view"),
+        ("#history-review-panel/capacity-constraints", "history-capacity-constraints-view"),
+        ("#current-baseline-panel", "current-baseline-panel"),
+        ("#current-baseline-panel/meeting-snapshot", "baseline-meeting-snapshot-view"),
+        ("#current-baseline-panel/evidence-review", "baseline-evidence-review-view"),
+        ("#current-baseline-panel/version-freeze", "baseline-version-freeze-view"),
+        ("#current-baseline-panel/audit-records", "baseline-audit-records-view"),
+        ("#future-scenario-panel", "future-scenario-panel"),
+        ("#future-scenario-panel/scenario-config", "scenario-run-panel"),
+        ("#future-scenario-panel/plan-comparison", "scenario-comparison"),
+        ("#future-scenario-panel/inventory-buffer", "buffer-trend-panel"),
+        ("#future-scenario-panel/time-buffer", "time-buffer-panel"),
+        ("#future-scenario-panel/capacity-buffer", "rccp-panel"),
+        ("#future-scenario-panel/supply-risk", "projected-supply-panel"),
+        ("#future-scenario-panel/breach-analysis", "variance-panel"),
+        ("#ddom-decision-panel", "ddom-decision-panel"),
+        ("#ddom-decision-panel/structure-settings", "ddom-structure-settings-view"),
+        ("#ddom-decision-panel/parameter-decision", "ddom-parameter-decision-view"),
+        ("#ddom-decision-panel/temporary-adjustment", "ddom-temporary-adjustment-view"),
+        ("#ddom-decision-panel/change-records", "ddom-change-records-view"),
+        ("#coordination-panel", "coordination-panel"),
+        ("#coordination-panel/issue-list", "coordination-issue-list-view"),
+        ("#coordination-panel/action-tracking", "coordination-action-tracking-view"),
+        ("#coordination-panel/decision-records", "coordination-decision-records-view"),
+        ("#coordination-panel/outcome-validation", "coordination-outcome-validation-view"),
+        ("#trace-panel", "trace-panel"),
+        ("#public-demo-golden-loop-panel", "public-demo-golden-loop-panel")
+    };
+
+    AssertEqual(29, routes.Length, "canonical workspace route count");
+    AssertEqual(29, routes.Select(item => item.TargetId).Distinct(StringComparer.Ordinal).Count(), "canonical workspace target uniqueness");
+    foreach (var route in routes)
+    {
+        AssertEqual(1, CountExactOccurrences(page, $" id=\"{route.TargetId}\""), $"target {route.TargetId} should have one DOM ID");
+        AssertTrue(script.Contains($"\"{route.Hash}\"", StringComparison.Ordinal), $"route registry should contain {route.Hash}");
+        AssertTrue(script.Contains($"targetId: \"{route.TargetId}\"", StringComparison.Ordinal), $"route registry should target {route.TargetId}");
+
+        var openingTag = OpeningTagContaining(page, $" id=\"{route.TargetId}\"");
+        AssertTrue(openingTag.Contains(" hidden", StringComparison.Ordinal), $"route target {route.TargetId} should be hidden before route application");
+        if (route.TargetId is not "trace-panel" and not "public-demo-golden-loop-panel")
+        {
+            AssertTrue(openingTag.Contains("workspace-route-view", StringComparison.Ordinal), $"business target {route.TargetId} should be a route view");
+            AssertTrue(openingTag.Contains($"data-workspace-route=\"{route.Hash}\"", StringComparison.Ordinal), $"business target {route.TargetId} should expose its canonical route");
+        }
+        else
+        {
+            AssertTrue(!openingTag.Contains("workspace-route-view", StringComparison.Ordinal) && !openingTag.Contains("data-workspace-route", StringComparison.Ordinal), $"protected target {route.TargetId} should keep its existing route-neutral opening tag");
+        }
+    }
+
+    AssertTrue(page.Contains("<section id=\"saved-scenarios-panel\" class=\"workspace-route-host\" hidden>", StringComparison.Ordinal), "trace should remain inside its statically declared hidden host");
+    var hostStart = page.IndexOf("<section id=\"saved-scenarios-panel\" class=\"workspace-route-host\" hidden>", StringComparison.Ordinal);
+    var traceStart = page.IndexOf("<section id=\"trace-panel\" class=\"schedule-panel\" data-tab-panel hidden>", StringComparison.Ordinal);
+    AssertTrue(hostStart >= 0 && traceStart > hostStart, "trace host should open immediately before the protected trace section");
+    var hostPrefix = page.Substring(hostStart, traceStart - hostStart);
+    foreach (var movedTarget in new[] { "buffer-trend-panel", "rccp-panel", "projected-supply-panel", "variance-panel" })
+    {
+        AssertTrue(!hostPrefix.Contains($"id=\"{movedTarget}\"", StringComparison.Ordinal), $"{movedTarget} should be a top-level route view rather than a trace host child");
+    }
+
+    var applyRouteBody = SourceFunctionBody(script, "applyWorkspaceRoute");
+    var closeFocusedPanel = applyRouteBody.IndexOf("closeFocusedPanel()", StringComparison.Ordinal);
+    var closeWorkspaceDrawer = applyRouteBody.IndexOf("closeWorkspaceDrawer()", StringComparison.Ordinal);
+    var hideTargets = applyRouteBody.IndexOf("workspaceTargetIds.forEach", StringComparison.Ordinal);
+    var clearNavigation = applyRouteBody.IndexOf("setActiveWorkspaceNavigation(null)", StringComparison.Ordinal);
+    var hideHosts = applyRouteBody.IndexOf("querySelectorAll(\".workspace-route-host\")", StringComparison.Ordinal);
+    var showRequiredHost = applyRouteBody.IndexOf("requiredHost.hidden = false", StringComparison.Ordinal);
+    var showTarget = applyRouteBody.IndexOf("target.hidden = false", StringComparison.Ordinal);
+    AssertTrue(closeFocusedPanel >= 0 && closeWorkspaceDrawer > closeFocusedPanel && hideTargets > closeWorkspaceDrawer, "route application should restore the focused panel and close the detail drawer before switching targets");
+    AssertTrue(hideTargets >= 0 && clearNavigation > hideTargets && hideHosts > clearNavigation && showRequiredHost > hideHosts && showTarget > showRequiredHost, "route application should hide all targets, clear navigation, hide hosts, then show the required host and selected target");
+    AssertTrue(applyRouteBody.Contains("target.hidden = true", StringComparison.Ordinal), "route application should explicitly hide every canonical target");
+    AssertTrue(applyRouteBody.Contains("host.hidden = true", StringComparison.Ordinal), "route application should hide all route hosts first");
+
+    var showContentBody = SourceFunctionBody(script, "showWorkspaceContent");
+    AssertTrue(showContentBody.Contains("applyWorkspaceRoute", StringComparison.Ordinal), "workspace loading should reapply only the current route");
+    AssertTrue(!showContentBody.Contains(".workspace-section", StringComparison.Ordinal), "workspace loading should not reveal all workspace sections");
+}
+
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
 {
     var pagePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml");
@@ -3093,10 +3316,10 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(!page.Contains("Current / Proposed / Reviewed / Approved / Effective / Expired", StringComparison.Ordinal), "homepage should not expose English governance status chain");
     AssertTrue(!page.Contains("DDOM Master Settings", StringComparison.Ordinal), "homepage should not expose English master settings heading");
     AssertTrue(page.Contains("当前 / 待评审 / 已评审 / 已批准 / 已生效 / 已失效", StringComparison.Ordinal), "homepage should show Chinese governance status chain");
-    AssertTrue(page.Contains(">异常识别<", StringComparison.Ordinal), "navigation should expose exception-first workflow");
-    AssertTrue(page.Contains(">RCCP 与约束<", StringComparison.Ordinal), "navigation should expose RCCP and constraints workflow");
-    AssertTrue(page.Contains(">供应商需求<", StringComparison.Ordinal), "navigation should expose supplier demand workflow");
-    AssertTrue(page.Contains(">场景留痕<", StringComparison.Ordinal), "navigation should expose scenario audit workflow");
+    AssertTrue(page.Contains(">击穿分析</a>", StringComparison.Ordinal), "navigation should expose exception analysis as a future-scenario child");
+    AssertTrue(page.Contains(">能力缓冲</a>", StringComparison.Ordinal), "navigation should expose capacity protection as a future-scenario child");
+    AssertTrue(page.Contains(">供应风险</a>", StringComparison.Ordinal), "navigation should expose supply risk as a future-scenario child");
+    AssertTrue(page.Contains(">行动跟踪</a>", StringComparison.Ordinal), "navigation should expose saved scenario evidence under action tracking");
     AssertTrue(page.Contains(">白盒追踪<", StringComparison.Ordinal), "navigation should expose white-box trace workflow");
     AssertTrue(page.Contains("id=\"order-cycle-override\" type=\"number\" min=\"1\"", StringComparison.Ordinal), "order cycle override should not allow zero");
     AssertTrue(page.Contains("id=\"supplier-limit-start-week\"", StringComparison.Ordinal), "supplier limit should expose a start week");
@@ -3206,7 +3429,7 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("供应限制开始周", StringComparison.Ordinal), "script should explain supplier limit start week");
     AssertTrue(script.Contains("供应承诺能力", StringComparison.Ordinal), "script should explain supplier committed capacity");
     AssertTrue(script.Contains("订货周期覆盖值", StringComparison.Ordinal), "script should explain order cycle override");
-    AssertTrue(script.Contains("normalizeWorkspaceFlow", StringComparison.Ordinal), "script should normalize page order to the business workflow");
+    AssertTrue(script.Contains("applyWorkspaceRoute", StringComparison.Ordinal), "script should switch the workspace through canonical hash routes");
     AssertTrue(script.Contains("masterSettingTypeLabel", StringComparison.Ordinal), "script should translate master setting types");
     AssertTrue(script.Contains("auditEventLabel", StringComparison.Ordinal), "script should translate audit event labels");
     AssertTrue(script.Contains("syncSkuPolicyDefaults", StringComparison.Ordinal), "script should sync SKU order cycle defaults");
@@ -3611,8 +3834,8 @@ static void TestScenarioRunWorkspaceScriptFetchesWorkspaceData()
     AssertTrue(script.Contains("data-product-family", StringComparison.Ordinal), "script should switch selected product family");
     AssertTrue(script.Contains("data-product-family-reset", StringComparison.Ordinal), "product family dashboard should expose a reset action");
     AssertTrue(!script.Contains("selectors.family.value = state.selectedProductFamily", StringComparison.Ordinal), "product family card click should not hide other family cards by applying the global filter");
-    AssertTrue(script.Contains("IntersectionObserver", StringComparison.Ordinal), "left navigation should observe right-side scroll position");
-    AssertTrue(script.Contains("setActiveNav", StringComparison.Ordinal), "right-side scroll should update active navigation item");
+    AssertTrue(!script.Contains("IntersectionObserver", StringComparison.Ordinal), "left navigation should no longer infer state from page scrolling");
+    AssertTrue(script.Contains("handleWorkspaceHashChange", StringComparison.Ordinal), "left navigation should follow explicit hash route state");
     AssertTrue(script.Contains("data-family-link-week", StringComparison.Ordinal), "product family detail rows should expose linked week keys");
     AssertTrue(script.Contains("productFamilyLinkMatches", StringComparison.Ordinal), "product family detail should link risk RCCP and supply rows");
     AssertTrue(script.Contains("selectedProductFamilyLink", StringComparison.Ordinal), "product family detail should keep linked row selection");
@@ -3793,7 +4016,7 @@ static void TestScenarioRunWorkspaceExposesSaveAuditUi()
 
     AssertTrue(page.Contains("id=\"scenario-save-panel\"", StringComparison.Ordinal), "page should expose scenario save panel");
     AssertTrue(page.Contains("id=\"save-scenario\"", StringComparison.Ordinal), "page should expose save scenario button");
-    AssertTrue(page.Contains("id=\"saved-scenarios-panel\"", StringComparison.Ordinal), "page should expose saved scenarios panel");
+    AssertTrue(page.Contains("id=\"coordination-action-tracking-view\"", StringComparison.Ordinal), "page should expose saved scenarios under action tracking");
     AssertTrue(page.Contains("id=\"scenario-audit-list\"", StringComparison.Ordinal), "page should expose audit chain list");
     AssertTrue(page.Contains("保存场景", StringComparison.Ordinal), "page should use Chinese save label");
     AssertTrue(page.Contains("已保存场景", StringComparison.Ordinal), "page should use Chinese saved scenario label");
@@ -5454,6 +5677,64 @@ static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
 static void WriteJson(string directory, string fileName, string json)
 {
     File.WriteAllText(Path.Combine(directory, fileName), json);
+}
+
+static int CountExactOccurrences(string source, string value)
+{
+    var count = 0;
+    var offset = 0;
+    while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+    {
+        count++;
+        offset += value.Length;
+    }
+
+    return count;
+}
+
+static string OpeningTagContaining(string source, string marker)
+{
+    var markerIndex = source.IndexOf(marker, StringComparison.Ordinal);
+    if (markerIndex < 0)
+    {
+        return string.Empty;
+    }
+
+    var tagStart = source.LastIndexOf('<', markerIndex);
+    var tagEnd = source.IndexOf('>', markerIndex);
+    return tagStart >= 0 && tagEnd > tagStart
+        ? source.Substring(tagStart, tagEnd - tagStart + 1)
+        : string.Empty;
+}
+
+static string SourceFunctionBody(string source, string functionName)
+{
+    var functionStart = source.IndexOf($"function {functionName}(", StringComparison.Ordinal);
+    if (functionStart < 0)
+    {
+        return string.Empty;
+    }
+
+    var bodyStart = source.IndexOf('{', functionStart);
+    if (bodyStart < 0)
+    {
+        return string.Empty;
+    }
+
+    var depth = 0;
+    for (var index = bodyStart; index < source.Length; index++)
+    {
+        if (source[index] == '{')
+        {
+            depth++;
+        }
+        else if (source[index] == '}' && --depth == 0)
+        {
+            return source.Substring(bodyStart + 1, index - bodyStart - 1);
+        }
+    }
+
+    return string.Empty;
 }
 
 static void AssertEqual<T>(T expected, T actual, string label)

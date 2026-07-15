@@ -32,7 +32,6 @@ const state = {
   selectedMasterChangeId: null,
   selectedProductFamily: null,
   selectedProductFamilyLink: null,
-  activeTab: "buffer-trend-panel",
   focusedPanel: null,
   focusedPanelParent: null,
   focusedPanelNextSibling: null,
@@ -41,6 +40,54 @@ const state = {
   ddmrpShowAll: false,
   ddmrpMissingOnly: false,
 };
+
+const workspaceRoutes = Object.freeze({
+  "#history-review-panel": Object.freeze({ stageId: "history-review-panel", viewId: null, targetId: "history-review-panel", title: "历史回顾", parentTitle: "主业务流程", requiredHostId: null }),
+  "#history-review-panel/operating-results": Object.freeze({ stageId: "history-review-panel", viewId: "operating-results", targetId: "history-operating-results-view", title: "经营结果", parentTitle: "历史回顾", requiredHostId: null }),
+  "#history-review-panel/buffer-performance": Object.freeze({ stageId: "history-review-panel", viewId: "buffer-performance", targetId: "history-buffer-performance-view", title: "缓冲表现", parentTitle: "历史回顾", requiredHostId: null }),
+  "#history-review-panel/capacity-constraints": Object.freeze({ stageId: "history-review-panel", viewId: "capacity-constraints", targetId: "history-capacity-constraints-view", title: "能力约束", parentTitle: "历史回顾", requiredHostId: null }),
+  "#current-baseline-panel": Object.freeze({ stageId: "current-baseline-panel", viewId: null, targetId: "current-baseline-panel", title: "当前状态基线", parentTitle: "主业务流程", requiredHostId: null }),
+  "#current-baseline-panel/meeting-snapshot": Object.freeze({ stageId: "current-baseline-panel", viewId: "meeting-snapshot", targetId: "baseline-meeting-snapshot-view", title: "会前快照", parentTitle: "当前状态基线", requiredHostId: null }),
+  "#current-baseline-panel/evidence-review": Object.freeze({ stageId: "current-baseline-panel", viewId: "evidence-review", targetId: "baseline-evidence-review-view", title: "证据检查", parentTitle: "当前状态基线", requiredHostId: null }),
+  "#current-baseline-panel/version-freeze": Object.freeze({ stageId: "current-baseline-panel", viewId: "version-freeze", targetId: "baseline-version-freeze-view", title: "版本冻结", parentTitle: "当前状态基线", requiredHostId: null }),
+  "#current-baseline-panel/audit-records": Object.freeze({ stageId: "current-baseline-panel", viewId: "audit-records", targetId: "baseline-audit-records-view", title: "审计记录", parentTitle: "当前状态基线", requiredHostId: null }),
+  "#future-scenario-panel": Object.freeze({ stageId: "future-scenario-panel", viewId: null, targetId: "future-scenario-panel", title: "未来场景模拟", parentTitle: "主业务流程", requiredHostId: null }),
+  "#future-scenario-panel/scenario-config": Object.freeze({ stageId: "future-scenario-panel", viewId: "scenario-config", targetId: "scenario-run-panel", title: "场景配置", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/plan-comparison": Object.freeze({ stageId: "future-scenario-panel", viewId: "plan-comparison", targetId: "scenario-comparison", title: "方案比较", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/inventory-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "inventory-buffer", targetId: "buffer-trend-panel", title: "库存缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/time-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "time-buffer", targetId: "time-buffer-panel", title: "时间缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/capacity-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "capacity-buffer", targetId: "rccp-panel", title: "能力缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/supply-risk": Object.freeze({ stageId: "future-scenario-panel", viewId: "supply-risk", targetId: "projected-supply-panel", title: "供应风险", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#future-scenario-panel/breach-analysis": Object.freeze({ stageId: "future-scenario-panel", viewId: "breach-analysis", targetId: "variance-panel", title: "击穿分析", parentTitle: "未来场景模拟", requiredHostId: null }),
+  "#ddom-decision-panel": Object.freeze({ stageId: "ddom-decision-panel", viewId: null, targetId: "ddom-decision-panel", title: "DDOM 配置决策", parentTitle: "主业务流程", requiredHostId: null }),
+  "#ddom-decision-panel/structure-settings": Object.freeze({ stageId: "ddom-decision-panel", viewId: "structure-settings", targetId: "ddom-structure-settings-view", title: "结构设置", parentTitle: "DDOM 配置决策", requiredHostId: null }),
+  "#ddom-decision-panel/parameter-decision": Object.freeze({ stageId: "ddom-decision-panel", viewId: "parameter-decision", targetId: "ddom-parameter-decision-view", title: "参数决策", parentTitle: "DDOM 配置决策", requiredHostId: null }),
+  "#ddom-decision-panel/temporary-adjustment": Object.freeze({ stageId: "ddom-decision-panel", viewId: "temporary-adjustment", targetId: "ddom-temporary-adjustment-view", title: "临时调整", parentTitle: "DDOM 配置决策", requiredHostId: null }),
+  "#ddom-decision-panel/change-records": Object.freeze({ stageId: "ddom-decision-panel", viewId: "change-records", targetId: "ddom-change-records-view", title: "变更记录", parentTitle: "DDOM 配置决策", requiredHostId: null }),
+  "#coordination-panel": Object.freeze({ stageId: "coordination-panel", viewId: null, targetId: "coordination-panel", title: "行动和决策", parentTitle: "主业务流程", requiredHostId: null }),
+  "#coordination-panel/issue-list": Object.freeze({ stageId: "coordination-panel", viewId: "issue-list", targetId: "coordination-issue-list-view", title: "问题清单", parentTitle: "行动和决策", requiredHostId: null }),
+  "#coordination-panel/action-tracking": Object.freeze({ stageId: "coordination-panel", viewId: "action-tracking", targetId: "coordination-action-tracking-view", title: "行动跟踪", parentTitle: "行动和决策", requiredHostId: null }),
+  "#coordination-panel/decision-records": Object.freeze({ stageId: "coordination-panel", viewId: "decision-records", targetId: "coordination-decision-records-view", title: "决策记录", parentTitle: "行动和决策", requiredHostId: null }),
+  "#coordination-panel/outcome-validation": Object.freeze({ stageId: "coordination-panel", viewId: "outcome-validation", targetId: "coordination-outcome-validation-view", title: "结果验证", parentTitle: "行动和决策", requiredHostId: null }),
+  "#trace-panel": Object.freeze({ stageId: "validation", viewId: "white-box-trace", targetId: "trace-panel", title: "白盒追踪", parentTitle: "验证与追踪", requiredHostId: "saved-scenarios-panel" }),
+  "#public-demo-golden-loop-panel": Object.freeze({ stageId: "validation", viewId: "public-demo", targetId: "public-demo-golden-loop-panel", title: "公开演示闭环", parentTitle: "验证与追踪", requiredHostId: null }),
+});
+
+const workspaceRouteAliases = Object.freeze({
+  "#overview-panel": "#ddom-decision-panel/structure-settings",
+  "#product-family-dashboard-panel": "#history-review-panel/operating-results",
+  "#data-readiness-panel": "#current-baseline-panel/meeting-snapshot",
+  "#scenario-run-panel": "#future-scenario-panel/scenario-config",
+  "#scenario-comparison": "#future-scenario-panel/plan-comparison",
+  "#buffer-trend-panel": "#future-scenario-panel/inventory-buffer",
+  "#rccp-panel": "#future-scenario-panel/capacity-buffer",
+  "#projected-supply-panel": "#future-scenario-panel/supply-risk",
+  "#variance-panel": "#future-scenario-panel/breach-analysis",
+  "#master-settings-panel": "#ddom-decision-panel/parameter-decision",
+  "#saved-scenarios-panel": "#coordination-panel/action-tracking",
+});
+
+const workspaceTargetIds = Object.freeze([...new Set(Object.values(workspaceRoutes).map(route => route.targetId))]);
 
 const selectors = {
   family: document.querySelector("#family-filter"),
@@ -131,10 +178,11 @@ const collapsiblePanelConfigs = [
   { selector: "#projected-supply-panel .rccp-detail", defaultExpanded: false },
   { selector: "#variance-panel .rccp-block", defaultExpanded: false },
   { selector: "#variance-panel .rccp-block:first-child", defaultExpanded: true },
-  { selector: "#saved-scenarios-panel .saved-run-list", defaultExpanded: true, title: "已保存场景列表", kicker: "场景记录" },
-  { selector: "#saved-scenarios-panel .readiness-panel", defaultExpanded: false },
+  { selector: "#coordination-action-tracking-view .saved-run-list", defaultExpanded: true, title: "已保存场景列表", kicker: "场景记录" },
+  { selector: "#coordination-action-tracking-view .readiness-panel", defaultExpanded: false },
   { selector: "#master-settings-panel .master-settings-block", defaultExpanded: false },
   { selector: "#master-settings-panel .master-settings-block:first-child", defaultExpanded: true },
+  { selector: "#ddom-change-records-view .master-settings-block", defaultExpanded: false },
 ];
 
 const saveControls = {
@@ -438,79 +486,132 @@ function closeWorkspaceDrawer() {
   document.body.classList.remove("has-workspace-drawer");
 }
 
-function normalizeWorkspaceFlow() {
-  const workspace = byId("workspace");
-  const order = [
-    "history-review-panel",
-    "overview-panel",
-    "product-family-dashboard-panel",
-    "variance-panel",
-    "current-baseline-panel",
-    "data-readiness-panel",
-    "future-scenario-panel",
-    "scenario-run-panel",
-    "scenario-comparison",
-    "buffer-trend-panel",
-    "rccp-panel",
-    "projected-supply-panel",
-    "ddom-decision-panel",
-    "master-settings-panel",
-    "coordination-panel",
-    "saved-scenarios-panel",
-    "trace-panel",
-    "public-demo-golden-loop-panel",
-  ];
-
-  document.querySelector(".schedule-tabs")?.remove();
-  order.forEach(id => {
-    const section = byId(id);
-    if (!section) return;
-    section.classList.add("workspace-section");
-    section.classList.remove("schedule-panel");
-    section.removeAttribute("data-tab-panel");
-    section.hidden = true;
-    workspace.appendChild(section);
-  });
-  document.querySelector(".tab-workspace")?.remove();
+function parseWorkspaceRoute(hash) {
+  const requestedHash = typeof hash === "string" ? hash.trim() : "";
+  const normalizedHash = requestedHash && !requestedHash.startsWith("#") ? `#${requestedHash}` : requestedHash;
+  const aliasHash = workspaceRouteAliases[normalizedHash];
+  const canonicalHash = workspaceRoutes[normalizedHash]
+    ? normalizedHash
+    : aliasHash || "#history-review-panel";
+  const route = workspaceRoutes[canonicalHash];
+  return {
+    ...route,
+    hash: canonicalHash,
+    requestedHash: normalizedHash,
+    isCanonical: normalizedHash === canonicalHash,
+  };
 }
 
-function bindNavigationState() {
-  const navItems = Array.from(document.querySelectorAll(".nav-item[href^='#']"));
-  const setActiveNav = id => {
-    navItems.forEach(navItem => {
-      navItem.classList.toggle("is-active", navItem.getAttribute("href") === `#${id}`);
-    });
-  };
+function formatWorkspaceHash(route) {
+  if (typeof route === "string") return parseWorkspaceRoute(route).hash;
+  if (!route) return "#history-review-panel";
+  if (route.hash && workspaceRoutes[route.hash]) return route.hash;
+  const viewId = route.viewId === undefined ? null : route.viewId;
+  const match = Object.entries(workspaceRoutes).find(([, candidate]) => (
+    candidate.stageId === route.stageId && candidate.viewId === viewId
+  ));
+  return match ? match[0] : "#history-review-panel";
+}
 
-  navItems.forEach(item => {
-    item.addEventListener("click", () => {
-      const id = item.getAttribute("href")?.slice(1);
-      if (id) setActiveNav(id);
-    });
+function resolveWorkspaceRoute(route) {
+  return parseWorkspaceRoute(formatWorkspaceHash(route));
+}
+
+function navigateWorkspace(stageId, viewId, replace) {
+  const route = resolveWorkspaceRoute({ stageId, viewId });
+  const hash = formatWorkspaceHash(route);
+  if (replace) {
+    history.replaceState(null, "", hash);
+    applyWorkspaceRoute(route);
+    return;
+  }
+  if (window.location.hash === hash) {
+    applyWorkspaceRoute(route);
+    return;
+  }
+  window.location.hash = hash;
+}
+
+function setExpandedStageNavigation(stageId) {
+  document.querySelectorAll(".nav-stage-group").forEach(group => {
+    const expanded = group.dataset.stageId === stageId;
+    const toggle = group.querySelector(".nav-stage-toggle");
+    const submenu = group.querySelector(".nav-submenu");
+    if (toggle) toggle.setAttribute("aria-expanded", String(expanded));
+    if (submenu) submenu.hidden = !expanded;
+    group.classList.toggle("is-expanded", expanded);
   });
+}
 
-  const sections = navItems
-    .map(item => byId(item.getAttribute("href")?.slice(1)))
-    .filter(Boolean);
-  const observer = new IntersectionObserver(entries => {
-    const visible = entries
-      .filter(entry => entry.isIntersecting)
-      .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-    if (visible?.target?.id) {
-      setActiveNav(visible.target.id);
-    }
-  }, { root: null, rootMargin: "-18% 0px -62% 0px", threshold: [0.08, 0.18, 0.35, 0.6] });
+function setActiveWorkspaceNavigation(route) {
+  document.querySelectorAll(".nav-stage-toggle, .nav-subitem, .validation-group ~ .nav-item").forEach(item => {
+    item.classList.remove("is-active", "is-stage-active");
+    item.removeAttribute("aria-current");
+  });
+  if (!route) return;
 
-  sections.forEach(section => observer.observe(section));
+  const stageToggle = document.querySelector(`.nav-stage-toggle[data-stage-route="#${route.stageId}"]`);
+  if (stageToggle) {
+    stageToggle.classList.add(route.viewId === null ? "is-active" : "is-stage-active");
+    if (route.viewId === null) stageToggle.setAttribute("aria-current", "page");
+  }
+  const routeItem = document.querySelector(`.nav-subitem[href="${route.hash}"], .validation-group ~ .nav-item[href="${route.hash}"]`);
+  if (routeItem) {
+    routeItem.classList.add("is-active");
+    routeItem.setAttribute("aria-current", "page");
+  }
+}
+
+function renderWorkspaceBreadcrumb(route) {
+  const breadcrumb = byId("workspace-breadcrumb");
+  if (!breadcrumb) return;
+  breadcrumb.innerHTML = `<span>${escapeHtml(route.parentTitle)}</span><span aria-hidden="true">/</span><strong>${escapeHtml(route.title)}</strong>`;
+}
+
+function applyWorkspaceRoute(route) {
+  closeFocusedPanel();
+  closeWorkspaceDrawer();
+  const resolved = resolveWorkspaceRoute(route);
+  workspaceTargetIds.forEach(targetId => {
+    const target = byId(targetId);
+    if (target) target.hidden = true;
+  });
+  setActiveWorkspaceNavigation(null);
+  document.querySelectorAll(".workspace-route-host").forEach(host => {
+    host.hidden = true;
+  });
+  const requiredHost = resolved.requiredHostId ? byId(resolved.requiredHostId) : null;
+  if (requiredHost) requiredHost.hidden = false;
+  const target = byId(resolved.targetId);
+  if (target) target.hidden = false;
+  setExpandedStageNavigation(resolved.stageId);
+  setActiveWorkspaceNavigation(resolved);
+  renderWorkspaceBreadcrumb(resolved);
+  document.title = `${resolved.title} - DDAE 五阶段工作台`;
+  return resolved;
+}
+
+function handleWorkspaceHashChange() {
+  const route = parseWorkspaceRoute(window.location.hash);
+  if (window.location.hash !== route.hash) {
+    history.replaceState(null, "", route.hash);
+  }
+  applyWorkspaceRoute(route);
 }
 
 function initializeWorkspaceUi() {
-  normalizeWorkspaceFlow();
   attachInlineHelp();
   initializeCollapsiblePanels();
   initializePanelWorkspaceActions();
   initializeResizableTables();
-  bindNavigationState();
+  document.querySelectorAll(".nav-stage-toggle").forEach(toggle => {
+    toggle.addEventListener("click", () => {
+      const route = parseWorkspaceRoute(toggle.dataset.stageRoute);
+      navigateWorkspace(route.stageId, route.viewId, false);
+    });
+  });
+  window.addEventListener("hashchange", handleWorkspaceHashChange);
+  handleWorkspaceHashChange();
 }
 
 function row(cells) {
@@ -778,8 +879,7 @@ function setWorkspaceStatus(status, message) {
 function showWorkspaceContent() {
   byId("workspace-loading").hidden = true;
   byId("workspace-error").hidden = true;
-  document.querySelectorAll(".workspace-section").forEach(section => { section.hidden = false; });
-  activateTab(state.activeTab);
+  applyWorkspaceRoute(parseWorkspaceRoute(window.location.hash));
 }
 
 function showWorkspaceError(error) {
@@ -2461,7 +2561,7 @@ function applyExceptionToScenario() {
   byId("preview-status").textContent = "已从异常 SKU 带入，尚未运行";
   byId("route-status").className = "status-chip is-warning";
   byId("route-status").textContent = "异常 SKU 已带入场景";
-  document.getElementById("scenario-run-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  navigateWorkspace("future-scenario-panel", "scenario-config", false);
 }
 
 function renderMasterSettings(workspace) {
@@ -2679,7 +2779,7 @@ function useMasterSettingProposalResponse(result, successMessage) {
   masterSettingControls.status.className = state.masterSettingProposals.length ? "status-chip is-valid" : "status-chip is-warning";
   masterSettingControls.status.textContent = state.masterSettingProposals.length ? successMessage : "没有可生成的建议";
   renderMasterSettingProposalDetail(state.masterSettingProposals[0]);
-  byId("master-settings-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  navigateWorkspace("ddom-decision-panel", "parameter-decision", false);
 }
 
 async function generateMasterSettingProposalsFromComparison() {
@@ -2809,18 +2909,6 @@ function renderWorkspace() {
   byId("snapshot-freshness").textContent = `${data.request.anchorDate} / ${data.request.horizonWeeks} 周`;
   setWorkspaceStatus("Green", "工作台已就绪");
   showWorkspaceContent();
-}
-
-function activateTab(tabId) {
-  state.activeTab = tabId;
-  document.querySelectorAll("[data-tab]").forEach(button => {
-    const active = button.dataset.tab === tabId;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-  document.querySelectorAll("[data-tab-panel]").forEach(panel => {
-    panel.hidden = panel.id !== tabId;
-  });
 }
 
 function renderPublicDemoGoldenLoop(workspace) {
@@ -3666,10 +3754,6 @@ async function runPreview() {
 }
 
 initializeWorkspaceUi();
-
-document.querySelectorAll("[data-tab]").forEach(button => {
-  button.addEventListener("click", () => activateTab(button.dataset.tab));
-});
 
 document.addEventListener("click", event => {
   const focusButton = event.target.closest("[data-focus-panel]");
