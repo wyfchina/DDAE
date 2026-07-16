@@ -114,6 +114,16 @@ var tests = new (string Name, Action Run)[]
     ("Scenario workspace seed data covers baseline scenario use cases", TestScenarioWorkspaceSeedDataCoversUseCases),
     ("Scenario workspace exposes complete DDMRP parameter profiles", TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles),
     ("Scenario workspace adapter can map alternate source structures", TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures),
+    ("Planning evidence accepts complete 52 weeks", TestPlanningEvidenceAcceptsCompleteCoverage),
+    ("Planning evidence rejects demand gaps", TestPlanningEvidenceRejectsDemandGaps),
+    ("Planning evidence rejects duplicate negative and expired rows", TestPlanningEvidenceRejectsInvalidRows),
+    ("Planning evidence rejects receipt date mismatch", TestPlanningEvidenceRejectsReceiptDateMismatch),
+    ("Planning evidence uses left-closed right-open week buckets", TestPlanningEvidenceUsesLeftClosedRightOpenBuckets),
+    ("Planning evidence converts source timestamps in Asia Shanghai", TestPlanningEvidenceConvertsSourceTimestamps),
+    ("Planning evidence preserves receipts outside coverage", TestPlanningEvidencePreservesOutsideCoverageReceipts),
+    ("Frozen evidence rejects generated receipts", TestFrozenEvidenceRejectsGeneratedReceipts),
+    ("Planning evidence requires supplier capacity DDMRP and open-supply mappings", TestPlanningEvidenceRequiresSupportingMappings),
+    ("Planning evidence preserves legacy JSON", TestPlanningEvidencePreservesLegacyJson),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -5606,6 +5616,300 @@ static void TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures()
     AssertTrue(data.Skus.All(item => item.Family == "星载电子"), "adapter should honor family filters");
     AssertTrue(data.Demand.All(item => item.Week <= 8), "adapter should honor requested horizon");
     AssertTrue(data.ScenarioTemplates.Count > 0, "adapter should return scenario-ready templates");
+}
+
+static void TestPlanningEvidenceAcceptsCompleteCoverage()
+{
+    var data = BuildCompletePlanningEvidenceData();
+
+    var freeze = PlanningEvidenceValidator.ValidateForFreeze(data);
+    var projection = PlanningEvidenceValidator.ValidateForProjection(data, 12);
+
+    AssertEqual("Complete", freeze.Status, "complete freeze evidence status");
+    AssertTrue(!freeze.Issues.Any(item => item.BlocksFreeze), "complete freeze evidence should not have blockers");
+    AssertEqual("Complete", projection.Status, "complete projection evidence status");
+    AssertTrue(!projection.Issues.Any(item => item.BlocksProjection), "complete projection evidence should not have blockers");
+    AssertEqual(52, data.Demand.Count, "explicit demand week count");
+}
+
+static void TestPlanningEvidenceRejectsDemandGaps()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var missingDemand = data with
+    {
+        Demand = data.Demand.Where(item => item.Week != 17).ToList()
+    };
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(missingDemand);
+
+    AssertEqual("Incomplete", result.Status, "demand gap validation status");
+    AssertTrue(result.Issues.Any(item =>
+        item.Scope == "Demand" &&
+        item.Sku == data.Skus.Single().Sku &&
+        item.Week == 17 &&
+        item.Reason == "MissingDemand" &&
+        item.BlocksFreeze &&
+        item.BlocksProjection), "missing demand week should be explicit and blocking");
+
+    var missingOpeningRows = data with
+    {
+        Inventory = Array.Empty<InventoryPosition>(),
+        OpeningBacklog = Array.Empty<OpeningBacklogEvidence>()
+    };
+    var missingResult = PlanningEvidenceValidator.ValidateForFreeze(missingOpeningRows);
+    AssertTrue(missingResult.Issues.Any(item => item.Scope == "Inventory" && item.Reason == "MissingInventory"),
+        "missing inventory should be reported instead of treated as zero");
+    AssertTrue(missingResult.Issues.Any(item => item.Scope == "OpeningBacklog" && item.Reason == "MissingOpeningBacklog"),
+        "missing opening backlog should be reported instead of treated as zero");
+}
+
+static void TestPlanningEvidenceRejectsInvalidRows()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var duplicateDemand = data.Demand.Single(item => item.Week == 4);
+    var firstReceipt = data.ConfirmedReceipts![0];
+    var invalid = data with
+    {
+        Inventory = data.Inventory.Concat(data.Inventory).ToList(),
+        Demand = data.Demand
+            .Select(item => item.Week == 6 ? item with { BaselineDemand = -1m } : item)
+            .Append(duplicateDemand)
+            .ToList(),
+        OpeningBacklog = new[]
+        {
+            data.OpeningBacklog!.Single() with { EvidenceStatus = "Expired" },
+            data.OpeningBacklog!.Single() with { BacklogId = "BACKLOG-DUPLICATE" }
+        },
+        ConfirmedReceipts = data.ConfirmedReceipts!
+            .Select((item, index) => index == 0 ? item with { EvidenceStatus = "Stale" } : item)
+            .Append(firstReceipt with { Quantity = -1m })
+            .ToList()
+    };
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(invalid);
+    var reasons = result.Issues.Select(item => item.Reason).ToHashSet(StringComparer.Ordinal);
+
+    AssertEqual("Incomplete", result.Status, "invalid row validation status");
+    AssertTrue(reasons.Contains("DuplicateInventory"), "duplicate inventory should be rejected");
+    AssertTrue(reasons.Contains("DuplicateDemand"), "duplicate demand should be rejected");
+    AssertTrue(reasons.Contains("NegativeDemand"), "negative demand should be rejected");
+    AssertTrue(reasons.Contains("DuplicateOpeningBacklog"), "duplicate opening backlog should be rejected");
+    AssertTrue(reasons.Contains("OpeningBacklogEvidenceNotComplete"), "expired backlog evidence should be rejected");
+    AssertTrue(reasons.Contains("DuplicateReceiptId"), "duplicate receipt ids should be rejected");
+    AssertTrue(reasons.Contains("NegativeReceiptQuantity"), "negative receipt quantities should be rejected");
+    AssertTrue(reasons.Contains("ReceiptEvidenceNotComplete"), "stale receipt evidence should be rejected");
+}
+
+static void TestPlanningEvidenceRejectsReceiptDateMismatch()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var receipts = data.ConfirmedReceipts!.ToList();
+    receipts[0] = receipts[0] with { ExpectedReceiptDate = data.Request.AnchorDate.AddDays(14) };
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(data with { ConfirmedReceipts = receipts });
+
+    AssertTrue(result.Issues.Any(item =>
+        item.Scope == "ConfirmedReceipt" &&
+        item.SourceId == receipts[0].ReceiptId &&
+        item.Reason == "ReceiptDateWeekMismatch" &&
+        item.BlocksFreeze), "receipt date and authoritative week mismatch should block freeze");
+}
+
+static void TestPlanningEvidenceUsesLeftClosedRightOpenBuckets()
+{
+    var anchor = new DateOnly(2026, 6, 1);
+
+    AssertEqual(0, PlanningEvidenceValidator.WeekForDate(anchor, anchor.AddDays(-1)), "date before anchor week");
+    AssertEqual(1, PlanningEvidenceValidator.WeekForDate(anchor, anchor), "left boundary week");
+    AssertEqual(1, PlanningEvidenceValidator.WeekForDate(anchor, anchor.AddDays(6)), "last day before right boundary");
+    AssertEqual(2, PlanningEvidenceValidator.WeekForDate(anchor, anchor.AddDays(7)), "right boundary enters next week");
+
+    var data = BuildCompletePlanningEvidenceData();
+    var receipts = data.ConfirmedReceipts!.ToList();
+    receipts[0] = receipts[0] with
+    {
+        ExpectedReceiptWeek = 1,
+        ExpectedReceiptDate = anchor.AddDays(6),
+        SourceTimestampUtc = "2026-06-06T16:30:00Z"
+    };
+    var result = PlanningEvidenceValidator.ValidateForFreeze(data with { ConfirmedReceipts = receipts });
+    AssertTrue(!result.Issues.Any(item => item.SourceId == receipts[0].ReceiptId && item.Reason == "ReceiptDateWeekMismatch"),
+        "a date before the right boundary should remain in the prior week");
+}
+
+static void TestPlanningEvidenceConvertsSourceTimestamps()
+{
+    var timestamp = "2026-06-07T16:30:00Z";
+    var businessDate = PlanningEvidenceValidator.BusinessDateForSourceTimestamp(timestamp);
+
+    AssertEqual(new DateOnly(2026, 6, 8), businessDate, "Asia/Shanghai business date");
+
+    var data = BuildCompletePlanningEvidenceData();
+    AssertEqual(timestamp, data.ConfirmedReceipts![0].SourceTimestampUtc!, "original source timestamp should be retained");
+
+    var receipts = data.ConfirmedReceipts!.ToList();
+    receipts[0] = receipts[0] with { SourceTimestampUtc = "not-a-timestamp" };
+    var invalid = PlanningEvidenceValidator.ValidateForFreeze(data with { ConfirmedReceipts = receipts });
+    AssertTrue(invalid.Issues.Any(item => item.SourceId == receipts[0].ReceiptId && item.Reason == "InvalidSourceTimestampUtc"),
+        "invalid source timestamps should form a blocking issue instead of being interpreted in local time");
+}
+
+static void TestPlanningEvidencePreservesOutsideCoverageReceipts()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var outside = data.ConfirmedReceipts!.Single(item => item.ExpectedReceiptWeek == 53);
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(data);
+    var note = result.Issues.Single(item => item.SourceId == outside.ReceiptId && item.Reason == "OutsideCoverage");
+
+    AssertEqual("Complete", result.Status, "outside-coverage note should not make complete evidence incomplete");
+    AssertTrue(!note.BlocksFreeze && !note.BlocksProjection, "outside-coverage note should be non-blocking");
+    AssertEqual(53, data.ConfirmedReceipts!.Single(item => item.ReceiptId == outside.ReceiptId).ExpectedReceiptWeek,
+        "validation should preserve the authoritative outside-coverage week");
+
+    var inventory = data.Inventory
+        .Select(item => item with { OpenSupply = item.OpenSupply - outside.Quantity })
+        .ToList();
+    var mismatch = PlanningEvidenceValidator.ValidateForFreeze(data with { Inventory = inventory });
+    AssertTrue(mismatch.Issues.Any(item => item.Reason == "OpenSupplyMismatch"),
+        "outside-coverage receipts should remain in open-supply reconciliation");
+}
+
+static void TestFrozenEvidenceRejectsGeneratedReceipts()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var receipts = data.ConfirmedReceipts!.ToList();
+    receipts[0] = receipts[0] with { ReceiptType = "Generated" };
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(data with { ConfirmedReceipts = receipts });
+
+    AssertTrue(result.Issues.Any(item =>
+        item.Scope == "ConfirmedReceipt" &&
+        item.SourceId == receipts[0].ReceiptId &&
+        item.Reason == "UnsupportedReceiptType" &&
+        item.BlocksFreeze), "generated receipts must not enter frozen planning evidence");
+}
+
+static void TestPlanningEvidenceRequiresSupportingMappings()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var invalid = data with
+    {
+        Inventory = data.Inventory.Select(item => item with { OpenSupply = item.OpenSupply + 1m }).ToList(),
+        SupplierItemSources = Array.Empty<SupplierItemSource>(),
+        SupplierCapacityWindows = data.SupplierCapacityWindows.Where(item => item.Week != 2).ToList(),
+        DdmrpParameters = data.DdmrpParameters
+            .Select(item => item with { CompletenessStatus = "Incomplete", EvidenceStatus = "Expired" })
+            .ToList()
+    };
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(invalid);
+    var reasons = result.Issues.Select(item => item.Reason).ToHashSet(StringComparer.Ordinal);
+
+    AssertTrue(reasons.Contains("MissingSupplierItemSource"), "receipt should require an explicit SKU supplier mapping");
+    AssertTrue(reasons.Contains("MissingSupplierCapacityWindow"), "in-coverage receipt should require a weekly capacity mapping");
+    AssertTrue(reasons.Contains("OpenSupplyMismatch"), "confirmed receipt total should match open supply within tolerance");
+    AssertTrue(reasons.Contains("IncompleteDdmrpParameters"), "incomplete DDMRP parameters should block validation");
+}
+
+static void TestPlanningEvidencePreservesLegacyJson()
+{
+    var data = BuildCompletePlanningEvidenceData() with
+    {
+        ConfirmedReceipts = null,
+        OpeningBacklog = null,
+        PlanningEvidenceCoverage = null
+    };
+    var legacyJson = JsonNode.Parse(JsonSerializer.Serialize(data))!.AsObject();
+    legacyJson.Remove(nameof(ScenarioWorkspaceDataSet.ConfirmedReceipts));
+    legacyJson.Remove(nameof(ScenarioWorkspaceDataSet.OpeningBacklog));
+    legacyJson.Remove(nameof(ScenarioWorkspaceDataSet.PlanningEvidenceCoverage));
+
+    var roundTrip = JsonSerializer.Deserialize<ScenarioWorkspaceDataSet>(legacyJson.ToJsonString())
+        ?? throw new InvalidOperationException("legacy workspace JSON should deserialize");
+
+    AssertTrue(roundTrip.ConfirmedReceipts is null, "legacy JSON should default confirmed receipts to null");
+    AssertTrue(roundTrip.OpeningBacklog is null, "legacy JSON should default opening backlog to null");
+    AssertTrue(roundTrip.PlanningEvidenceCoverage is null, "legacy JSON should default planning evidence coverage to null");
+
+    var result = PlanningEvidenceValidator.ValidateForFreeze(roundTrip);
+    AssertEqual("Incomplete", result.Status, "legacy missing evidence validation status");
+    AssertTrue(result.Issues.Any(item => item.Reason == "MissingConfirmedReceipts"),
+        "legacy missing receipt evidence should be explicit");
+    AssertTrue(result.Issues.Any(item => item.Reason == "MissingOpeningBacklogEvidence"),
+        "legacy missing backlog evidence should be explicit");
+    AssertTrue(result.Issues.Any(item => item.Reason == "MissingPlanningEvidenceCoverage"),
+        "legacy missing coverage evidence should be explicit");
+}
+
+static ScenarioWorkspaceDataSet BuildCompletePlanningEvidenceData()
+{
+    var anchor = new DateOnly(2026, 6, 1);
+    var request = new ScenarioWorkspaceDataRequest(52, anchor, SkuFilter: new[] { "SAT-BUS-001" });
+    var workspace = new SeedScenarioWorkspaceDataSource(SeedData.Create()).Load(request);
+    var sku = workspace.Skus.Single();
+    var source = workspace.SupplierItemSources.Single();
+
+    return workspace with
+    {
+        Inventory = new[] { new InventoryPosition(sku.Sku, 8m, 10m, 2m) },
+        Demand = Enumerable.Range(1, 52)
+            .Select(week => new WeeklyDemand(sku.Sku, week, week % 5 + 1m))
+            .ToList(),
+        SupplierCapacityWindows = Enumerable.Range(1, 52)
+            .Select(week => new SupplierCapacityWindow(source.Supplier, source.MaterialFamily, week, 20m, 14, "Green"))
+            .ToList(),
+        DdmrpParameters = workspace.DdmrpParameters
+            .Select(item => item with { EffectiveThroughWeek = 52 })
+            .ToList(),
+        ConfirmedReceipts = new[]
+        {
+            new ConfirmedReceiptEvidence(
+                "REC-IN-2",
+                sku.Sku,
+                4m,
+                2,
+                anchor.AddDays(7),
+                "ConfirmedInTransit",
+                "PO-1001",
+                "PurchaseOrder",
+                source.Supplier,
+                source.MaterialFamily,
+                "Confirmed",
+                "Complete",
+                "2026-06-01T00:00:00Z",
+                "confirmed purchase-order receipt",
+                "2026-06-07T16:30:00Z"),
+            new ConfirmedReceiptEvidence(
+                "REC-OUT-53",
+                sku.Sku,
+                6m,
+                53,
+                anchor.AddDays(364),
+                "ConfirmedOpenSupply",
+                "PO-1053",
+                "PurchaseOrder",
+                source.Supplier,
+                source.MaterialFamily,
+                "Confirmed",
+                "Complete",
+                "2026-06-01T00:00:00Z",
+                "confirmed receipt beyond demand coverage",
+                "2027-05-30T16:30:00Z")
+        },
+        OpeningBacklog = new[]
+        {
+            new OpeningBacklogEvidence(
+                "BACKLOG-OPEN-1",
+                sku.Sku,
+                2m,
+                "ORDER-1000",
+                "Complete",
+                "2026-06-01T00:00:00Z",
+                "opening customer backlog")
+        },
+        PlanningEvidenceCoverage = new PlanningEvidenceCoverage(anchor, 1, 52, "Complete")
+    };
 }
 
 static void TestScenarioPreviewReturnsComparableResults()

@@ -888,7 +888,10 @@ public sealed record ScenarioWorkspaceDataSet(
     IReadOnlyList<CapacityProtectionDefinition>? CapacityProtections = null,
     IReadOnlyList<TimeBufferDefinition>? TimeBuffers = null,
     IReadOnlyList<ControlPointProgressFact>? ControlPointProgress = null,
-    IReadOnlyList<TimeBufferProductScope>? TimeBufferProductScopes = null);
+    IReadOnlyList<TimeBufferProductScope>? TimeBufferProductScopes = null,
+    IReadOnlyList<ConfirmedReceiptEvidence>? ConfirmedReceipts = null,
+    IReadOnlyList<OpeningBacklogEvidence>? OpeningBacklog = null,
+    PlanningEvidenceCoverage? PlanningEvidenceCoverage = null);
 
 public interface IScenarioWorkspaceDataSource
 {
