@@ -197,10 +197,29 @@ export async function runHistoryBufferRendererFixtures(historyReview, scriptPath
   assert.ok((inventoryChart.match(/history-series-line is-on-hand/g) || []).length >= 2, "inventory gap should split the line");
   assert.ok(inventoryChart.includes("证据缺失"), "missing inventory evidence should not become zero");
   assert.ok(["is-early", "is-green", "is-yellow", "is-red", "is-late"].every(css => timeChart.includes(css)));
+  const realCostWeeks = fixture.timeBuffers[0].points
+    .filter(point => point.abnormalCost !== null && point.abnormalCost !== undefined)
+    .map(point => point.weekOffset);
+  assert.deepEqual(realCostWeeks, [-18], "real six-month DTO should retain its single linked abnormal-cost week");
+  const costMarkerWeeks = [...timeChart.matchAll(/<circle class="history-cost-marker" data-week-offset="(-?\d+)"/g)]
+    .map(match => Number(match[1]));
+  assert.deepEqual(costMarkerWeeks, realCostWeeks, "every real abnormal-cost point should have exactly one visible marker");
+  assert.equal(fixture.timeBuffers[0].points.find(point => point.weekOffset === -17)?.abnormalCost, null,
+    "week -17 should remain missing cost evidence");
+  assert.ok(!costMarkerWeeks.includes(-17), "missing week -17 must not be plotted as zero");
+  assert.ok(!timeChart.includes("history-cost-line"), "one isolated abnormal-cost point must not create a cross-gap line");
   assert.ok(["is-theoretical", "is-standard", "is-demonstrated", "is-planned", "is-protection-start"].every(css => capacityChart.includes(css)));
   assert.ok(capacityChart.includes("is-consumed-protection"), "AIT should show upstream protection consumption");
   assert.ok(runtime.elements.get("history-capacity-resource-options").innerHTML.includes("CCR 利用率参照"));
-  assert.ok(runtime.elements.get("history-inventory-control-point-options").innerHTML.includes("关键进口 FPGA 独立库存控制点"));
+  const controlPointOptions = runtime.elements.get("history-inventory-control-point-options").innerHTML;
+  assert.ok(controlPointOptions.includes("关键进口 FPGA 独立库存控制点"));
+  assert.ok(controlPointOptions.includes('data-history-control-point="关键进口 FPGA 库存控制点"'),
+    "FPGA selector data attribute should retain the source control-point value");
+  const protectionTable = runtime.elements.get("history-protection-body").innerHTML;
+  assert.ok(protectionTable.includes("关键进口 FPGA 独立库存控制点"),
+    "protection table should use the independent-inventory display label");
+  assert.ok(!protectionTable.includes("关键进口 FPGA 库存控制点"),
+    "protection table must not expose the old source name as a visible label");
   const gapSegments = vm.runInContext("contiguousEvidenceSegments([{ value: 1 }, { value: null }, { value: 2 }], point => point.value !== null).map(segment => segment.map(point => point.value))", runtime.context);
   assert.equal(JSON.stringify(gapSegments), "[[1],[2]]");
   console.log("PASS backend sizing, gaps, five time bands, and capacity layers render");

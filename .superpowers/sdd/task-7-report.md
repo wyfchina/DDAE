@@ -4,6 +4,8 @@ Base commit: `05dccce130744bd1db1a457bbb06b57ed8bc5c9e`
 
 Commit message: `feat: render historical buffer evidence`
 
+Formal-review fix commit: `fix: preserve historical evidence visibility`
+
 ## Delivered
 
 - Replaced placeholder historical-buffer panels with native SVG/DOM evidence views for inventory, historical DDMRP sizing, five-band time buffers, and capacity layers.
@@ -11,7 +13,7 @@ Commit message: `feat: render historical buffer evidence`
 - Added persistent selectors for control point, inventory SKU, sizing snapshot, time-buffer ID, and capacity resource. Valid selections survive 6↔12-month refreshes.
 - Inventory history reads the backend red/yellow/green tops, ending on-hand, and net-flow values. Missing evidence splits paths instead of becoming zero.
 - Historical DDMRP shows backend sizing lines, the standard 80/120/70 case, green driver, effective weeks, source cutoff, evidence status, and average on-hand.
-- Time history renders all five backend bands and a gap-aware abnormal-cost line.
+- Time history renders all five backend bands, a visible marker for every non-null abnormal-cost point, and lines only for contiguous cost segments containing at least two points.
 - Capacity history renders committed load plus theoretical, standard, demonstrated, planned-available, and protection-start layers. AIT defaults to upstream protection; HARNESS is labelled `CCR 利用率参照` and never renders protective consumption.
 - The source control-point value `关键进口 FPGA 库存控制点` remains unchanged while the UI maps it to `关键进口 FPGA 独立库存控制点`.
 - Empty collections and all-missing points show `证据缺失` without producing an empty SVG.
@@ -44,6 +46,13 @@ The Node fixture compiles the real `app.js` with `vm.Script` and executes six ru
 - Review RED: after wiring the Node fixture into the standard harness and adding malicious-label assertions, the suite reported `141 PASS / 1 FAIL` on the double-escaped parameter label.
 - Review GREEN: passing raw labels into `openWorkspaceDrawer` restored one escaping boundary; the complete suite returned to `142/142`, including all six Node runtime groups.
 
+### Formal Commit Review Follow-up
+
+- Cost-marker RED: the real six-month DTO reported abnormal-cost weeks `[-18]`, while the rendered marker weeks were `[]`; the complete harness failed `1` test for the expected visibility reason.
+- Cost-marker GREEN: every non-null cost point now renders a circle; only segments longer than one point render a path. The fixture confirms week `-18` has a marker, missing week `-17` is not plotted as zero, and the isolated point creates no cross-gap line. The suite returned to `142/142`.
+- FPGA-table RED: the real protection table did not contain `关键进口 FPGA 独立库存控制点`; the complete harness failed `1` test for the expected display-label reason.
+- FPGA-table GREEN: the table now applies `historyControlPointLabel` only at its HTML boundary. The fixture confirms the table uses the independent-inventory label while the selector data attribute and selected state retain `关键进口 FPGA 库存控制点`. The suite returned to `142/142`.
+
 ## Final Verification
 
 ```text
@@ -71,10 +80,10 @@ Protected CONTRACT, SDBR, Network, validation, trace, and public-demo blocks mat
 ```
 
 - `git diff --check`: no whitespace errors; only Git's informational LF→CRLF notices.
-- CSS delimiter check: 567 opening and 567 closing braces.
+- CSS delimiter check: 568 opening and 568 closing braces.
 - JavaScript syntax: the standard Node fixture compiled the real `app.js`.
 - Frontend-formula gate: historical renderers contain no copied DDMRP sizing or capacity-protection business formulas.
-- Independent re-review after fixes: no Critical, Important, or Minor findings; ready to merge.
+- Independent re-review after the formal visibility fixes: `0` Critical, `0` Important, `0` Minor; ready to merge.
 
 ## Environment Note
 

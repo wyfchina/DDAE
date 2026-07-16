@@ -1554,6 +1554,7 @@ body.has-focus-panel { overflow: hidden; }
 .history-time-band.is-red { fill: #cf5a4a; }
 .history-time-band.is-late { fill: #8b3346; }
 .history-cost-line { stroke: #8d3ba8; }
+.history-cost-marker { fill: #8d3ba8; stroke: #fff; stroke-width: 1.5; }
 .history-capacity-load { fill: #456f91; opacity: .72; }
 .history-capacity-line.is-theoretical { stroke: #35434b; }
 .history-capacity-line.is-standard { stroke: #63727a; stroke-dasharray: 7 4; }

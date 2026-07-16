@@ -4123,7 +4123,14 @@ function renderHistoryTimeBuffer(history) {
       return `<rect class="history-time-band ${cssClass}" x="${x(entry.index) - barWidth / 2}" y="${y}" width="${barWidth}" height="${Math.max(0, bandHeight)}"></rect>`;
     }).join("");
   }).join("") : "";
-  const costPaths = costScale ? costSegments.map(segment => `<path class="history-cost-line" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: costScale.y(entry.point.abnormalCost) })))}"></path>`).join("") : "";
+  const costPaths = costScale ? costSegments
+    .filter(segment => segment.length > 1)
+    .map(segment => `<path class="history-cost-line" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: costScale.y(entry.point.abnormalCost) })))}"></path>`)
+    .join("") : "";
+  const costMarkers = costScale ? costSegments
+    .flat()
+    .map(entry => `<circle class="history-cost-marker" data-week-offset="${number(entry.point.weekOffset)}" cx="${x(entry.index)}" cy="${costScale.y(entry.point.abnormalCost)}" r="4"></circle>`)
+    .join("") : "";
   const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
     ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
     : "").join("");
@@ -4142,7 +4149,7 @@ function renderHistoryTimeBuffer(history) {
     <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))}</strong><span>${escapeHtml(item.protectedActivity)}</span></div>
     <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="时间缓冲五段历史">
       <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
-      ${bars}${costPaths}${periodLabels}
+      ${bars}${costPaths}${costMarkers}${periodLabels}
     </svg>
     <div class="history-chart-legend"><span><i class="band early"></i>提前</span><span><i class="band green"></i>绿色</span><span><i class="band yellow"></i>黄色</span><span><i class="band red"></i>红色</span><span><i class="band late"></i>延误</span><span><i class="line cost"></i>异常费用</span></div>
     <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>提前</th><th>绿色</th><th>黄色</th><th>红色</th><th>延误</th><th>异常费用</th><th>原因</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
@@ -4245,7 +4252,7 @@ function renderHistoryReview(history) {
 
   byId("history-protection-body").innerHTML = history.protectionRelationships.length
     ? history.protectionRelationships.map(item => row([
-        escapeHtml(item.controlPoint),
+        escapeHtml(historyControlPointLabel(item.controlPoint)),
         escapeHtml(item.protectedObject),
         escapeHtml(breachScopeLabel(item.protectionType)),
         escapeHtml(protectionStateLabel(item.designStatus)),
