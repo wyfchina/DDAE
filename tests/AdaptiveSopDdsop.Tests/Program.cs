@@ -1,6 +1,7 @@
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -25,6 +26,8 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
     ("Current baseline applies required evidence rules when section items are null or empty", TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems),
+    ("Current baseline blocks incomplete DDMRP sizing evidence", TestCurrentBaselineBlocksIncompleteDdmrpSizingEvidence),
+    ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
     ("Seed time-buffer progress covers every requested horizon week", TestSeedTimeBufferProgressCoversRequestedHorizon),
@@ -982,6 +985,64 @@ static void TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems()
             DeleteSqliteFiles(databasePath);
         }
     }
+}
+
+static void TestCurrentBaselineBlocksIncompleteDdmrpSizingEvidence()
+{
+    var validationData = SeedData.Create();
+    var scenarioSource = new LeadTimeFactorRemovingScenarioWorkspaceDataSource(
+        new SeedScenarioWorkspaceDataSource(validationData));
+    var candidate = new SeedCurrentBaselineDataSource(validationData, scenarioSource).GetCandidate();
+
+    var section = candidate.Sections.Single(item => item.SectionCode == "DDMRP_SIZING");
+    AssertTrue(section.IsRequired, "DDMRP sizing evidence should be required for a new baseline");
+    AssertEqual("EvidenceMissing", section.CompletenessStatus, "DDMRP sizing section completeness");
+    var missingSku = candidate.Payload.PlanningInputs!.Skus.Single(item => item.LeadTimeFactor is null);
+    var blockingItem = section.Items!.Single(item => item.ItemKey == missingSku.Sku);
+    AssertEqual("EvidenceMissing", blockingItem.CompletenessStatus, "missing DDMRP sizing item completeness");
+    AssertTrue(blockingItem.BlocksFreeze, "missing DDMRP sizing evidence should block freezing");
+    AssertTrue(
+        blockingItem.MissingReason?.Contains("提前期因子", StringComparison.Ordinal) == true,
+        "missing DDMRP sizing evidence should explain the lead-time factor gap");
+}
+
+static void TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor()
+{
+    var validationData = SeedData.Create();
+    var candidate = new SeedCurrentBaselineDataSource(validationData).GetCandidate();
+    var completeSnapshot = new CurrentBaselineSnapshot(
+        "LEGACY-SNAPSHOT",
+        "BASE-LEGACY-001",
+        "Frozen",
+        candidate.AsOfUtc,
+        candidate.MasterSettingVersion,
+        "legacy reader",
+        null,
+        "2026-06-30T08:00:00.0000000+00:00",
+        candidate.Sections,
+        candidate.Payload,
+        candidate.EvidenceLabel);
+    var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    var legacyJson = JsonNode.Parse(JsonSerializer.Serialize(completeSnapshot, jsonOptions))!.AsObject();
+    var skuNodes = legacyJson["payload"]!["planningInputs"]!["skus"]!.AsArray();
+    foreach (var skuNode in skuNodes)
+    {
+        var sku = skuNode!.AsObject();
+        AssertTrue(sku.Remove("leadTimeFactor"), "complete snapshot should contain leadTimeFactor");
+        AssertTrue(sku.Remove("parameterSnapshotId"), "complete snapshot should contain parameterSnapshotId");
+        AssertTrue(sku.Remove("parameterEvidenceStatus"), "complete snapshot should contain parameterEvidenceStatus");
+    }
+
+    var restored = JsonSerializer.Deserialize<CurrentBaselineSnapshot>(legacyJson.ToJsonString(jsonOptions), jsonOptions);
+    AssertTrue(restored?.Payload.PlanningInputs is not null, "legacy frozen baseline JSON should remain readable");
+    AssertTrue(
+        restored!.Payload.PlanningInputs!.Skus.All(item => item.LeadTimeFactor is null),
+        "missing legacy lead-time factors should remain visible as null");
+
+    AssertInvalidOperationRejected(
+        () => new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(validationData))
+            .LoadFrozenWorkspaceData(new ScenarioRunPreviewRequest(52), restored),
+        "旧版本缺少提前期因子");
 }
 
 static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
@@ -7144,6 +7205,28 @@ internal sealed class StaticScenarioWorkspaceDataSource : IScenarioWorkspaceData
     }
 
     public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request) => _data with { Request = request };
+}
+
+internal sealed class LeadTimeFactorRemovingScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
+{
+    private readonly IScenarioWorkspaceDataSource _inner;
+
+    public LeadTimeFactorRemovingScenarioWorkspaceDataSource(IScenarioWorkspaceDataSource inner)
+    {
+        _inner = inner;
+    }
+
+    public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
+    {
+        var data = _inner.Load(request);
+        var firstSku = data.Skus.First();
+        return data with
+        {
+            Skus = data.Skus
+                .Select(item => item.Sku == firstSku.Sku ? item with { LeadTimeFactor = null } : item)
+                .ToList()
+        };
+    }
 }
 
 internal sealed class FakeLegacyScenarioWorkspaceAdapter : IScenarioWorkspaceDataAdapter<LegacyScenarioSource>

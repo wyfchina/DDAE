@@ -41,6 +41,19 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         var planningInputs = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(
             52,
             new DateOnly(2026, 6, 1)));
+        var ddmrpSizingItems = planningInputs.Skus.Select(item =>
+        {
+            var complete = item.LeadTimeFactor is > 0m and <= 1m &&
+                !string.IsNullOrWhiteSpace(item.ParameterSnapshotId) &&
+                item.ParameterEvidenceStatus == "Complete";
+            return new BaselineEvidenceItem(
+                item.Sku,
+                $"{item.Sku} {item.Name}",
+                "Fresh",
+                complete ? "Complete" : "EvidenceMissing",
+                true,
+                complete ? null : "缺少提前期因子、参数快照号或完整证据");
+        }).ToList();
         var kpis = BuildKpis(asOf, planningInputs, backlog, wip);
         var timeBufferEvidence = BuildTimeBufferEvidence(asOf, planningInputs);
         var capacityProtectionCount = planningInputs.CapacityProtections?.Count ?? 0;
@@ -84,8 +97,32 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             Section("CAPACITY_PROTECTION", "Upstream capacity-protection evidence", "DDAE Demo Planning Snapshot", asOf,
                 capacityProtectionCount, missingReason: "Sequenced upstream capacity-protection evidence is missing.")
         };
+        sections.Add(DdmrpSizingSection(asOf, ddmrpSizingItems));
         sections.AddRange(timeBufferEvidence.Sections);
         return new CurrentBaselineCandidate("BASE-CANDIDATE-DEMO-20260630", asOf, "DEMO-MS-2026-06", sections, payload, "DemoFixture");
+    }
+
+    private static BaselineEvidenceSection DdmrpSizingSection(
+        string asOf,
+        IReadOnlyList<BaselineEvidenceItem> items)
+    {
+        var complete = items.Count > 0 && items.All(item =>
+            item.FreshnessStatus == "Fresh" && item.CompletenessStatus == "Complete");
+        var missingReason = string.Join("；", items
+            .Where(item => item.FreshnessStatus != "Fresh" || item.CompletenessStatus != "Complete")
+            .Select(item => $"{item.ItemKey}：{item.MissingReason}"));
+        return new BaselineEvidenceSection(
+            "DDMRP_SIZING",
+            "DDMRP 定容证据",
+            "DDAE Demo Planning Snapshot",
+            asOf,
+            "Fresh",
+            complete ? "Complete" : "EvidenceMissing",
+            items.Count,
+            "DemoFixture",
+            true,
+            string.IsNullOrWhiteSpace(missingReason) ? null : missingReason,
+            items);
     }
 
     private static BaselineKpiSnapshot BuildKpis(

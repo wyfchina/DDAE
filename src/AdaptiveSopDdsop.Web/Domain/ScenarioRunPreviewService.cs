@@ -22,6 +22,18 @@ public sealed class ScenarioRunPreviewService
         var horizonWeeks = Math.Clamp(request.HorizonWeeks <= 0 ? 12 : request.HorizonWeeks, 1, 52);
         var planningInputs = frozenBaseline.Payload.PlanningInputs
             ?? throw new InvalidOperationException("该冻结基线不含完整类型化计划输入，不能用于可复现重算；请从当前候选生成新版本。");
+        var incomplete = planningInputs.Skus
+            .Where(item => item.LeadTimeFactor is null or <= 0m or > 1m ||
+                string.IsNullOrWhiteSpace(item.ParameterSnapshotId) ||
+                item.ParameterEvidenceStatus != "Complete")
+            .Select(item => item.Sku)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToList();
+        if (incomplete.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"旧版本缺少提前期因子或完整定容证据：{string.Join("、", incomplete)}；请从当前候选冻结新版本。");
+        }
         var scoped = ScopeFrozenPlanningInputs(
             planningInputs,
             new ScenarioWorkspaceDataRequest(
