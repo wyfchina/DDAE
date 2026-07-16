@@ -20,6 +20,7 @@
                 <div id="history-review-submenu" class="nav-submenu">
                     <a class="nav-subitem" href="#history-review-panel/operating-results">经营结果</a>
                     <a class="nav-subitem" href="#history-review-panel/buffer-performance">缓冲表现</a>
+                    <a class="nav-subitem" href="#history-review-panel/sizing-trace">定容追溯</a>
                     <a class="nav-subitem" href="#history-review-panel/capacity-constraints">能力约束</a>
                 </div>
             </div>
@@ -133,12 +134,42 @@
                     <div><span class="stage-number">01</span><p class="panel-kicker">从实际结果建立事实</p><h2>历史回顾</h2></div>
                 </div>
                 <div class="readiness-banner">
-                    <div><span class="context-label">阶段目标</span><strong>以历史实际结果识别保护有效性和能力约束</strong><p>经营结果、缓冲表现和能力约束分别查看；六个月与十二个月窗口按累计提前期证据独立汇总。</p></div>
+                    <div><span class="context-label">阶段目标</span><strong>以历史实际结果识别保护有效性和能力约束</strong><p>经营结果、缓冲表现、定容追溯和能力约束分别查看；六个月与十二个月窗口按累计提前期证据独立汇总。</p></div>
                 </div>
             </section>
 
             <section id="history-buffer-performance-view" class="workspace-section workspace-route-view" data-workspace-route="#history-review-panel/buffer-performance" hidden>
-                <div class="panel-heading"><div><span class="panel-kicker">历史回顾</span><h2>缓冲表现</h2></div></div>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">历史回顾</span><h2>缓冲表现</h2></div>
+                    <div class="panel-inline-actions history-range-control" aria-label="缓冲表现历史范围">
+                        <button class="button secondary is-selected" type="button" data-history-range-months="6" aria-pressed="true">近六个月</button>
+                        <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
+                    </div>
+                </div>
+                <div id="history-buffer-overview" class="rccp-kpis" aria-label="历史缓冲概览"></div>
+                <div class="history-buffer-layout">
+                    <aside class="history-object-options" aria-label="历史缓冲选择">
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">库存对象</span><h2>控制点与 SKU</h2></div></div>
+                            <div id="history-inventory-control-point-options" class="history-selector-group" aria-label="库存控制点"></div>
+                            <div id="history-inventory-sku-options" class="history-selector-group" aria-label="库存 SKU"></div>
+                        </section>
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间对象</span><h2>时间缓冲</h2></div></div>
+                            <div id="history-time-buffer-options" class="history-selector-group" aria-label="时间缓冲对象"></div>
+                        </section>
+                    </aside>
+                    <div class="history-object-options">
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">库存缓冲</span><h2>水位与区域历史</h2></div></div>
+                            <div id="history-inventory-chart" class="history-chart" aria-label="历史库存缓冲图"></div>
+                        </section>
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间缓冲</span><h2>提前与延误历史</h2></div></div>
+                            <div id="history-time-buffer-chart" class="history-chart" aria-label="历史时间缓冲图"></div>
+                        </section>
+                    </div>
+                </div>
                 <div class="stage-grid two-column">
                     <section class="stage-card">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">控制点—保护关系</span><h2>设计、可用与有效性证据</h2></div></div>
@@ -151,8 +182,61 @@
                 </div>
             </section>
 
+            <section id="history-sizing-trace-view" class="workspace-section workspace-route-view" data-workspace-route="#history-review-panel/sizing-trace" hidden>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">历史回顾</span><h2>定容追溯</h2></div>
+                    <div class="panel-inline-actions history-range-control" aria-label="定容追溯历史范围">
+                        <button class="button secondary is-selected" type="button" data-history-range-months="6" aria-pressed="true">近六个月</button>
+                        <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
+                    </div>
+                </div>
+                <div class="history-buffer-layout">
+                    <aside class="history-object-options" aria-label="历史定容选择">
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">定容对象</span><h2>控制点、SKU 与快照</h2></div></div>
+                            <div id="history-sizing-control-point-options" class="history-selector-group" aria-label="定容控制点"></div>
+                            <div id="history-sizing-sku-options" class="history-selector-group" aria-label="定容 SKU"></div>
+                            <div id="history-sizing-snapshot-options" class="history-selector-group" aria-label="定容快照"></div>
+                        </section>
+                    </aside>
+                    <div class="history-object-options">
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">快照参数</span><h2>DDMRP 输入摘要</h2></div></div>
+                            <div id="history-ddmrp-input-summary" class="metadata-list"></div>
+                        </section>
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">白盒定容</span><h2>公式、输入与结果</h2></div></div>
+                            <div class="table-scroll"><table class="data-table"><thead><tr><th>组成</th><th>公式</th><th>值</th><th>证据</th></tr></thead><tbody id="history-ddmrp-sizing-body"></tbody></table></div>
+                        </section>
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">区域结构</span><h2>红黄绿定容区</h2></div></div>
+                            <div id="history-ddmrp-zone-chart" class="history-chart" aria-label="历史 DDMRP 定容区图"></div>
+                            <p class="history-evidence-note">所选快照只展示其当期参数与证据，不用当前参数回填历史缺口。</p>
+                        </section>
+                    </div>
+                </div>
+            </section>
+
             <section id="history-capacity-constraints-view" class="workspace-section workspace-route-view" data-workspace-route="#history-review-panel/capacity-constraints" hidden>
-                <div class="panel-heading"><div><span class="panel-kicker">历史回顾</span><h2>能力约束</h2></div></div>
+                <div class="panel-heading">
+                    <div><span class="panel-kicker">历史回顾</span><h2>能力约束</h2></div>
+                    <div class="panel-inline-actions history-range-control" aria-label="能力约束历史范围">
+                        <button class="button secondary is-selected" type="button" data-history-range-months="6" aria-pressed="true">近六个月</button>
+                        <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
+                    </div>
+                </div>
+                <div class="history-buffer-layout">
+                    <aside class="history-object-options">
+                        <section class="history-visual-card">
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">能力对象</span><h2>资源选择</h2></div></div>
+                            <div id="history-capacity-resource-options" class="history-selector-group" aria-label="历史能力资源"></div>
+                        </section>
+                    </aside>
+                    <section class="history-visual-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">期间能力</span><h2>负荷、边界与保护</h2></div></div>
+                        <div id="history-capacity-buffer-chart" class="history-chart" aria-label="历史能力缓冲图"></div>
+                    </section>
+                </div>
                 <div class="stage-grid two-column">
                     <section class="stage-card">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">能力分层</span><h2>负荷、阈值与保护消耗</h2></div></div>
@@ -295,8 +379,10 @@
                 <div class="stage-heading">
                     <div><p class="panel-kicker">历史回顾</p><h2>经营结果</h2></div>
                     <div class="panel-inline-actions">
-                        <button id="history-range-6" class="button secondary is-selected" type="button">近六个月</button>
-                        <button id="history-range-12" class="button secondary" type="button">近十二个月</button>
+                        <div class="history-range-control" aria-label="经营结果历史范围">
+                            <button class="button secondary is-selected" type="button" data-history-range-months="6" aria-pressed="true">近六个月</button>
+                            <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
+                        </div>
                         <span id="history-evidence-chip" class="status-chip neutral">等待读取</span>
                     </div>
                 </div>
@@ -668,6 +754,7 @@
                                 <aside id="buffer-inventory-options" class="buffer-inventory-options" aria-label="库存选项"></aside>
                                 <div class="buffer-chart-area">
                                     <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
+                                    <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="缓冲波动图"></div>
                                     <div class="buffer-static-legend"><span>红 / 黄 / 绿山形缓冲区</span><span>净流动量位置</span><span>预计库存水位</span><span>目标库存</span><span>需求脉冲</span></div>
                                 </div>
                             </div>

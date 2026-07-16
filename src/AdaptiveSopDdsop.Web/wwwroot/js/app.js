@@ -17,6 +17,17 @@ const state = {
   currentMasterSettingDetail: null,
   savedScenarioRuns: [],
   historyReview: null,
+  historyTrendMonths: 6,
+  historyRequestGeneration: 0,
+  historySelection: {
+    inventoryControlPoint: null,
+    inventorySku: null,
+    timeBufferId: null,
+    sizingControlPoint: null,
+    sizingSku: null,
+    sizingSnapshotId: null,
+    capacityResourceCode: null,
+  },
   currentBaselineCandidate: null,
   currentBaselines: [],
   scenarioAssumptionTemplates: [],
@@ -48,6 +59,7 @@ const workspaceRoutes = Object.freeze({
   "#history-review-panel": Object.freeze({ stageId: "history-review-panel", viewId: null, targetId: "history-review-panel", title: "历史回顾", parentTitle: "主业务流程", requiredHostId: null }),
   "#history-review-panel/operating-results": Object.freeze({ stageId: "history-review-panel", viewId: "operating-results", targetId: "history-operating-results-view", title: "经营结果", parentTitle: "历史回顾", requiredHostId: null }),
   "#history-review-panel/buffer-performance": Object.freeze({ stageId: "history-review-panel", viewId: "buffer-performance", targetId: "history-buffer-performance-view", title: "缓冲表现", parentTitle: "历史回顾", requiredHostId: null }),
+  "#history-review-panel/sizing-trace": Object.freeze({ stageId: "history-review-panel", viewId: "sizing-trace", targetId: "history-sizing-trace-view", title: "定容追溯", parentTitle: "历史回顾", requiredHostId: null }),
   "#history-review-panel/capacity-constraints": Object.freeze({ stageId: "history-review-panel", viewId: "capacity-constraints", targetId: "history-capacity-constraints-view", title: "能力约束", parentTitle: "历史回顾", requiredHostId: null }),
   "#current-baseline-panel": Object.freeze({ stageId: "current-baseline-panel", viewId: null, targetId: "current-baseline-panel", title: "当前状态基线", parentTitle: "主业务流程", requiredHostId: null }),
   "#current-baseline-panel/meeting-snapshot": Object.freeze({ stageId: "current-baseline-panel", viewId: "meeting-snapshot", targetId: "baseline-meeting-snapshot-view", title: "会前快照", parentTitle: "当前状态基线", requiredHostId: null }),
@@ -3638,8 +3650,132 @@ function stageKpi(label, value, note) {
   return `<div><span>${escapeHtml(label)}</span><strong>${value}</strong><small>${escapeHtml(note)}</small></div>`;
 }
 
+function syncHistorySelectionState(history) {
+  const inventory = history.inventoryBuffers || [];
+  const sizing = history.ddmrpSizingSnapshots || [];
+  const timeBuffers = history.timeBuffers || [];
+  const capacity = history.capacityBuffers || [];
+  const selectAvailable = (selected, values) => values.includes(selected) ? selected : valueOr(values[0], null);
+
+  const inventoryControlPoints = [...new Set(inventory.map(item => item.controlPoint))];
+  state.historySelection.inventoryControlPoint = selectAvailable(state.historySelection.inventoryControlPoint, inventoryControlPoints);
+  const inventorySkus = inventory
+    .filter(item => item.controlPoint === state.historySelection.inventoryControlPoint)
+    .map(item => item.sku);
+  state.historySelection.inventorySku = selectAvailable(state.historySelection.inventorySku, inventorySkus);
+
+  state.historySelection.timeBufferId = selectAvailable(
+    state.historySelection.timeBufferId,
+    timeBuffers.map(item => item.bufferId));
+
+  const sizingControlPoints = [...new Set(sizing.map(item => item.controlPoint))];
+  state.historySelection.sizingControlPoint = selectAvailable(state.historySelection.sizingControlPoint, sizingControlPoints);
+  const sizingSkus = [...new Set(sizing
+    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint)
+    .map(item => item.sku))];
+  state.historySelection.sizingSku = selectAvailable(state.historySelection.sizingSku, sizingSkus);
+  const sizingSnapshots = sizing
+    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint && item.sku === state.historySelection.sizingSku)
+    .map(item => item.snapshotId);
+  state.historySelection.sizingSnapshotId = selectAvailable(state.historySelection.sizingSnapshotId, sizingSnapshots);
+
+  state.historySelection.capacityResourceCode = selectAvailable(
+    state.historySelection.capacityResourceCode,
+    capacity.map(item => item.resourceCode));
+}
+
+function renderHistoryWorkspaceOptions(history) {
+  const inventory = history.inventoryBuffers || [];
+  const sizing = history.ddmrpSizingSnapshots || [];
+  const timeBuffers = history.timeBuffers || [];
+  const capacity = history.capacityBuffers || [];
+  const optionButton = (attribute, value, label, note, isSelected) => `
+    <button class="inventory-option${isSelected ? " is-selected" : ""}" type="button" data-${attribute}="${escapeHtml(value)}" aria-pressed="${isSelected}">
+      <span class="option-radio" aria-hidden="true"></span>
+      <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(note)}</small></span>
+    </button>`;
+  const emptyOptions = label => `<p class="history-empty-options">${escapeHtml(label)}</p>`;
+
+  byId("history-buffer-overview").innerHTML = [
+    ["库存缓冲", number(inventory.length), "可选 SKU"],
+    ["时间缓冲", number(timeBuffers.length), "可选控制点"],
+    ["定容快照", number(sizing.length), "历史参数版本"],
+    ["能力资源", number(capacity.length), "可选资源"],
+  ].map(item => stageKpi(...item)).join("");
+
+  const inventoryControlPoints = [...new Set(inventory.map(item => item.controlPoint))];
+  byId("history-inventory-control-point-options").innerHTML = inventoryControlPoints.length
+    ? inventoryControlPoints.map(controlPoint => optionButton(
+        "history-inventory-control-point",
+        controlPoint,
+        controlPoint,
+        `${inventory.filter(item => item.controlPoint === controlPoint).length} 个 SKU`,
+        controlPoint === state.historySelection.inventoryControlPoint)).join("")
+    : emptyOptions("暂无库存控制点证据");
+  const inventorySkus = inventory.filter(item => item.controlPoint === state.historySelection.inventoryControlPoint);
+  byId("history-inventory-sku-options").innerHTML = inventorySkus.length
+    ? inventorySkus.map(item => optionButton(
+        "history-inventory-sku",
+        item.sku,
+        item.sku,
+        item.name,
+        item.sku === state.historySelection.inventorySku)).join("")
+    : emptyOptions("暂无库存 SKU 证据");
+
+  byId("history-time-buffer-options").innerHTML = timeBuffers.length
+    ? timeBuffers.map(item => optionButton(
+        "history-time-buffer",
+        item.bufferId,
+        item.controlPoint,
+        item.protectedActivity,
+        item.bufferId === state.historySelection.timeBufferId)).join("")
+    : emptyOptions("暂无时间缓冲证据");
+
+  const sizingControlPoints = [...new Set(sizing.map(item => item.controlPoint))];
+  byId("history-sizing-control-point-options").innerHTML = sizingControlPoints.length
+    ? sizingControlPoints.map(controlPoint => optionButton(
+        "history-sizing-control-point",
+        controlPoint,
+        controlPoint,
+        `${new Set(sizing.filter(item => item.controlPoint === controlPoint).map(item => item.sku)).size} 个 SKU`,
+        controlPoint === state.historySelection.sizingControlPoint)).join("")
+    : emptyOptions("暂无定容控制点证据");
+  const sizingSkus = [...new Map(sizing
+    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint)
+    .map(item => [item.sku, item])).values()];
+  byId("history-sizing-sku-options").innerHTML = sizingSkus.length
+    ? sizingSkus.map(item => optionButton(
+        "history-sizing-sku",
+        item.sku,
+        item.sku,
+        item.name,
+        item.sku === state.historySelection.sizingSku)).join("")
+    : emptyOptions("暂无定容 SKU 证据");
+  const sizingSnapshots = sizing.filter(item =>
+    item.controlPoint === state.historySelection.sizingControlPoint && item.sku === state.historySelection.sizingSku);
+  byId("history-sizing-snapshot-options").innerHTML = sizingSnapshots.length
+    ? sizingSnapshots.map(item => optionButton(
+        "history-sizing-snapshot",
+        item.snapshotId,
+        item.snapshotId,
+        `第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`,
+        item.snapshotId === state.historySelection.sizingSnapshotId)).join("")
+    : emptyOptions("暂无历史定容快照");
+
+  byId("history-capacity-resource-options").innerHTML = capacity.length
+    ? capacity.map(item => optionButton(
+        "history-capacity-resource",
+        item.resourceCode,
+        item.resourceName,
+        item.resourceCode,
+        item.resourceCode === state.historySelection.capacityResourceCode)).join("")
+    : emptyOptions("暂无能力资源证据");
+}
+
 function renderHistoryReview(history) {
   state.historyReview = history;
+  syncHistorySelectionState(history);
+  renderHistoryWorkspaceOptions(history);
   byId("history-evidence-chip").className = "status-chip is-valid";
   byId("history-evidence-chip").textContent = `${historyEvidenceSummary(history.evidenceLabel)} · ${history.observedTrendWeeks} 周实际`;
   const outcomes = history.operatingOutcomes;
@@ -3700,12 +3836,21 @@ function renderHistoryReview(history) {
     : emptyRow("没有约束暴露证据", 5);
 }
 
-async function loadHistoryReview(trendMonths = 6) {
+async function loadHistoryReview(trendMonths = state.historyTrendMonths) {
+  trendMonths = trendMonths === 12 ? 12 : 6;
+  const requestGeneration = ++state.historyRequestGeneration;
   const response = await fetch(`/api/history-review?trendMonths=${trendMonths}`, { headers: { Accept: "application/json" } });
+  if (requestGeneration !== state.historyRequestGeneration) return;
   if (!response.ok) throw new Error(`历史回顾接口失败：${response.status}`);
-  renderHistoryReview(await response.json());
-  byId("history-range-6").classList.toggle("is-selected", trendMonths === 6);
-  byId("history-range-12").classList.toggle("is-selected", trendMonths === 12);
+  const history = await response.json();
+  if (requestGeneration !== state.historyRequestGeneration) return;
+  state.historyTrendMonths = trendMonths;
+  document.querySelectorAll("[data-history-range-months]").forEach(button => {
+    const isSelected = Number(button.dataset.historyRangeMonths) === state.historyTrendMonths;
+    button.classList.toggle("is-selected", isSelected);
+    button.setAttribute("aria-pressed", String(isSelected));
+  });
+  renderHistoryReview(history);
 }
 
 function configureFutureBaselineSelect() {
@@ -4305,7 +4450,7 @@ async function loadWorkspace() {
   state.data = await response.json();
   configureFiveStageScenarioControls();
   const fiveStageDataPromise = Promise.allSettled([
-    loadHistoryReview(6),
+    loadHistoryReview(),
     loadCurrentBaselineWorkspace(),
     loadCoordinationItems(true),
     loadScenarioAssumptionTemplates(),
@@ -4479,6 +4624,47 @@ document.addEventListener("click", event => {
   if (!button) return;
   previewControls.template.value = button.dataset.templateId;
   renderScenarioTemplates(valueOr(state.filtered, state.data));
+});
+
+document.addEventListener("click", event => {
+  const rangeButton = event.target.closest("[data-history-range-months]");
+  if (rangeButton) {
+    loadHistoryReview(Number(rangeButton.dataset.historyRangeMonths)).catch(showWorkspaceError);
+    return;
+  }
+  if (!state.historyReview) return;
+
+  const inventoryControlPoint = event.target.closest("[data-history-inventory-control-point]");
+  const inventorySku = event.target.closest("[data-history-inventory-sku]");
+  const timeBuffer = event.target.closest("[data-history-time-buffer]");
+  const sizingControlPoint = event.target.closest("[data-history-sizing-control-point]");
+  const sizingSku = event.target.closest("[data-history-sizing-sku]");
+  const sizingSnapshot = event.target.closest("[data-history-sizing-snapshot]");
+  const capacityResource = event.target.closest("[data-history-capacity-resource]");
+  if (inventoryControlPoint) {
+    state.historySelection.inventoryControlPoint = inventoryControlPoint.dataset.historyInventoryControlPoint;
+    state.historySelection.inventorySku = null;
+  } else if (inventorySku) {
+    state.historySelection.inventorySku = inventorySku.dataset.historyInventorySku;
+  } else if (timeBuffer) {
+    state.historySelection.timeBufferId = timeBuffer.dataset.historyTimeBuffer;
+  } else if (sizingControlPoint) {
+    state.historySelection.sizingControlPoint = sizingControlPoint.dataset.historySizingControlPoint;
+    state.historySelection.sizingSku = null;
+    state.historySelection.sizingSnapshotId = null;
+  } else if (sizingSku) {
+    state.historySelection.sizingSku = sizingSku.dataset.historySizingSku;
+    state.historySelection.sizingSnapshotId = null;
+  } else if (sizingSnapshot) {
+    state.historySelection.sizingSnapshotId = sizingSnapshot.dataset.historySizingSnapshot;
+  } else if (capacityResource) {
+    state.historySelection.capacityResourceCode = capacityResource.dataset.historyCapacityResource;
+  } else {
+    return;
+  }
+
+  syncHistorySelectionState(state.historyReview);
+  renderHistoryWorkspaceOptions(state.historyReview);
 });
 
 document.addEventListener("keydown", event => {
@@ -4693,8 +4879,6 @@ byId("refresh-workspace").addEventListener("click", () => {
   loadWorkspace().catch(showWorkspaceError);
 });
 
-byId("history-range-6").addEventListener("click", () => loadHistoryReview(6).catch(showWorkspaceError));
-byId("history-range-12").addEventListener("click", () => loadHistoryReview(12).catch(showWorkspaceError));
 byId("refresh-current-baseline").addEventListener("click", () => loadCurrentBaselineWorkspace().catch(showWorkspaceError));
 byId("freeze-current-baseline").addEventListener("click", () => freezeCurrentBaseline().catch(showWorkspaceError));
 byId("run-scenario-comparison").addEventListener("click", () => runScenarioComparison().catch(error => {

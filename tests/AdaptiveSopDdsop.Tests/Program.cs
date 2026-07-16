@@ -78,6 +78,8 @@ var tests = new (string Name, Action Run)[]
     ("Five-stage navigation uses hierarchical view switching", TestFiveStageNavigationUsesHierarchicalViewSwitching),
     ("Workspace navigation removes scroll observer and uses hash state", TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState),
     ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
+    ("History review exposes four selectable visualization workspaces", TestHistoryReviewExposesSelectableVisualizationWorkspaces),
+    ("History review retains range and selection state", TestHistoryReviewRetainsRangeAndSelectionState),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
     ("Five-stage business views localize ordinary unit tokens", TestBusinessViewsLocalizeOrdinaryUnitTokens),
     ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
@@ -3983,6 +3985,7 @@ static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
         {
             ("#history-review-panel/operating-results", "经营结果"),
             ("#history-review-panel/buffer-performance", "缓冲表现"),
+            ("#history-review-panel/sizing-trace", "定容追溯"),
             ("#history-review-panel/capacity-constraints", "能力约束")
         }),
         ("#current-baseline-panel", "当前状态基线", "current-baseline-submenu", new[]
@@ -4020,7 +4023,7 @@ static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
 
     AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-group\""), "primary navigation stage group count");
     AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-toggle nav-item\""), "primary navigation stage toggle count");
-    AssertEqual(22, CountExactOccurrences(navigation, "class=\"nav-subitem\""), "secondary navigation item count");
+    AssertEqual(23, CountExactOccurrences(navigation, "class=\"nav-subitem\""), "secondary navigation item count");
 
     var previousStagePosition = -1;
     foreach (var stage in stages)
@@ -4093,7 +4096,7 @@ static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
     AssertTrue(script.Contains("\"#overview-panel\": \"#ddom-decision-panel/structure-settings\"", StringComparison.Ordinal), "legacy overview hash should have a read-only canonical alias");
     AssertTrue(script.Contains("\"#saved-scenarios-panel\": \"#coordination-panel/action-tracking\"", StringComparison.Ordinal), "legacy saved scenario hash should point to action tracking");
     AssertEqual(1, CountExactOccurrences(script, "requiredHostId: \"saved-scenarios-panel\""), "only white-box trace should require the saved scenarios host");
-    AssertEqual(28, CountExactOccurrences(script, "requiredHostId: null"), "all other workspace routes should be host independent");
+    AssertEqual(29, CountExactOccurrences(script, "requiredHostId: null"), "all other workspace routes should be host independent");
 
     foreach (var forbidden in new[] { "state.activeTab", "normalizeWorkspaceFlow", "IntersectionObserver", "setActiveNav", "function activateTab(", "[data-tab]" })
     {
@@ -4111,6 +4114,7 @@ static void TestOnlySelectedStageOrChildViewIsVisible()
         ("#history-review-panel", "history-review-panel"),
         ("#history-review-panel/operating-results", "history-operating-results-view"),
         ("#history-review-panel/buffer-performance", "history-buffer-performance-view"),
+        ("#history-review-panel/sizing-trace", "history-sizing-trace-view"),
         ("#history-review-panel/capacity-constraints", "history-capacity-constraints-view"),
         ("#current-baseline-panel", "current-baseline-panel"),
         ("#current-baseline-panel/meeting-snapshot", "baseline-meeting-snapshot-view"),
@@ -4139,8 +4143,8 @@ static void TestOnlySelectedStageOrChildViewIsVisible()
         ("#public-demo-golden-loop-panel", "public-demo-golden-loop-panel")
     };
 
-    AssertEqual(29, routes.Length, "canonical workspace route count");
-    AssertEqual(29, routes.Select(item => item.TargetId).Distinct(StringComparer.Ordinal).Count(), "canonical workspace target uniqueness");
+    AssertEqual(30, routes.Length, "canonical workspace route count");
+    AssertEqual(30, routes.Select(item => item.TargetId).Distinct(StringComparer.Ordinal).Count(), "canonical workspace target uniqueness");
     foreach (var route in routes)
     {
         AssertEqual(1, CountExactOccurrences(page, $" id=\"{route.TargetId}\""), $"target {route.TargetId} should have one DOM ID");
@@ -4186,6 +4190,99 @@ static void TestOnlySelectedStageOrChildViewIsVisible()
     var showContentBody = SourceFunctionBody(script, "showWorkspaceContent");
     AssertTrue(showContentBody.Contains("applyWorkspaceRoute", StringComparison.Ordinal), "workspace loading should reapply only the current route");
     AssertTrue(!showContentBody.Contains(".workspace-section", StringComparison.Ordinal), "workspace loading should not reveal all workspace sections");
+}
+
+static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var css = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css"));
+    var historyStart = page.IndexOf("id=\"history-review-panel\"", StringComparison.Ordinal);
+    var traceStart = page.IndexOf("id=\"trace-panel\"", historyStart, StringComparison.Ordinal);
+
+    AssertTrue(historyStart >= 0 && traceStart > historyStart, "history workspaces should remain before the protected trace page");
+    AssertTrue(page.Contains("经营结果、缓冲表现、定容追溯和能力约束分别查看", StringComparison.Ordinal),
+        "history stage guidance should name all four child views");
+    foreach (var historyTargetId in new[]
+    {
+        "history-buffer-overview",
+        "history-inventory-control-point-options",
+        "history-inventory-sku-options",
+        "history-inventory-chart",
+        "history-time-buffer-options",
+        "history-time-buffer-chart",
+        "history-sizing-trace-view",
+        "history-sizing-control-point-options",
+        "history-sizing-sku-options",
+        "history-sizing-snapshot-options",
+        "history-ddmrp-input-summary",
+        "history-ddmrp-sizing-body",
+        "history-ddmrp-zone-chart",
+        "history-capacity-resource-options",
+        "history-capacity-buffer-chart",
+        "buffer-volatility-chart"
+    })
+    {
+        AssertEqual(1, CountExactOccurrences(page, $" id=\"{historyTargetId}\""), $"history target {historyTargetId} should have one DOM ID");
+        var targetPosition = page.IndexOf($" id=\"{historyTargetId}\"", historyStart, StringComparison.Ordinal);
+        AssertTrue(targetPosition > historyStart && targetPosition < traceStart, $"history target {historyTargetId} should precede protected trace markup");
+    }
+
+    AssertEqual(4, CountExactOccurrences(page, "data-history-range-months=\"6\""), "each history view should expose the six-month range");
+    AssertEqual(4, CountExactOccurrences(page, "data-history-range-months=\"12\""), "each history view should expose the twelve-month range");
+    var historySelectionStart = css.IndexOf(".history-selector-group .inventory-option:hover", StringComparison.Ordinal);
+    var historySelectionEnd = historySelectionStart < 0 ? -1 : css.IndexOf('}', historySelectionStart);
+    AssertTrue(historySelectionStart >= 0 && historySelectionEnd > historySelectionStart,
+        "history selectors should override the legacy blue inventory selection palette");
+    var historySelectionCss = css.Substring(historySelectionStart, historySelectionEnd - historySelectionStart);
+    AssertTrue(
+        historySelectionCss.Contains("border-color: var(--color-primary)", StringComparison.Ordinal) &&
+        historySelectionCss.Contains("background: var(--color-primary-soft)", StringComparison.Ordinal) &&
+        historySelectionCss.Contains("color: var(--color-primary-strong)", StringComparison.Ordinal),
+        "history selector hover and selected states should use the green navigation palette");
+}
+
+static void TestHistoryReviewRetainsRangeAndSelectionState()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    foreach (var stateField in new[]
+    {
+        "historyTrendMonths: 6",
+        "historyRequestGeneration: 0",
+        "historySelection:",
+        "inventoryControlPoint: null",
+        "inventorySku: null",
+        "timeBufferId: null",
+        "sizingControlPoint: null",
+        "sizingSku: null",
+        "sizingSnapshotId: null",
+        "capacityResourceCode: null"
+    })
+    {
+        AssertTrue(script.Contains(stateField, StringComparison.Ordinal), $"history selection state should include {stateField}");
+    }
+    AssertTrue(script.Contains("state.historyTrendMonths = trendMonths", StringComparison.Ordinal), "history load should retain the selected range");
+    AssertTrue(script.Contains("syncHistorySelectionState(history)", StringComparison.Ordinal), "history load should normalize selectable objects");
+    AssertTrue(script.Contains("renderHistoryWorkspaceOptions(history)", StringComparison.Ordinal), "history load should populate selector containers");
+    AssertTrue(script.Contains("closest(\"[data-history-range-months]\")", StringComparison.Ordinal), "history range controls should use one repeated-button handler");
+    var loadWorkspaceBody = SourceFunctionBody(script, "loadWorkspace");
+    AssertTrue(loadWorkspaceBody.Contains("loadHistoryReview()", StringComparison.Ordinal), "workspace refresh should preserve the selected history range");
+    AssertTrue(!loadWorkspaceBody.Contains("loadHistoryReview(6)", StringComparison.Ordinal), "workspace refresh should not reset history to six months");
+
+    var loadHistoryBody = SourceFunctionBody(script, "loadHistoryReview");
+    var generationStart = loadHistoryBody.IndexOf("const requestGeneration = ++state.historyRequestGeneration", StringComparison.Ordinal);
+    var firstStaleGuard = loadHistoryBody.IndexOf("if (requestGeneration !== state.historyRequestGeneration) return", generationStart, StringComparison.Ordinal);
+    var responseStatus = loadHistoryBody.IndexOf("if (!response.ok)", StringComparison.Ordinal);
+    var responsePayload = loadHistoryBody.IndexOf("const history = await response.json()", StringComparison.Ordinal);
+    var secondStaleGuard = loadHistoryBody.IndexOf("if (requestGeneration !== state.historyRequestGeneration) return", firstStaleGuard + 1, StringComparison.Ordinal);
+    var rangeCommit = loadHistoryBody.IndexOf("state.historyTrendMonths = trendMonths", StringComparison.Ordinal);
+    var renderCommit = loadHistoryBody.IndexOf("renderHistoryReview(history)", StringComparison.Ordinal);
+    AssertTrue(generationStart >= 0 && firstStaleGuard > generationStart && responseStatus > firstStaleGuard,
+        "stale history requests should exit before reporting a failed obsolete response");
+    AssertTrue(responsePayload > responseStatus && secondStaleGuard > responsePayload && rangeCommit > secondStaleGuard && renderCommit > rangeCommit,
+        "only the latest successful history response should commit range state and render data");
 }
 
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
