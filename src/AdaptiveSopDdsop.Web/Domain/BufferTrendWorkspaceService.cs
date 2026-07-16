@@ -48,16 +48,18 @@ public sealed class BufferTrendWorkspaceService
             .Select(point =>
             {
                 var sku = skuMap[point.Sku];
-                var timePhasedAdu = CalculateTimePhasedAdu(point);
-                var timePhasedZones = CalculateTimePhasedZones(sku, timePhasedAdu);
+                var sizing = point.Sizing ?? throw new InvalidOperationException(
+                    $"{point.Sku} 第 {point.Week} 周缺少后端定容结果，不能生成缓冲趋势。");
+                var timePhasedZones = sizing.Zones;
                 var targetInventory = (timePhasedZones.TopOfYellow + timePhasedZones.TopOfGreen) / 2m;
+                var demandSpikeThreshold = decimal.Round(sku.Adu * 5m * 1.5m, 1);
                 orderMap.TryGetValue((point.Sku, point.Week), out var order);
                 var status = TrendStatus(point, timePhasedZones);
                 return new BufferTrendSeriesPoint(
                     point.Sku,
                     point.Week,
                     data.Request.AnchorDate.AddDays((point.Week - 1) * 7).ToString("yyyy/M/d", System.Globalization.CultureInfo.InvariantCulture),
-                    decimal.Round(timePhasedAdu, 1),
+                    decimal.Round(sizing.PeriodAdu, 1),
                     point.StartNetFlow,
                     point.Demand,
                     point.EndNetFlowBeforeReplenishment,
@@ -70,7 +72,9 @@ public sealed class BufferTrendWorkspaceService
                     decimal.Round(order?.Quantity ?? 0m, 0),
                     (order?.Quantity ?? 0m) > 0,
                     order?.IsPrebuild ?? false,
-                    status);
+                    status,
+                    sizing,
+                    demandSpikeThreshold);
             })
             .OrderBy(item => item.Sku)
             .ThenBy(item => item.Week)
@@ -135,7 +139,7 @@ public sealed class BufferTrendWorkspaceService
                     plan.Traces.Where(item => item.Sku == sku.Sku).OrderBy(item => item.Week).ToList(),
                     BuildActivities(data, sku, series.Where(item => item.Sku == sku.Sku).OrderBy(item => item.Week).ToList(), plan),
                     BuildAttributes(data, sku, zoneMap[sku.Sku]),
-                    BuildBufferSizing(sku, zoneMap[sku.Sku]),
+                    BuildBufferSizing(DdmrpCalculator.CalculateSizing(sku)),
                     BuildBom(data, sku, series.Where(item => item.Sku == sku.Sku).OrderBy(item => item.Week).ToList()),
                     BuildOrderDetails(data, sku, plan));
             })
@@ -207,26 +211,6 @@ public sealed class BufferTrendWorkspaceService
         }
 
         return point.EndNetFlowAfterReplenishment > zones.TopOfGreen ? "Blue" : "Green";
-    }
-
-    private static decimal CalculateTimePhasedAdu(BufferProjectionPoint point)
-    {
-        // Seed demand is modeled as one five-workday planning bucket. Time-phased ADU lets
-        // the display follow the same DDMRP zone equations while still showing weekly changes.
-        return Math.Max(1m, point.Demand / 5m);
-    }
-
-    private static BufferZones CalculateTimePhasedZones(SkuBufferSetting sku, decimal timePhasedAdu)
-    {
-        var effectiveAdu = timePhasedAdu * Math.Max(0.01m, sku.DemandAdjustmentFactor);
-        var zoneAdjustment = Math.Max(0.01m, sku.ZoneAdjustmentFactor);
-        var red = effectiveAdu * sku.DecoupledLeadTimeDays * sku.VariabilityFactor * zoneAdjustment;
-        var yellow = effectiveAdu * sku.DecoupledLeadTimeDays * zoneAdjustment;
-        var green = Math.Max(sku.MinimumOrderQuantity, effectiveAdu * sku.OrderCycleDays) * zoneAdjustment;
-        return new BufferZones(
-            decimal.Round(red, 0),
-            decimal.Round(yellow, 0),
-            decimal.Round(green, 0));
     }
 
     private static string SelectRiskSku(
@@ -373,26 +357,8 @@ public sealed class BufferTrendWorkspaceService
         return attributes;
     }
 
-    private static IReadOnlyList<BufferSizingLine> BuildBufferSizing(SkuBufferSetting sku, BufferZones zones)
-    {
-        var effectiveAdu = sku.Adu * Math.Max(0.01m, sku.DemandAdjustmentFactor);
-        var zoneAdjustment = Math.Max(0.01m, sku.ZoneAdjustmentFactor);
-        var redBase = effectiveAdu * sku.DecoupledLeadTimeDays * zoneAdjustment;
-        var redSafety = Math.Max(0m, zones.Red - redBase);
-        return new List<BufferSizingLine>
-        {
-            new("有效 ADU", "ADU × DAF", decimal.Round(effectiveAdu, 1), "把已知需求事件折算到缓冲定容的日均需求。"),
-            new("区域调整", "区域调整因子", decimal.Round(zoneAdjustment, 2), "对红黄绿区厚度进行临时拉伸或压缩。"),
-            new("红区基础", "ADU × DAF × DLT × 区域调整因子", decimal.Round(redBase, 0), "覆盖解耦提前期内的基础消耗。"),
-            new("红区安全", "红区基础 × (变异因子 - 1)", decimal.Round(redSafety, 0), "覆盖需求与供应波动。"),
-            new("红区上沿", "红区基础 + 红区安全", decimal.Round(zones.TopOfRed, 0), "净流动量跌破该线时为红区风险。"),
-            new("黄区大小", "ADU × DAF × DLT × 区域调整因子", decimal.Round(zones.Yellow, 0), "覆盖补货提前期内的常规需求。"),
-            new("黄区上沿", "红区上沿 + 黄区大小", decimal.Round(zones.TopOfYellow, 0), "进入黄区后，仍需等到订货周期复核点才生成补货。"),
-            new("绿区大小", "max(MOQ, ADU × DAF × 订货周期) × 区域调整因子", decimal.Round(zones.Green, 0), "决定补货目标和订单节奏。"),
-            new("绿区上沿", "黄区上沿 + 绿区大小", decimal.Round(zones.TopOfGreen, 0), "补货建议通常补到该水位。"),
-            new("目标库存", "(黄区上沿 + 绿区上沿) / 2", decimal.Round((zones.TopOfYellow + zones.TopOfGreen) / 2m, 0), "用于图形中目标库存点的管理参照。")
-        };
-    }
+    private static IReadOnlyList<BufferSizingLine> BuildBufferSizing(DdmrpSizingResult sizing) =>
+        DdmrpSizingExplanation.Build(sizing);
 
     private static IReadOnlyList<SingleSkuBomComponent> BuildBom(
         ScenarioWorkspaceDataSet data,

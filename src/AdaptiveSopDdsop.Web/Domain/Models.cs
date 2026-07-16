@@ -73,7 +73,8 @@ public sealed record BufferProjectionPoint(
     decimal Demand,
     decimal EndNetFlowBeforeReplenishment,
     decimal EndNetFlowAfterReplenishment,
-    string BufferStatus);
+    string BufferStatus,
+    DdmrpSizingResult? Sizing = null);
 
 public sealed record ProjectedReplenishmentOrder(
     string Sku,

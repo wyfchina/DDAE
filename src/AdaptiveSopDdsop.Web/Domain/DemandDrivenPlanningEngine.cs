@@ -17,7 +17,6 @@ public static class DemandDrivenPlanningEngine
         foreach (var sku in skus)
         {
             var position = inventory.First(item => item.Sku == sku.Sku);
-            var zones = DdmrpCalculator.CalculateZones(sku);
             var netFlow = DdmrpCalculator.CalculateNetFlow(position);
             var orderCycleWeeks = Math.Max(1, (int)Math.Ceiling(sku.OrderCycleDays / 7m));
 
@@ -42,6 +41,9 @@ public static class DemandDrivenPlanningEngine
                 var weeklyDemand = demand
                     .Where(item => item.Sku == sku.Sku && item.Week == week)
                     .Sum(item => item.BaselineDemand);
+                var periodAdu = Math.Max(sku.Adu, weeklyDemand / 5m);
+                var sizing = DdmrpCalculator.CalculateSizing(sku, periodAdu);
+                var zones = sizing.Zones;
                 var endBeforeReplenishment = startNetFlow - weeklyDemand;
                 var status = DdmrpCalculator.GetBufferStatus(endBeforeReplenishment, zones);
                 var isOrderReviewWeek = (week - 1) % orderCycleWeeks == 0;
@@ -57,7 +59,8 @@ public static class DemandDrivenPlanningEngine
                     decimal.Round(weeklyDemand, 0),
                     decimal.Round(endBeforeReplenishment, 0),
                     decimal.Round(endAfterReplenishment, 0),
-                    status));
+                    status,
+                    sizing));
 
                 if (orderQuantity > 0)
                 {

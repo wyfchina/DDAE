@@ -120,6 +120,8 @@ var tests = new (string Name, Action Run)[]
     ("Constraint workspace summarizes constrained and unconstrained capacity and supply", TestConstraintWorkspaceSummarizesCapacityAndSupply),
     ("Scenario preview returns constrained and unconstrained comparison", TestScenarioPreviewReturnsConstraintComparison),
     ("Scenario preview returns supplier collaboration drilldown", TestScenarioPreviewReturnsSupplierCollaborationDrilldown),
+    ("Future buffer projection uses the same backend period sizing for orders and charts", TestFutureBufferTrendUsesBackendPeriodSizing),
+    ("Buffer trend maps an order-cycle wait trace to an activity", TestBufferTrendMapsOrderCycleWaitToActivity),
     ("Buffer trend workspace summarizes KPIs heatmap and SKU detail", TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail),
     ("Scenario preview returns graphical buffer trend comparison", TestScenarioPreviewReturnsBufferTrendComparison),
     ("Exception workspace detects variance signals and scenario presets", TestExceptionWorkspaceDetectsVarianceSignalsAndScenarioPresets),
@@ -3903,12 +3905,17 @@ static void TestTimePhasedBufferProjectionCreatesReplenishmentTrace()
     var weekOne = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 1);
     var order = run.ReplenishmentOrders.Single(order => order.Sku == sku.Sku && order.Week == 1);
     var calculationTrace = run.Traces.Single(item => item.Sku == sku.Sku && item.Week == 1);
+    var sizing = weekOne.Sizing ?? throw new InvalidOperationException("week one should carry period sizing");
+    var expectedOrderQuantity = sizing.Zones.TopOfGreen - weekOne.EndNetFlowBeforeReplenishment;
 
     AssertEqual("Red", weekOne.BufferStatus, "week one projected buffer status");
     AssertEqual(900, weekOne.StartNetFlow, "week one start net flow");
     AssertEqual(300, weekOne.EndNetFlowBeforeReplenishment, "week one end net flow before replenishment");
-    AssertEqual(1650, order.Quantity, "week one replenishment quantity");
-    AssertEqual("净流动量 300 位于黄区上沿 1250 及以下，且本周为订货周期复核点，补货到绿区上沿 1950。", calculationTrace.Explanation, "calculation trace");
+    AssertEqual(expectedOrderQuantity, order.Quantity, "week one replenishment quantity");
+    AssertEqual(
+        $"净流动量 {weekOne.EndNetFlowBeforeReplenishment:0} 位于黄区上沿 {sizing.Zones.TopOfYellow:0} 及以下，且本周为订货周期复核点，补货到绿区上沿 {sizing.Zones.TopOfGreen:0}。",
+        calculationTrace.Explanation,
+        "calculation trace");
 }
 
 static void TestTimePhasedBufferProjectionWaitsForOrderCycleReview()
@@ -3933,13 +3940,19 @@ static void TestTimePhasedBufferProjectionWaitsForOrderCycleReview()
         horizonWeeks: 3);
 
     var weekTwo = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 2);
+    var weekThree = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 3);
     var weekThreeOrder = run.ReplenishmentOrders.Single(order => order.Sku == sku.Sku && order.Week == 3);
     var weekTwoTrace = run.Traces.Single(item => item.Sku == sku.Sku && item.Week == 2);
+    var weekTwoSizing = weekTwo.Sizing ?? throw new InvalidOperationException("week two should carry period sizing");
+    var weekThreeSizing = weekThree.Sizing ?? throw new InvalidOperationException("week three should carry period sizing");
 
     AssertEqual("Yellow", weekTwo.BufferStatus, "week two should enter yellow");
     AssertTrue(!run.ReplenishmentOrders.Any(order => order.Sku == sku.Sku && order.Week == 2), "week two should wait for the order cycle review");
-    AssertEqual(1650, weekThreeOrder.Quantity, "week three replenishment quantity");
-    AssertTrue(weekTwoTrace.Explanation.Contains("不是订货周期复核点", StringComparison.Ordinal), "week two trace should explain order cycle waiting");
+    AssertEqual(weekThreeSizing.Zones.TopOfGreen - weekThree.EndNetFlowBeforeReplenishment, weekThreeOrder.Quantity, "week three replenishment quantity");
+    AssertEqual(
+        $"净流动量 {weekTwo.EndNetFlowBeforeReplenishment:0} 位于黄区上沿 {weekTwoSizing.Zones.TopOfYellow:0} 及以下，但本周不是订货周期复核点，暂不生成补货订单。",
+        weekTwoTrace.Explanation,
+        "week two trace should explain order cycle waiting");
 }
 
 static void TestDemandDrivenRccpUsesProjectedReplenishmentOrders()
@@ -4089,7 +4102,8 @@ static void TestPrebuildCampaignMovesReplenishmentBeforeFuturePeak()
         LeadTimeFactor: 0.6m,
         ParameterSnapshotId: "SKU-PEAK-001-V1",
         ParameterEvidenceStatus: "Complete");
-    var position = new InventoryPosition(sku.Sku, 1950, 0, 0);
+    var baseSizing = DdmrpCalculator.CalculateSizing(sku);
+    var position = new InventoryPosition(sku.Sku, baseSizing.Zones.TopOfGreen, 0, 0);
     var demand = new[]
     {
         new WeeklyDemand(sku.Sku, 1, 0),
@@ -4097,7 +4111,15 @@ static void TestPrebuildCampaignMovesReplenishmentBeforeFuturePeak()
         new WeeklyDemand(sku.Sku, 3, 1000),
         new WeeklyDemand(sku.Sku, 4, 1000),
     };
-    var campaign = new PrebuildCampaign("PB-001", sku.Sku, 1, 3, 4, 1000);
+    var peakDemand = demand.Single(item => item.Week == 3).BaselineDemand;
+    var peakSizing = DdmrpCalculator.CalculateSizing(sku, peakDemand / 5m);
+    var campaign = new PrebuildCampaign(
+        "PB-001",
+        sku.Sku,
+        1,
+        3,
+        4,
+        peakSizing.Zones.TopOfGreen + peakDemand - baseSizing.Zones.TopOfGreen);
 
     var run = DemandDrivenPlanningEngine.ProjectBuffers(
         new[] { sku },
@@ -4107,13 +4129,23 @@ static void TestPrebuildCampaignMovesReplenishmentBeforeFuturePeak()
         prebuildCampaigns: new[] { campaign });
 
     var prebuildOrder = run.ReplenishmentOrders.Single(order => order.Sku == sku.Sku && order.Week == 1);
-    var weekThreeOrderExists = run.ReplenishmentOrders.Any(order => order.Sku == sku.Sku && order.Week == 3);
+    var weekOne = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 1);
     var weekThree = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 3);
+    var weekThreeTrace = run.Traces.Single(item => item.Sku == sku.Sku && item.Week == 3);
+    var weekOneSizing = weekOne.Sizing ?? throw new InvalidOperationException("week one should carry period sizing");
+    var weekThreeSizing = weekThree.Sizing ?? throw new InvalidOperationException("week three should carry period sizing");
 
     AssertEqual("PrebuildCampaign", prebuildOrder.Trigger, "prebuild trigger");
-    AssertEqual(1000, prebuildOrder.Quantity, "prebuild quantity");
-    AssertTrue(!weekThreeOrderExists, "prebuild should prevent peak-week replenishment");
-    AssertEqual(1950, weekThree.EndNetFlowBeforeReplenishment, "week three protected net flow");
+    AssertEqual(campaign.Quantity, prebuildOrder.Quantity, "prebuild quantity");
+    AssertEqual(weekOneSizing.Zones.TopOfGreen + campaign.Quantity, weekOne.StartNetFlow, "prebuild should raise week one start net flow");
+    AssertEqual(weekOne.StartNetFlow, weekThree.StartNetFlow, "prebuild should protect the start of the peak week");
+    AssertEqual(weekThreeSizing.Zones.TopOfGreen + weekThree.Demand, weekThree.StartNetFlow, "prebuild should cover peak demand above the period target");
+    AssertEqual(weekThreeSizing.Zones.TopOfGreen, weekThree.EndNetFlowBeforeReplenishment, "week three protected net flow");
+    AssertTrue(!run.ReplenishmentOrders.Any(order => order.Sku == sku.Sku && order.Week == 3), "prebuild should prevent peak-week replenishment");
+    AssertEqual(
+        $"净流动量 {weekThree.EndNetFlowBeforeReplenishment:0} 高于黄区上沿 {weekThreeSizing.Zones.TopOfYellow:0}，不生成补货订单。",
+        weekThreeTrace.Explanation,
+        "peak-week calculation trace");
 }
 
 static void TestResourceCalendarAdjustmentChangesRccpCapacity()
@@ -5925,13 +5957,79 @@ static void TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail()
     AssertTrue(result.SkuDetails.All(item => item.BufferSizing.Count >= 7), "SKU detail should include buffer sizing lines");
     AssertTrue(result.SkuDetails.All(item => item.Bom.Count > 0), "SKU detail should include BOM components");
     AssertTrue(result.SkuDetails.All(item => item.OrderDetails.Count > 0), "SKU detail should include order details");
-    AssertTrue(result.SkuDetails.Any(item => item.Activities.Any(activity => activity.ActivityType == "订货周期复核")), "activities should explain order cycle review waits");
+    AssertTrue(result.SkuDetails.Any(item => item.Activities.Any(activity => activity.ActivityType == "补货订单生成")), "activities should explain replenishment decisions");
     AssertTrue(result.SkuDetails.Any(item => item.BufferSizing.Any(line => line.Formula.Contains("ADU", StringComparison.Ordinal))), "buffer sizing should expose DDMRP formulas");
     AssertTrue(result.SkuDetails.Any(item => item.Sku == result.SelectedSku), "selected SKU should exist in detail");
     AssertTrue(result.Series.Any(item => item.Status is "Red" or "Yellow" or "Green" or "Blue"), "series should expose display statuses");
     AssertTrue(result.Series.All(item => !string.IsNullOrWhiteSpace(item.PeriodStartDate)), "series should expose real time labels");
     AssertTrue(result.SkuDetails.Any(item => item.Series.Select(point => point.TopOfGreen).Distinct().Count() > 1), "time-phased DDMRP zones should vary across weeks");
     AssertTrue(result.Series.All(item => item.TopOfGreen > item.TopOfYellow && item.TopOfYellow > item.TopOfRed), "series should expose DDMRP zone tops");
+}
+
+static void TestFutureBufferTrendUsesBackendPeriodSizing()
+{
+    var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var run = DemandDrivenPlanningEngine.ProjectBuffers(data.Skus, data.Inventory, data.Demand, 12);
+    var plan = new DemandDrivenPlanResult(run.BufferProjections, run.ReplenishmentOrders,
+        Array.Empty<CapacityLoadProjection>(), Array.Empty<ProjectedSupplyRequirement>(), run.Traces);
+    var trend = BufferTrendWorkspaceService.Build(data, "baseline", "鍩哄噯鏂规", data.Skus, plan);
+    var detail = trend.SkuDetails.Single(item => item.Sku == "TC-MLI-301");
+
+    AssertTrue(detail.Series.All(item => item.Sizing is not null), "every trend point should carry backend sizing");
+    AssertTrue(detail.Series.Select(item => (item.TopOfRed, item.TopOfYellow, item.TopOfGreen)).Distinct().Count() >= 3,
+        "planned demand should create at least three zone combinations");
+    AssertTrue(detail.Series.All(item => item.TopOfRed <= item.TopOfYellow && item.TopOfYellow <= item.TopOfGreen),
+        "zone tops should stay ordered");
+    AssertTrue(detail.Series[3].Sizing!.PeriodAdu > detail.Series[4].Sizing!.PeriodAdu,
+        "week four demand peak should exceed the following trough");
+    AssertTrue(detail.Series.All(item => item.DemandSpikeThreshold is > 0m),
+        "demand spike threshold should come from the backend");
+
+    foreach (var point in detail.Series)
+    {
+        AssertEqual(point.Sizing!.Zones.TopOfRed, point.TopOfRed, $"top of red week {point.Week}");
+        AssertEqual(point.Sizing.Zones.TopOfYellow, point.TopOfYellow, $"top of yellow week {point.Week}");
+        AssertEqual(point.Sizing.Zones.TopOfGreen, point.TopOfGreen, $"top of green week {point.Week}");
+    }
+}
+
+static void TestBufferTrendMapsOrderCycleWaitToActivity()
+{
+    var sku = new SkuBufferSetting(
+        "SKU-CYCLE-ACTIVITY", "Cycle Activity Item", "Planning", 100, 5, 1.5m, 14, 700, 10m, 1000,
+        LeadTimeFactor: 0.6m,
+        ParameterSnapshotId: "SKU-CYCLE-ACTIVITY-V1",
+        ParameterEvidenceStatus: "Complete");
+    var inventory = new[] { new InventoryPosition(sku.Sku, 1800, 0, 0) };
+    var demand = new[]
+    {
+        new WeeklyDemand(sku.Sku, 1, 300),
+        new WeeklyDemand(sku.Sku, 2, 400),
+        new WeeklyDemand(sku.Sku, 3, 100),
+    };
+    var data = new SeedScenarioWorkspaceDataSource(SeedData.Create())
+        .Load(new ScenarioWorkspaceDataRequest(3, new DateOnly(2026, 6, 1))) with
+    {
+        Skus = new[] { sku },
+        Inventory = inventory,
+        Demand = demand,
+    };
+    var run = DemandDrivenPlanningEngine.ProjectBuffers(data.Skus, data.Inventory, data.Demand, 3);
+    var plan = new DemandDrivenPlanResult(run.BufferProjections, run.ReplenishmentOrders,
+        Array.Empty<CapacityLoadProjection>(), Array.Empty<ProjectedSupplyRequirement>(), run.Traces);
+    var trend = BufferTrendWorkspaceService.Build(data, "cycle-activity", "订货周期活动验证", data.Skus, plan);
+    var weekTwo = run.BufferProjections.Single(point => point.Sku == sku.Sku && point.Week == 2);
+    var weekTwoTrace = run.Traces.Single(item => item.Sku == sku.Sku && item.Week == 2);
+    var waitActivity = trend.SkuDetails.Single().Activities
+        .Single(item => item.Week == 2 && item.ActivityType == "订货周期复核");
+
+    AssertTrue(weekTwo.Sizing is not null, "wait projection should carry period sizing");
+    AssertTrue(!run.ReplenishmentOrders.Any(order => order.Sku == sku.Sku && order.Week == 2),
+        "non-review week should not create a replenishment order");
+    AssertEqual("等待", waitActivity.Direction, "wait activity direction");
+    AssertEqual(weekTwoTrace.Explanation, waitActivity.TriggerReason, "wait activity should preserve the backend trace");
+    AssertEqual(weekTwo.EndNetFlowBeforeReplenishment, waitActivity.ResultingNetFlow, "wait activity net flow");
 }
 
 static void TestScenarioPreviewReturnsBufferTrendComparison()

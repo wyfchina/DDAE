@@ -465,7 +465,9 @@ public sealed record BufferTrendSeriesPoint(
     decimal ReplenishmentQuantity,
     bool IsReplenishment,
     bool IsPrebuild,
-    string Status);
+    string Status,
+    DdmrpSizingResult? Sizing = null,
+    decimal? DemandSpikeThreshold = null);
 
 public sealed record BufferZoneBand(
     string Sku,
