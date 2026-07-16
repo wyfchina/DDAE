@@ -22,6 +22,9 @@ var tests = new (string Name, Action Run)[]
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
+    ("History facts expose versioned inventory time and capacity evidence", TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence),
+    ("History time-buffer costs exclude FPGA event evidence", TestHistoryTimeBufferCostsExcludeFpgaEventEvidence),
+    ("History capacity protection excludes FPGA routing evidence", TestHistoryCapacityProtectionExcludesFpgaRoutingEvidence),
     ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
@@ -719,6 +722,158 @@ static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
     }
 
     AssertTrue(failures.Count == 0, string.Join("; ", failures));
+}
+
+static void TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence()
+{
+    var data = SeedData.Create();
+    var historySource = new SeedHistoryOperatingFactSource(data);
+    var asOfDate = new DateOnly(2026, 6, 1);
+    var recent = historySource.Load(new HistoryFactRequest(26, asOfDate));
+    var annual = historySource.Load(new HistoryFactRequest(52, asOfDate));
+    var expectedInventorySkus = new[]
+    {
+        "AV-COM-201",
+        "AV-FPGA-203",
+        "AV-OBC-202",
+        "TC-MLI-301",
+        "TC-RAD-302",
+    };
+
+    AssertEqual(26, recent.BufferFacts.Select(item => item.WeekOffset).Distinct().Count(), "recent buffer weeks");
+    AssertEqual(52, annual.BufferFacts.Select(item => item.WeekOffset).Distinct().Count(), "annual buffer weeks");
+    AssertEqual(expectedInventorySkus.Length * 52, annual.BufferFacts.Count, "annual buffer fact count");
+    AssertTrue(
+        annual.BufferFacts.Select(item => item.Sku).Distinct().OrderBy(item => item, StringComparer.Ordinal)
+            .SequenceEqual(expectedInventorySkus, StringComparer.Ordinal),
+        "history should contain exactly the five specified inventory SKUs");
+    AssertTrue(
+        expectedInventorySkus.All(sku => annual.BufferFacts.Count(item => item.Sku == sku) == 52),
+        "every historical inventory SKU should cover 52 weeks");
+    AssertTrue(
+        annual.BufferFacts.All(item => item.WeekOffset < 0 && item.EndingOnHand is not null && item.OpenSupply is not null && item.QualifiedDemand is not null),
+        "inventory components should be explicit and strictly historical");
+    AssertTrue(
+        annual.BufferFacts.All(item => item.EndingNetFlow == item.EndingOnHand + item.OpenSupply - item.QualifiedDemand),
+        "inventory components should reconcile to net flow");
+
+    var parameterFacts = annual.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>();
+    var recentParameterFacts = recent.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>();
+    AssertEqual(expectedInventorySkus.Length * 2, parameterFacts.Count, "annual DDMRP parameter version count");
+    AssertEqual(expectedInventorySkus.Length, recentParameterFacts.Count, "recent effective DDMRP parameter version count");
+    AssertTrue(parameterFacts.Select(item => item.SnapshotId).Distinct().Count() >= 2, "history should contain at least two parameter versions");
+    AssertTrue(
+        parameterFacts.All(item => item.EffectiveFromWeekOffset < 0 && item.EffectiveThroughWeekOffset < 0),
+        "parameter versions should remain strictly historical");
+    foreach (var sku in expectedInventorySkus)
+    {
+        var sourceSetting = data.Skus.Single(item => item.Sku == sku);
+        var versions = parameterFacts.Where(item => item.Sku == sku).OrderBy(item => item.EffectiveFromWeekOffset).ToList();
+        AssertEqual(2, versions.Count, $"{sku} parameter version count");
+        AssertEqual($"HIST-{sku}-V1", versions[0].SnapshotId, $"{sku} prior snapshot ID");
+        AssertEqual(-52, versions[0].EffectiveFromWeekOffset, $"{sku} prior snapshot start");
+        AssertEqual(-27, versions[0].EffectiveThroughWeekOffset, $"{sku} prior snapshot end");
+        AssertEqual($"HIST-{sku}-V2", versions[1].SnapshotId, $"{sku} current snapshot ID");
+        AssertEqual(-26, versions[1].EffectiveFromWeekOffset, $"{sku} current snapshot start");
+        AssertEqual(-1, versions[1].EffectiveThroughWeekOffset, $"{sku} current snapshot end");
+        AssertTrue(versions.All(item => item.ControlPoint == sourceSetting.DecouplingPoint), $"{sku} control point should come from registered validation data");
+        AssertTrue(versions.All(item => item.AsOfUtc == "2026-06-01T23:59:59Z"), $"{sku} immutable parameter cutoff");
+    }
+
+    AssertTrue(
+        annual.BufferFacts.All(buffer => parameterFacts.Count(parameter =>
+            parameter.Sku == buffer.Sku &&
+            parameter.ControlPoint == buffer.ControlPoint &&
+            parameter.SnapshotId == buffer.ParameterSnapshotId &&
+            parameter.EffectiveFromWeekOffset <= buffer.WeekOffset &&
+            buffer.WeekOffset <= parameter.EffectiveThroughWeekOffset) == 1),
+        "every historical buffer point should reference exactly one effective parameter snapshot");
+
+    var timeBufferFacts = annual.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>();
+    AssertEqual(52, timeBufferFacts.Select(item => item.WeekOffset).Distinct().Count(), "time-buffer weeks");
+    AssertTrue(timeBufferFacts.All(item => item.WeekOffset < 0 && item.BufferId == "MS-TB-001"), "time-buffer facts should be strictly historical and source-owned");
+    AssertTrue(timeBufferFacts.Any(item => item.EarlyCount > 0), "time buffer should contain early samples");
+    AssertTrue(timeBufferFacts.Any(item => item.GreenCount > 0), "time buffer should contain green samples");
+    AssertTrue(timeBufferFacts.Any(item => item.YellowCount > 0), "time buffer should contain yellow samples");
+    AssertTrue(timeBufferFacts.Any(item => item.RedCount > 0), "time buffer should contain red samples");
+    AssertTrue(timeBufferFacts.Any(item => item.LateCount > 0), "time buffer should contain late samples");
+    var linkedCostFacts = timeBufferFacts.Where(item => item.AbnormalCost is not null).ToList();
+    AssertTrue(linkedCostFacts.Count > 0, "time-buffer history should link explicit abnormal-cost events");
+    AssertTrue(
+        linkedCostFacts.All(item => item.AbnormalCostEventId is not null && annual.AbnormalCosts.Count(cost =>
+            cost.EventId == item.AbnormalCostEventId && cost.WeekOffset == item.WeekOffset && cost.CostAmount == item.AbnormalCost) == 1),
+        "time-buffer cost facts should reconcile to their linked event");
+
+    var protectionFacts = annual.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>();
+    AssertTrue(protectionFacts.All(item => item.EffectiveFromWeekOffset < 0 && item.EffectiveThroughWeekOffset < 0), "capacity protection should remain strictly historical");
+    AssertTrue(protectionFacts.Any(item =>
+        item.UpstreamResourceCode == "RES-AIT" &&
+        item.ProtectedCcrResourceCode == "RES-HARNESS" &&
+        item.UpstreamOperationSequence < item.CcrOperationSequence &&
+        item.ReservePercent == 20m),
+        "historical sequence evidence should protect the CCR from upstream");
+    var aitLoadPercentages = annual.CapacityFacts
+        .Where(item => item.ResourceCode == "RES-AIT" && item.PlannedAvailableCapacity > 0m && item.CommittedLoad is not null)
+        .Select(item => decimal.Round(item.CommittedLoad!.Value * 100m / item.PlannedAvailableCapacity!.Value, 0))
+        .Distinct()
+        .ToList();
+    AssertTrue(new[] { 52m, 68m, 86m, 104m }.All(target => aitLoadPercentages.Contains(target)), "capacity facts should sample safe, high-load, near-limit and overload categories");
+
+    var unsequencedData = data with
+    {
+        ResourceRoutings = data.ResourceRoutings
+            .Select(item => item.ProtectsCcrResourceCode is null ? item : item with { OperationSequence = 0 })
+            .ToList()
+    };
+    var unsequencedFacts = new SeedHistoryOperatingFactSource(unsequencedData)
+        .Load(new HistoryFactRequest(52, asOfDate));
+    AssertEqual(0, (unsequencedFacts.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>()).Count, "unsequenced capacity protection fact count");
+
+    AssertTrue(annual.BufferFacts.Any(item => item.Sku == "AV-FPGA-203"), "FPGA should remain in inventory history");
+    AssertTrue(
+        timeBufferFacts.All(item => !string.Join(" ", item.BufferId, item.ControlPoint, item.ProtectedActivity, item.ExplicitCause).Contains("FPGA", StringComparison.OrdinalIgnoreCase)) &&
+        protectionFacts.All(item => !string.Join(" ", item.SnapshotId, item.UpstreamResourceCode, item.ProtectedCcrResourceCode).Contains("FPGA", StringComparison.OrdinalIgnoreCase)),
+        "FPGA must not enter time-buffer or capacity-protection facts");
+}
+
+static void TestHistoryTimeBufferCostsExcludeFpgaEventEvidence()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var costsById = facts.AbnormalCosts.ToDictionary(item => item.EventId, StringComparer.Ordinal);
+    var linkedEvents = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+        .Where(item => item.AbnormalCostEventId is not null)
+        .Select(item => costsById[item.AbnormalCostEventId!])
+        .ToList();
+
+    AssertTrue(linkedEvents.Count > 0, "time-buffer history should retain eligible abnormal-cost links");
+    AssertTrue(
+        linkedEvents.All(item => !item.Cause.Contains("FPGA", StringComparison.OrdinalIgnoreCase)),
+        "time-buffer cost links must not lead back to FPGA evidence");
+}
+
+static void TestHistoryCapacityProtectionExcludesFpgaRoutingEvidence()
+{
+    var data = SeedData.Create();
+    var fpgaRoutes = new[]
+    {
+        new ResourceRouting("AV-FPGA-203", "RES-AIT", 1m, 1, "RES-HARNESS", "Complete"),
+        new ResourceRouting("AV-FPGA-203", "RES-HARNESS", 1m, 2, null, "Complete"),
+    };
+    var mixed = new SeedHistoryOperatingFactSource(data with
+        {
+            ResourceRoutings = data.ResourceRoutings.Concat(fpgaRoutes).ToList()
+        })
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var mixedProtection = (mixed.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>()).Single();
+    var fpgaOnly = new SeedHistoryOperatingFactSource(data with { ResourceRoutings = fpgaRoutes })
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+
+    AssertTrue(
+        mixedProtection.UpstreamOperationSequence == 10 &&
+        mixedProtection.CcrOperationSequence == 20 &&
+        (fpgaOnly.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>()).Count == 0,
+        "capacity protection must retain eligible sequence evidence and reject FPGA-only routing evidence");
 }
 
 static void TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts()

@@ -16,6 +16,49 @@ public sealed record WeeklyBufferFact(
     int WeekOffset,
     decimal? EndingNetFlow,
     string ExplicitCause,
+    string EvidenceStatus,
+    decimal? EndingOnHand = null,
+    decimal? OpenSupply = null,
+    decimal? QualifiedDemand = null,
+    string ControlPoint = "",
+    string? ParameterSnapshotId = null);
+
+public sealed record WeeklyTimeBufferFact(
+    string BufferId,
+    string ControlPoint,
+    string ProtectedActivity,
+    int WeekOffset,
+    int? EarlyCount,
+    int? GreenCount,
+    int? YellowCount,
+    int? RedCount,
+    int? LateCount,
+    decimal? AbnormalCost,
+    string? AbnormalCostEventId,
+    string ExplicitCause,
+    string EvidenceStatus);
+
+public sealed record HistoricalDdmrpParameterFact(
+    string SnapshotId,
+    string Sku,
+    string Name,
+    string ControlPoint,
+    int EffectiveFromWeekOffset,
+    int EffectiveThroughWeekOffset,
+    SkuBufferSetting Setting,
+    string SourceAuthority,
+    string AsOfUtc,
+    string EvidenceStatus);
+
+public sealed record HistoricalCapacityProtectionFact(
+    string SnapshotId,
+    string UpstreamResourceCode,
+    string ProtectedCcrResourceCode,
+    int UpstreamOperationSequence,
+    int CcrOperationSequence,
+    decimal ReservePercent,
+    int EffectiveFromWeekOffset,
+    int EffectiveThroughWeekOffset,
     string EvidenceStatus);
 
 public sealed record WeeklyCapacityFact(
@@ -56,7 +99,10 @@ public sealed record HistoryFactSet(
     IReadOnlyList<HistoryAbnormalCostEvent> AbnormalCosts,
     string SourceAuthority,
     string AsOfUtc,
-    string EvidenceLabel);
+    string EvidenceLabel,
+    IReadOnlyList<WeeklyTimeBufferFact>? TimeBufferFacts = null,
+    IReadOnlyList<HistoricalDdmrpParameterFact>? DdmrpParameterFacts = null,
+    IReadOnlyList<HistoricalCapacityProtectionFact>? CapacityProtectionFacts = null);
 
 public interface IHistoryOperatingFactSource
 {

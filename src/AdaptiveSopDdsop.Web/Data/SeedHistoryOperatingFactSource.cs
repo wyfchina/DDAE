@@ -6,27 +6,64 @@ namespace AdaptiveSopDdsop.Web.Data;
 public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
 {
     private static readonly IReadOnlyList<WeeklyOperatingFact> OperatingFacts = BuildOperatingFacts();
-    private static readonly IReadOnlyList<WeeklyBufferFact> BufferFacts = BuildBufferFacts();
     private static readonly IReadOnlyList<WeeklyCapacityFact> CapacityFacts = BuildCapacityFacts();
     private static readonly IReadOnlyList<HistoryConstraintFact> ConstraintFacts = BuildConstraintFacts();
     private static readonly IReadOnlyList<HistoryAbnormalCostEvent> AbnormalCosts = BuildAbnormalCosts();
+    private static readonly string[] HistoricalInventorySkus =
+    {
+        "AV-COM-201",
+        "AV-OBC-202",
+        "AV-FPGA-203",
+        "TC-MLI-301",
+        "TC-RAD-302",
+    };
+    private static readonly HashSet<string> TimeBufferCostEventIds = new(StringComparer.Ordinal)
+    {
+        "HAC-2026-002",
+        "HAC-2025-003",
+    };
+
+    private readonly ValidationData _data;
+    private readonly IReadOnlyList<WeeklyBufferFact> _bufferFacts;
+    private readonly IReadOnlyList<WeeklyTimeBufferFact> _timeBufferFacts;
+    private readonly IReadOnlyList<HistoricalDdmrpParameterFact> _ddmrpParameterFacts;
+    private readonly IReadOnlyList<HistoricalCapacityProtectionFact> _capacityProtectionFacts;
+
+    public SeedHistoryOperatingFactSource() : this(SeedData.Create()) { }
+
+    public SeedHistoryOperatingFactSource(ValidationData data)
+    {
+        _data = data;
+        _ddmrpParameterFacts = BuildDdmrpParameterFacts(data.Skus);
+        _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts);
+        _timeBufferFacts = BuildTimeBufferFacts();
+        _capacityProtectionFacts = BuildCapacityProtectionFacts();
+    }
 
     public HistoryFactSet Load(HistoryFactRequest request)
     {
         var weeks = Math.Clamp(request.Weeks, 1, 52);
         var normalizedRequest = request with { Weeks = weeks };
         bool InWindow(int weekOffset) => weekOffset < 0 && Math.Abs(weekOffset) <= weeks;
+        bool HistoricalRangeOverlapsWindow(int effectiveFromWeekOffset, int effectiveThroughWeekOffset) =>
+            effectiveFromWeekOffset <= effectiveThroughWeekOffset &&
+            effectiveFromWeekOffset < 0 &&
+            effectiveThroughWeekOffset < 0 &&
+            effectiveThroughWeekOffset >= -weeks;
 
         return new HistoryFactSet(
             normalizedRequest,
             OperatingFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
-            BufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            _bufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             CapacityFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             ConstraintFacts.Where(item => item.WeekOffset is null || InWindow(item.WeekOffset.Value)).ToList(),
             AbnormalCosts.Where(item => InWindow(item.WeekOffset)).ToList(),
             "DDAE DemoFixture explicit historical operating ledger",
             $"{request.AsOfDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}T23:59:59Z",
-            $"DemoFixture / Explicit52WeekHistory / {weeks}-week historical window");
+            $"DemoFixture / Explicit52WeekHistory / {weeks}-week historical window",
+            _timeBufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            _ddmrpParameterFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList(),
+            _capacityProtectionFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList());
     }
 
     private static IReadOnlyList<WeeklyOperatingFact> BuildOperatingFacts()
@@ -47,44 +84,105 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             .ToList();
     }
 
-    private static IReadOnlyList<WeeklyBufferFact> BuildBufferFacts()
+    private static IReadOnlyList<HistoricalDdmrpParameterFact> BuildDdmrpParameterFacts(
+        IReadOnlyList<SkuBufferSetting> skus)
     {
-        var buffers = new (string Sku, decimal ReferenceFlow)[]
-        {
-            ("AV-COM-201", 7.2m),
-            ("AV-OBC-202", 6.4m),
-            ("AV-FPGA-203", 2.9m),
-            ("TC-MLI-301", 20m),
-            ("TC-RAD-302", 15m),
-        };
+        const string fixtureCutoff = "2026-06-01T23:59:59Z";
+        const string sourceAuthority = "DDAE DemoFixture registered validation data";
 
-        return buffers
-            .SelectMany(buffer => Enumerable.Range(1, 52).Select(week =>
+        return HistoricalInventorySkus
+            .SelectMany(sku =>
             {
-                var factor = (week % 8) switch
+                var sourceSetting = skus.Single(item => item.Sku == sku);
+                var currentSetting = sourceSetting with
                 {
-                    0 => 0.55m,
-                    1 => 0.75m,
-                    2 => 1.05m,
-                    3 => 1.35m,
-                    4 => 1.75m,
-                    5 => 2.10m,
-                    6 => 1.55m,
-                    _ => 1.15m,
+                    ParameterSnapshotId = $"HIST-{sourceSetting.Sku}-V2",
+                    ParameterEvidenceStatus = "Complete"
                 };
-                var cause = factor <= 0.75m
+                var priorSetting = sourceSetting with
+                {
+                    Adu = decimal.Round(sourceSetting.Adu * 1.12m, 2),
+                    LeadTimeFactor = Math.Min(1m, sourceSetting.LeadTimeFactor!.Value + 0.10m),
+                    VariabilityFactor = Math.Min(1m, sourceSetting.VariabilityFactor + 0.10m),
+                    ParameterSnapshotId = $"HIST-{sourceSetting.Sku}-V1",
+                    ParameterEvidenceStatus = "Complete"
+                };
+
+                return new[]
+                {
+                    new HistoricalDdmrpParameterFact(
+                        priorSetting.ParameterSnapshotId,
+                        priorSetting.Sku,
+                        priorSetting.Name,
+                        priorSetting.DecouplingPoint,
+                        -52,
+                        -27,
+                        priorSetting,
+                        sourceAuthority,
+                        fixtureCutoff,
+                        "Complete"),
+                    new HistoricalDdmrpParameterFact(
+                        currentSetting.ParameterSnapshotId,
+                        currentSetting.Sku,
+                        currentSetting.Name,
+                        currentSetting.DecouplingPoint,
+                        -26,
+                        -1,
+                        currentSetting,
+                        sourceAuthority,
+                        fixtureCutoff,
+                        "Complete"),
+                };
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<WeeklyBufferFact> BuildBufferFacts(
+        IReadOnlyList<HistoricalDdmrpParameterFact> parameterFacts)
+    {
+        return HistoricalInventorySkus
+            .SelectMany(sku => Enumerable.Range(1, 52).Select(week =>
+            {
+                var weekOffset = -week;
+                var parameter = parameterFacts.Single(item =>
+                    item.Sku == sku &&
+                    item.EffectiveFromWeekOffset <= weekOffset &&
+                    weekOffset <= item.EffectiveThroughWeekOffset);
+                var sizing = DdmrpCalculator.CalculateSizing(parameter.Setting);
+                var targetNetFlow = (week % 8) switch
+                {
+                    0 => sizing.Zones.TopOfRed * 0.55m,
+                    1 => sizing.Zones.TopOfRed * 0.90m,
+                    2 => (sizing.Zones.TopOfRed + sizing.Zones.TopOfYellow) / 2m,
+                    3 => sizing.Zones.TopOfYellow * 0.95m,
+                    4 => (sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m,
+                    5 => sizing.Zones.TopOfGreen * 0.85m,
+                    6 => sizing.Zones.TopOfGreen * 1.12m,
+                    _ => sizing.Zones.TopOfGreen * 0.72m
+                };
+                var endingOnHand = decimal.Round(targetNetFlow * 0.72m, 1);
+                var openSupply = decimal.Round(targetNetFlow * 0.38m, 1);
+                var qualifiedDemand = decimal.Round(endingOnHand + openSupply - targetNetFlow, 1);
+                var endingNetFlow = endingOnHand + openSupply - qualifiedDemand;
+                var cause = targetNetFlow <= sizing.Zones.TopOfRed
                     ? "供应交期延迟"
                     : week % 11 == 0
                         ? "需求超预期"
-                        : factor >= 2m
+                        : targetNetFlow > sizing.Zones.TopOfGreen
                             ? "集中补货到货"
                             : "计划补充与消耗";
+
                 return new WeeklyBufferFact(
-                    buffer.Sku,
-                    -week,
-                    decimal.Round(buffer.ReferenceFlow * factor, 1),
+                    sku,
+                    weekOffset,
+                    endingNetFlow,
                     cause,
-                    "Complete");
+                    "Complete",
+                    endingOnHand,
+                    openSupply,
+                    qualifiedDemand,
+                    parameter.ControlPoint,
+                    parameter.SnapshotId);
             }))
             .ToList();
     }
@@ -103,18 +201,119 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             .SelectMany(resource => Enumerable.Range(1, 52).Select(week =>
             {
                 var age = (week - 1) / 51m;
+                var plannedAvailableCapacity = decimal.Round(resource.RecentPlannedCapacity - resource.PlannedAgeDelta * age, 1);
+                var committedLoadRatio = (week % 4) switch
+                {
+                    0 => 0.52m,
+                    1 => 0.68m,
+                    2 => 0.86m,
+                    _ => 1.04m,
+                };
                 return new WeeklyCapacityFact(
                     resource.ResourceCode,
                     -week,
                     resource.TheoreticalCapacity,
                     resource.StandardCapacity,
                     decimal.Round(resource.RecentDemonstratedCapacity - resource.DemonstratedAgeDelta * age, 1),
-                    decimal.Round(resource.RecentPlannedCapacity - resource.PlannedAgeDelta * age, 1),
-                    decimal.Round(resource.RecentCommittedLoad + resource.CommittedAgeDelta * age, 1),
+                    plannedAvailableCapacity,
+                    decimal.Round(plannedAvailableCapacity * committedLoadRatio, 1),
                     resource.LossReason,
                     "Complete");
             }))
             .ToList();
+    }
+
+    private static IReadOnlyList<WeeklyTimeBufferFact> BuildTimeBufferFacts()
+    {
+        return Enumerable.Range(1, 52)
+            .Select(week =>
+            {
+                var weekOffset = -week;
+                var counts = (week % 8) switch
+                {
+                    0 => (Early: 2, Green: 6, Yellow: 2, Red: 1, Late: 0),
+                    1 => (Early: 1, Green: 8, Yellow: 1, Red: 0, Late: 0),
+                    2 => (Early: 0, Green: 7, Yellow: 3, Red: 1, Late: 0),
+                    3 => (Early: 0, Green: 5, Yellow: 3, Red: 2, Late: 1),
+                    4 => (Early: 1, Green: 6, Yellow: 2, Red: 1, Late: 1),
+                    5 => (Early: 3, Green: 6, Yellow: 1, Red: 0, Late: 0),
+                    6 => (Early: 0, Green: 4, Yellow: 3, Red: 2, Late: 2),
+                    _ => (Early: 1, Green: 7, Yellow: 2, Red: 0, Late: 1),
+                };
+                var costEvent = AbnormalCosts.SingleOrDefault(item =>
+                    item.WeekOffset == weekOffset && TimeBufferCostEventIds.Contains(item.EventId));
+                var cause = costEvent is not null
+                    ? "异常成本事件已关联"
+                    : counts.Late > 0
+                        ? "试验件到位偏晚"
+                        : counts.Red > 0
+                            ? "准备活动进入红色时间带"
+                            : "准备活动按窗口推进";
+
+                return new WeeklyTimeBufferFact(
+                    "MS-TB-001",
+                    "热真空试验准备控制点",
+                    "试验件到位与热真空窗口准备",
+                    weekOffset,
+                    counts.Early,
+                    counts.Green,
+                    counts.Yellow,
+                    counts.Red,
+                    counts.Late,
+                    costEvent?.CostAmount,
+                    costEvent?.EventId,
+                    cause,
+                    "Complete");
+            })
+            .ToList();
+    }
+
+    private IReadOnlyList<HistoricalCapacityProtectionFact> BuildCapacityProtectionFacts()
+    {
+        var sequenceEvidence = new List<(ResourceRouting Upstream, ResourceRouting Ccr)>();
+        foreach (var upstream in _data.ResourceRoutings.Where(item =>
+                     ProtectionProductEligibility.IsEligible(item.Sku) &&
+                     item.ResourceCode == "RES-AIT" &&
+                     item.ProtectsCcrResourceCode == "RES-HARNESS" &&
+                     item.OperationSequence > 0 &&
+                     item.EvidenceStatus == "Complete"))
+        {
+            var ccr = _data.ResourceRoutings
+                .Where(item =>
+                    item.Sku == upstream.Sku &&
+                    item.ResourceCode == upstream.ProtectsCcrResourceCode &&
+                    item.OperationSequence > upstream.OperationSequence &&
+                    item.EvidenceStatus == "Complete")
+                .OrderBy(item => item.OperationSequence)
+                .FirstOrDefault();
+            if (ccr is not null)
+            {
+                sequenceEvidence.Add((upstream, ccr));
+            }
+        }
+
+        if (sequenceEvidence.Count == 0)
+        {
+            return Array.Empty<HistoricalCapacityProtectionFact>();
+        }
+
+        var selected = sequenceEvidence
+            .OrderBy(item => item.Upstream.OperationSequence)
+            .ThenBy(item => item.Ccr.OperationSequence)
+            .First();
+        return new[]
+        {
+            new HistoricalCapacityProtectionFact(
+                "HIST-RES-AIT-RES-HARNESS-V1",
+                selected.Upstream.ResourceCode,
+                selected.Ccr.ResourceCode,
+                selected.Upstream.OperationSequence,
+                selected.Ccr.OperationSequence,
+                20m,
+                -52,
+                -1,
+                "Complete"),
+        };
     }
 
     private static IReadOnlyList<HistoryConstraintFact> BuildConstraintFacts()
