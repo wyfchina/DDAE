@@ -793,6 +793,7 @@ function baselineSectionLabel(name) {
 function businessEvidenceLabel(value) {
   return String(metricOrEvidenceMissing(value))
     .replace(/\bDemoFixture\b/g, "演示数据")
+    .replace(/\bregistered validation data\b/gi, "登记校验证据")
     .replace(/\bEvidenceMissing\b/g, "证据缺失")
     .replace(/\bNotApplicable\b/g, "不适用")
     .replace(/\bInProgress\b/g, "进行中")
@@ -4259,6 +4260,49 @@ function renderHistoryDdmrpSizingTrace(history) {
   renderHistoryDdmrpZoneSvg(item);
 }
 
+function renderHistoryStandardDdmrpReference(history) {
+  const item = history.standardDdmrpReference;
+  const zones = item?.sizing?.zones;
+  const hasCompleteZones = zones && [zones.red, zones.yellow, zones.green].every(isFiniteHistoryValue);
+  if (!item?.setting || !hasCompleteZones || item.evidenceStatus !== "Complete" || item.sizing.evidenceStatus !== "Complete") {
+    byId("history-standard-ddmrp-input-summary").innerHTML = `<div><dt>标准算例</dt><dd>证据缺失</dd></div>`;
+    renderHistoryMissing("history-standard-ddmrp-zone-chart", "后端标准定容算例证据缺失");
+    return;
+  }
+
+  const inputRows = [
+    ["计算方式", "后端计算"],
+    ["ADU", item.setting.adu],
+    ["DLT", `${number(item.setting.decoupledLeadTimeDays)} 天`],
+    ["提前期因子", item.setting.leadTimeFactor],
+    ["变异因子", item.setting.variabilityFactor],
+    ["订货周期", `${number(item.setting.orderCycleDays)} 天`],
+    ["MOQ", item.setting.minimumOrderQuantity],
+    ["DAF", item.setting.demandAdjustmentFactor],
+    ["区域调整", item.setting.zoneAdjustmentFactor],
+    ["参数快照", item.snapshotId],
+    ["来源", businessEvidenceLabel(item.sourceAuthority)],
+    ["证据", evidenceStatusLabel(item.evidenceStatus)],
+  ];
+  byId("history-standard-ddmrp-input-summary").innerHTML = inputRows
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(metricOrEvidenceMissing(value))}</dd></div>`)
+    .join("");
+
+  const red = item.sizing.zones.red;
+  const yellow = item.sizing.zones.yellow;
+  const green = item.sizing.zones.green;
+  const greenDriver = item.sizing.greenDriver === "OrderCycle"
+    ? "订货周期驱动"
+    : `${historyGreenDriverLabel(item.sizing.greenDriver)}驱动`;
+  byId("history-standard-ddmrp-zone-chart").innerHTML = `
+    <div class="history-standard-zone-stack" role="img" aria-label="后端标准算例：红区 ${number(red)}，黄区 ${number(yellow)}，绿区 ${number(green)}">
+      <div class="is-green"><span>绿区</span><strong>${number(green)}</strong></div>
+      <div class="is-yellow"><span>黄区</span><strong>${number(yellow)}</strong></div>
+      <div class="is-red"><span>红区</span><strong>${number(red)}</strong></div>
+    </div>
+    <div class="history-standard-zone-caption"><strong>${escapeHtml(greenDriver)}</strong><span>全部数值来自 DDAE 后端标准定容算例</span></div>`;
+}
+
 function renderHistoryTimeBuffer(history) {
   const item = (history.timeBuffers || []).find(candidate => candidate.bufferId === state.selectedHistoryTimeBufferId);
   const host = byId("history-time-buffer-chart");
@@ -4490,6 +4534,7 @@ function renderHistoryReview(history) {
 
   renderHistoryBufferOverview(history);
   renderHistoryInventoryBuffer(history);
+  renderHistoryStandardDdmrpReference(history);
   renderHistoryDdmrpSizingTrace(history);
   renderHistoryTimeBuffer(history);
   renderHistoryCapacityBuffer(history);

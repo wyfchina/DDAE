@@ -148,18 +148,8 @@ function clickHistorySelector(runtime, selector, dataset) {
   });
 }
 
-function standardRendererFixture(historyReview) {
+function rendererFixtureWithInventoryGap(historyReview) {
   const fixture = structuredClone(historyReview);
-  const sizing = fixture.ddmrpSizingSnapshots[0];
-  assert.ok(sizing, "real history DTO should contain a sizing snapshot");
-  sizing.sizing.zones = { red: 80, yellow: 120, green: 70, topOfRed: 80, topOfYellow: 200, topOfGreen: 270 };
-  sizing.sizing.greenDriver = "OrderCycle";
-  sizing.averageOnHand = 135;
-  sizing.sizingLines = [
-    { component: "红区", formula: "后端红区定容证据", value: 80, explanation: "冻结参数快照" },
-    { component: "黄区", formula: "后端黄区定容证据", value: 120, explanation: "冻结参数快照" },
-    { component: "绿区", formula: "后端绿区定容证据", value: 70, explanation: "订货周期驱动" },
-  ];
   const inventoryPoints = fixture.inventoryBuffers[0].points;
   const gap = inventoryPoints[Math.floor(inventoryPoints.length / 2)];
   Object.assign(gap, {
@@ -174,7 +164,7 @@ function standardRendererFixture(historyReview) {
   return fixture;
 }
 
-export async function runHistoryBufferRendererFixtures(historyReview, scriptPath = defaultScriptPath) {
+export async function runHistoryBufferRendererFixtures(historyReview, alternateHistoryReview, scriptPath = defaultScriptPath) {
   assert.ok(historyReview?.inventoryBuffers?.length, "real history DTO should include inventory buffers");
   assert.ok(historyReview?.timeBuffers?.length, "real history DTO should include time buffers");
   assert.ok(historyReview?.capacityBuffers?.length, "real history DTO should include capacity buffers");
@@ -183,16 +173,24 @@ export async function runHistoryBufferRendererFixtures(historyReview, scriptPath
   console.log("PASS app.js syntax compiles");
 
   const runtime = createRuntime(source);
-  const fixture = standardRendererFixture(historyReview);
+  const fixture = rendererFixtureWithInventoryGap(historyReview);
   runtime.context.__historyFixture = fixture;
   vm.runInContext("renderHistoryReview(__historyFixture)", runtime.context);
+  const standardInput = runtime.elements.get("history-standard-ddmrp-input-summary").innerHTML;
+  const standardChart = runtime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
+  const historicalInput = runtime.elements.get("history-ddmrp-input-summary").innerHTML;
   const sizingTable = runtime.elements.get("history-ddmrp-sizing-body").innerHTML;
   const zoneChart = runtime.elements.get("history-ddmrp-zone-chart").innerHTML;
   const inventoryChart = runtime.elements.get("history-inventory-chart").innerHTML;
   const timeChart = runtime.elements.get("history-time-buffer-chart").innerHTML;
   const capacityChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
-  assert.ok(["80", "120", "70"].every(value => sizingTable.includes(`>${value}<`)));
-  assert.ok(zoneChart.includes("红区 80") && zoneChart.includes("黄区 120") && zoneChart.includes("绿区 70"));
+  assert.ok(standardInput.includes("ADU") && standardInput.includes("10") && standardInput.includes("DLT") && standardInput.includes("12"));
+  assert.ok(standardInput.includes("后端计算") && standardInput.includes("DDAE 后端标准定容算例"));
+  assert.ok(standardChart.includes("红区 80") && standardChart.includes("黄区 120") && standardChart.includes("绿区 70"));
+  assert.ok(standardChart.includes("订货周期驱动"));
+  assert.ok(historicalInput.includes("登记校验证据"), "historical source should localize registered validation evidence");
+  assert.ok(!historicalInput.includes("registered validation data"), "historical source must not expose ordinary English wording");
+  assert.ok(sizingTable.includes("生效") || zoneChart.includes("生效周段"), "historical snapshot evidence should remain visible");
   assert.ok(zoneChart.includes("生效周段") && zoneChart.includes("证据"));
   assert.ok((inventoryChart.match(/history-series-line is-on-hand/g) || []).length >= 2, "inventory gap should split the line");
   assert.ok(inventoryChart.includes("证据缺失"), "missing inventory evidence should not become zero");
@@ -223,6 +221,38 @@ export async function runHistoryBufferRendererFixtures(historyReview, scriptPath
   const gapSegments = vm.runInContext("contiguousEvidenceSegments([{ value: 1 }, { value: null }, { value: 2 }], point => point.value !== null).map(segment => segment.map(point => point.value))", runtime.context);
   assert.equal(JSON.stringify(gapSegments), "[[1],[2]]");
   console.log("PASS backend sizing, gaps, five time bands, and capacity layers render");
+
+  assert.ok(alternateHistoryReview?.standardDdmrpReference?.sizing?.zones,
+    "alternate history DTO should include backend sizing evidence");
+  const baseZones = historyReview.standardDdmrpReference.sizing.zones;
+  const alternateZones = alternateHistoryReview.standardDdmrpReference.sizing.zones;
+  assert.notDeepEqual(
+    [alternateZones.red, alternateZones.yellow, alternateZones.green],
+    [baseZones.red, baseZones.yellow, baseZones.green],
+    "alternate backend sizing must differ from the standard 80/120/70 reference");
+  const alternateRuntime = createRuntime(source);
+  alternateRuntime.context.__historyFixture = structuredClone(alternateHistoryReview);
+  vm.runInContext("renderHistoryReview(__historyFixture)", alternateRuntime.context);
+  const alternateInput = alternateRuntime.elements.get("history-standard-ddmrp-input-summary").innerHTML;
+  const alternateChart = alternateRuntime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
+  assert.ok(alternateInput.includes(`>${alternateHistoryReview.standardDdmrpReference.setting.adu}<`),
+    "standard input should follow the alternate backend ADU");
+  assert.ok(alternateChart.includes(`红区 ${alternateZones.red}`));
+  assert.ok(alternateChart.includes(`黄区 ${alternateZones.yellow}`));
+  assert.ok(alternateChart.includes(`绿区 ${alternateZones.green}`));
+  assert.ok(!alternateChart.includes(`红区 ${baseZones.red}`), "alternate chart must not retain the base red-zone result");
+  console.log("PASS alternate backend sizing drives standard renderer");
+
+  const missingStandardRuntime = createRuntime(source);
+  const missingStandardFixture = structuredClone(historyReview);
+  missingStandardFixture.standardDdmrpReference.sizing.zones.red = null;
+  missingStandardRuntime.context.__historyFixture = missingStandardFixture;
+  vm.runInContext("renderHistoryReview(__historyFixture)", missingStandardRuntime.context);
+  const missingStandardChart = missingStandardRuntime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
+  assert.ok(missingStandardChart.includes("证据缺失"), "partial standard sizing must render missing evidence");
+  assert.ok(!missingStandardChart.includes("红区 0"), "missing standard sizing must not render a zero substitute");
+  assert.ok(!missingStandardChart.includes("history-standard-zone-stack"), "partial standard sizing must not render a valid zone stack");
+  console.log("PASS partial standard sizing stays missing instead of zero");
 
   clickHistorySelector(runtime, "[data-history-control-point]", { historyControlPoint: "关键进口 FPGA 库存控制点" });
   const fpgaSelection = vm.runInContext("({ controlPoint: state.selectedHistoryControlPoint, sku: state.selectedHistoryInventorySku, snapshot: state.selectedHistorySizingSnapshot })", runtime.context);
@@ -361,12 +391,15 @@ export async function runHistoryBufferRendererFixtures(historyReview, scriptPath
   assert.ok(!baselineDrawer.includes("LEGACY-&amp;lt;SKU&amp;amp;"), "baseline label must not be double escaped");
   console.log("PASS drawer labels escape malicious text exactly once");
 
-  console.log("6/6 renderer fixture groups passed");
+  console.log("8/8 renderer fixture groups passed");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dtoPath = process.argv[2];
+  const alternateDtoPath = process.argv[3];
   assert.ok(dtoPath, "expected a serialized history-review DTO path");
+  assert.ok(alternateDtoPath, "expected an alternate serialized history-review DTO path");
   const historyReview = JSON.parse(await readFile(dtoPath, "utf8"));
-  await runHistoryBufferRendererFixtures(historyReview);
+  const alternateHistoryReview = JSON.parse(await readFile(alternateDtoPath, "utf8"));
+  await runHistoryBufferRendererFixtures(historyReview, alternateHistoryReview);
 }

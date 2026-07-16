@@ -600,6 +600,17 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
     AssertEqual(12, annual.TrendMonths, "annual history trend months");
     AssertEqual(52, annual.ObservedTrendWeeks, "twelve-month history should expose exactly 52 weekly observations");
     AssertEqual(expectedWeeks, detailWindowWeeks, "history detail window should follow cumulative lead time");
+    var serializedReview = JsonSerializer.SerializeToNode(
+        result,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    var standardReference = serializedReview["standardDdmrpReference"];
+    AssertTrue(standardReference is not null, "history review should expose an independent backend standard DDMRP reference");
+    AssertEqual(80m, standardReference!["sizing"]!["zones"]!["red"]!.GetValue<decimal>(), "standard reference red zone");
+    AssertEqual(120m, standardReference["sizing"]!["zones"]!["yellow"]!.GetValue<decimal>(), "standard reference yellow zone");
+    AssertEqual(70m, standardReference["sizing"]!["zones"]!["green"]!.GetValue<decimal>(), "standard reference green zone");
+    AssertEqual("OrderCycle", standardReference["sizing"]!["greenDriver"]!.GetValue<string>(), "standard reference green driver");
+    AssertEqual(3, result.InventoryBuffers!.Select(item => item.ControlPoint).Distinct(StringComparer.Ordinal).Count(), "historical inventory control points should remain exactly three");
+    AssertTrue(result.DdmrpSizingSnapshots!.All(item => item.SnapshotId != "DDMRP-EXAMPLE-V1"), "standard reference must not become a historical control-point snapshot");
     AssertTrue(detailWindowWeeks < result.ObservedTrendWeeks, "cumulative lead time must not truncate the 26-week operating trend");
     AssertTrue(result.OperatingOutcomes.ServiceLevelPercent is > 0, "history should expose operating outcomes");
     AssertTrue(result.ProtectionRelationships.Any(item => item.ProtectionType == "库存缓冲"), "history should expose inventory protection relationships");
@@ -4222,6 +4233,8 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
         "history-ddmrp-input-summary",
         "history-ddmrp-sizing-body",
         "history-ddmrp-zone-chart",
+        "history-standard-ddmrp-input-summary",
+        "history-standard-ddmrp-zone-chart",
         "history-capacity-resource-options",
         "history-capacity-buffer-chart",
         "buffer-volatility-chart"
@@ -4339,6 +4352,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "renderHistoryBufferOverview",
         "renderHistoryInventoryBuffer",
         "renderHistoryDdmrpSizingTrace",
+        "renderHistoryStandardDdmrpReference",
         "renderHistoryTimeBuffer",
         "renderHistoryCapacityBuffer",
         "renderHistoryDdmrpZoneSvg",
@@ -4379,6 +4393,25 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     foreach (var forbidden in new[] { "leadTimeFactor *", "variabilityFactor *", "Math.max(item.minimumOrderQuantity", "\"EvidenceMissing\"", "\"Trace\"" })
     {
         AssertTrue(!sizingBody.Contains(forbidden, StringComparison.Ordinal), $"historical DDMRP renderer must not contain {forbidden}");
+    }
+
+    var standardBody = SourceFunctionBody(script, "renderHistoryStandardDdmrpReference");
+    foreach (var backendField in new[]
+    {
+        "history.standardDdmrpReference",
+        "item.setting.adu",
+        "item.setting.decoupledLeadTimeDays",
+        "item.setting.leadTimeFactor",
+        "item.setting.variabilityFactor",
+        "item.setting.orderCycleDays",
+        "item.setting.minimumOrderQuantity",
+        "item.sizing.zones.red",
+        "item.sizing.zones.yellow",
+        "item.sizing.zones.green",
+        "item.sizing.greenDriver"
+    })
+    {
+        AssertTrue(standardBody.Contains(backendField, StringComparison.Ordinal), $"standard DDMRP reference must read backend {backendField}");
     }
 
     var zoneBody = SourceFunctionBody(script, "renderHistoryDdmrpZoneSvg");
@@ -4452,7 +4485,23 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     var history = new HistoryReviewWorkspaceService(
         new SeedHistoryOperatingFactSource(seed),
         new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
-    RunHistoryBufferRendererFixture(root, history);
+    var alternateSetting = history.StandardDdmrpReference!.Setting with
+    {
+        Adu = 13m,
+        ParameterSnapshotId = "DDMRP-EXAMPLE-V2",
+    };
+    var alternateSizing = DdmrpCalculator.CalculateSizing(alternateSetting);
+    var alternateHistory = history with
+    {
+        StandardDdmrpReference = history.StandardDdmrpReference with
+        {
+            SnapshotId = alternateSetting.ParameterSnapshotId,
+            Setting = alternateSetting,
+            Sizing = alternateSizing,
+            SizingLines = DdmrpSizingExplanation.Build(alternateSizing),
+        },
+    };
+    RunHistoryBufferRendererFixture(root, history, alternateHistory);
 }
 
 static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
@@ -4520,13 +4569,20 @@ static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
         "static page should not retain the old demand-pulse label");
 }
 
-static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace history)
+static void RunHistoryBufferRendererFixture(
+    string root,
+    HistoryReviewWorkspace history,
+    HistoryReviewWorkspace alternateHistory)
 {
     var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs");
     var dtoPath = Path.Combine(Path.GetTempPath(), $"history-review-{Guid.NewGuid():N}.json");
+    var alternateDtoPath = Path.Combine(Path.GetTempPath(), $"history-review-alternate-{Guid.NewGuid():N}.json");
     File.WriteAllText(
         dtoPath,
         JsonSerializer.Serialize(history, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    File.WriteAllText(
+        alternateDtoPath,
+        JsonSerializer.Serialize(alternateHistory, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
     try
     {
@@ -4544,6 +4600,7 @@ static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace 
         };
         process.StartInfo.ArgumentList.Add(fixturePath);
         process.StartInfo.ArgumentList.Add(dtoPath);
+        process.StartInfo.ArgumentList.Add(alternateDtoPath);
         process.Start();
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
@@ -4561,10 +4618,13 @@ static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace 
         }
         AssertTrue(output.Contains("renderer fixture groups passed", StringComparison.Ordinal),
             $"Node renderer fixture did not report completion: {output}");
+        AssertTrue(output.Contains("alternate backend sizing drives standard renderer", StringComparison.Ordinal),
+            $"Node renderer fixture did not prove backend-driven alternate sizing: {output}");
     }
     finally
     {
         File.Delete(dtoPath);
+        File.Delete(alternateDtoPath);
     }
 }
 
