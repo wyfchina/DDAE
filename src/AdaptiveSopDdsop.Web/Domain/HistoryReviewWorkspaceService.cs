@@ -340,16 +340,8 @@ public sealed class HistoryReviewWorkspaceService
                 var planned = CapacityPointAverage(completePoints, item => item.PlannedAvailableCapacity);
                 var committed = CapacityPointAverage(completePoints, item => item.CommittedLoad);
                 var protective = CapacityPointAverage(completePoints, item => item.ProtectiveCapacity);
-                decimal? consumed = null;
-                decimal? remaining = null;
-                if (planned is not null && committed is not null && protective is not null)
-                {
-                    var protectionStart = planned.Value - protective.Value;
-                    consumed = decimal.Round(
-                        Math.Clamp(committed.Value - protectionStart, 0m, protective.Value),
-                        1);
-                    remaining = decimal.Round(protective.Value - consumed.Value, 1);
-                }
+                var consumed = CapacityPointAverage(completePoints, item => item.ConsumedProtection);
+                var remaining = CapacityPointAverage(completePoints, item => item.RemainingProtection);
 
                 return new CapacityProtectionLayer(
                     view.ResourceCode,

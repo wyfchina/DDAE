@@ -20,10 +20,14 @@ var tests = new (string Name, Action Run)[]
     ("Three independent inventory control points are explicit", TestThreeIndependentInventoryControlPointsAreExplicit),
     ("Capacity protection requires sequenced upstream evidence", TestCapacityProtectionRequiresSequencedUpstreamEvidence),
     ("Capacity protection is not inferred without sequence evidence", TestCapacityProtectionDoesNotInferWithoutSequenceEvidence),
+    ("Scenario capacity protection excludes FPGA-only sequence evidence", TestScenarioCapacityProtectionExcludesFpgaSequenceEvidence),
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
     ("History review projects stock time capacity and sizing views from explicit facts", TestHistoryReviewProjectsExplicitBufferViews),
+    ("History capacity summaries average weekly protection consumption", TestHistoryCapacitySummariesAverageWeeklyProtectionConsumption),
+    ("History capacity protection rejects self-referential resource evidence", TestHistoryCapacityProtectionRejectsSelfReference),
+    ("Historical CCR role wins when a resource is also upstream", TestHistoricalCcrRoleWinsOverUpstreamRole),
     ("History review uses the effective historical parameter snapshot for every point", TestHistoryReviewUsesEffectiveParameterSnapshot),
     ("History review exposes missing evidence instead of zero or current-parameter backfill", TestHistoryReviewDoesNotBackfillMissingEvidence),
     ("History facts expose versioned inventory time and capacity evidence", TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence),
@@ -556,6 +560,33 @@ static void TestCapacityProtectionDoesNotInferWithoutSequenceEvidence()
         "CCR unused capacity must never be inferred as its own protection consumption");
 }
 
+static void TestScenarioCapacityProtectionExcludesFpgaSequenceEvidence()
+{
+    var seed = SeedData.Create();
+    var fpgaRoutes = new[]
+    {
+        new ResourceRouting("AV-FPGA-203", "RES-AIT", 1m, 1, "RES-HARNESS", "Complete"),
+        new ResourceRouting("AV-FPGA-203", "RES-HARNESS", 1m, 2, null, "Complete"),
+    };
+    var request = new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1));
+    var fpgaOnly = new SeedScenarioWorkspaceDataSource(seed with { ResourceRoutings = fpgaRoutes })
+        .Load(request);
+    var mixed = new SeedScenarioWorkspaceDataSource(seed with
+        {
+            ResourceRoutings = seed.ResourceRoutings.Concat(fpgaRoutes).ToList()
+        })
+        .Load(request);
+
+    AssertEqual(
+        0,
+        (fpgaOnly.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>()).Count,
+        "FPGA-only routing must not create capacity protection");
+    var mixedProtections = mixed.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>();
+    AssertEqual(1, mixedProtections.Count, "eligible mixed routing capacity-protection count");
+    AssertEqual("RES-AIT", mixedProtections.Single().UpstreamResourceCode, "eligible mixed routing upstream resource");
+    AssertEqual("RES-HARNESS", mixedProtections.Single().ProtectedCcrResourceCode, "eligible mixed routing protected CCR");
+}
+
 static void TestConsolidatedRequirementsDataCoverage()
 {
     var data = SeedData.Create();
@@ -628,13 +659,17 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
     var ait = result.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
     AssertEqual("RES-HARNESS", ait.ProtectedCcrResourceCode, "AIT protected CCR resource");
     AssertTrue(ait.PlannedAvailableCapacity is not null && ait.CommittedLoad is not null, "AIT should carry explicit weekly capacity aggregates");
-    var expectedProtection = decimal.Round(ait.PlannedAvailableCapacity!.Value * 0.20m, 1);
-    var expectedProtectionStart = ait.PlannedAvailableCapacity.Value - expectedProtection;
-    var expectedConsumed = decimal.Round(Math.Clamp(ait.CommittedLoad!.Value - expectedProtectionStart, 0m, expectedProtection), 1);
-    var expectedRemaining = decimal.Round(expectedProtection - expectedConsumed, 1);
+    var aitPoints = (result.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+        .Single(item => item.ResourceCode == "RES-AIT")
+        .Points
+        .Where(item => item.EvidenceStatus == "Complete")
+        .ToList();
+    var expectedProtection = decimal.Round(aitPoints.Average(item => item.ProtectiveCapacity!.Value), 1);
+    var expectedConsumed = decimal.Round(aitPoints.Average(item => item.ConsumedProtection!.Value), 1);
+    var expectedRemaining = decimal.Round(aitPoints.Average(item => item.RemainingProtection!.Value), 1);
     AssertEqual(expectedProtection, ait.ProtectiveCapacity, "AIT protective capacity formula");
-    AssertEqual(expectedConsumed, ait.ConsumedProtection, "AIT consumed protection formula");
-    AssertEqual(expectedRemaining, ait.RemainingProtection, "AIT remaining protection formula");
+    AssertEqual(expectedConsumed, ait.ConsumedProtection, "AIT average weekly consumed protection");
+    AssertEqual(expectedRemaining, ait.RemainingProtection, "AIT average weekly remaining protection");
 
     var harness = result.CapacityProtection.Single(item => item.ResourceCode == "RES-HARNESS");
     AssertTrue(harness.ProtectiveCapacity is null && harness.ConsumedProtection is null && harness.RemainingProtection is null, "CCR itself should expose utilization rather than inferred self-protection");
@@ -846,6 +881,102 @@ static void TestHistoryReviewProjectsExplicitBufferViews()
         capacity.All(item => !string.Join(" ", item.ResourceCode, item.ResourceName, item.ProtectedCcrResourceCode).Contains("FPGA", StringComparison.OrdinalIgnoreCase)),
         "FPGA must not enter historical time or capacity views");
     AssertTrue(sizing.All(item => item.Sizing is not null && item.SizingLines.Count > 0 && item.AverageOnHand is not null), "complete historical parameter snapshots must expose sizing details and average on-hand evidence");
+}
+
+static void TestHistoryCapacitySummariesAverageWeeklyProtectionConsumption()
+{
+    var seed = SeedData.Create();
+    var review = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(seed),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var view = (review.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+        .Single(item => item.ResourceCode == "RES-AIT");
+    var completePoints = view.Points
+        .Where(item => item.EvidenceStatus == "Complete")
+        .ToList();
+    var expectedProtective = decimal.Round(completePoints.Average(item => item.ProtectiveCapacity!.Value), 1);
+    var expectedConsumed = decimal.Round(completePoints.Average(item => item.ConsumedProtection!.Value), 1);
+    var expectedRemaining = decimal.Round(completePoints.Average(item => item.RemainingProtection!.Value), 1);
+    var layer = review.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
+
+    AssertTrue(expectedConsumed > 0m, "seed history must exercise non-zero weekly protection consumption");
+    AssertEqual<decimal?>(expectedProtective, layer.ProtectiveCapacity, "average weekly protective capacity");
+    AssertEqual<decimal?>(expectedConsumed, layer.ConsumedProtection, "average weekly consumed protection");
+    AssertEqual<decimal?>(expectedRemaining, layer.RemainingProtection, "average weekly remaining protection");
+    AssertEqual<decimal?>(
+        decimal.Round(expectedRemaining * 100m / expectedProtective, 1),
+        review.OperatingOutcomes.RemainingProtectionPercent,
+        "remaining protection percentage from weekly protection aggregates");
+}
+
+static void TestHistoryCapacityProtectionRejectsSelfReference()
+{
+    var seed = SeedData.Create();
+    var selfReference = new HistoricalCapacityProtectionFact(
+        "HIST-SELF-REF",
+        "RES-AIT",
+        "RES-AIT",
+        10,
+        20,
+        20m,
+        -52,
+        -1,
+        "Complete");
+    var source = new CapacityProtectionTransformingHistoryOperatingFactSource(
+        new SeedHistoryOperatingFactSource(seed),
+        _ => new[] { selfReference });
+    var review = new HistoryReviewWorkspaceService(
+        source,
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var aitView = (review.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+        .Single(item => item.ResourceCode == "RES-AIT");
+    var aitLayer = review.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
+
+    AssertTrue(aitView.RelationshipRole != "UpstreamProtection", "self-referential resource must not become upstream protection");
+    AssertTrue(aitView.ProtectedCcrResourceCode is null, "self-referential resource must not expose a protected CCR");
+    AssertTrue(
+        aitView.Points.All(item => item.ProtectiveCapacity is null && item.ConsumedProtection is null && item.RemainingProtection is null),
+        "self-referential evidence must not calculate protection values");
+    AssertTrue(
+        aitLayer.ProtectiveCapacity is null &&
+        aitLayer.ConsumedProtection is null &&
+        aitLayer.RemainingProtection is null &&
+        aitLayer.EvidenceStatus == "EvidenceMissing",
+        "self-referential capacity summary must remain missing evidence");
+}
+
+static void TestHistoricalCcrRoleWinsOverUpstreamRole()
+{
+    var seed = SeedData.Create();
+    var secondRelationship = new HistoricalCapacityProtectionFact(
+        "HIST-RES-HARNESS-RES-TVAC-V1",
+        "RES-HARNESS",
+        "RES-TVAC",
+        20,
+        30,
+        15m,
+        -52,
+        -1,
+        "Complete");
+    var source = new CapacityProtectionTransformingHistoryOperatingFactSource(
+        new SeedHistoryOperatingFactSource(seed),
+        existing => existing.Concat(new[] { secondRelationship }).ToList());
+    var review = new HistoryReviewWorkspaceService(
+        source,
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var harness = (review.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+        .Single(item => item.ResourceCode == "RES-HARNESS");
+
+    AssertEqual("CcrUtilization", harness.RelationshipRole, "CCR relationship role precedence");
+    AssertTrue(harness.ProtectedCcrResourceCode is null, "CCR utilization view must not expose another protected CCR");
+    AssertEqual("Complete", harness.EvidenceStatus, "CCR utilization evidence status");
+    AssertTrue(
+        harness.Points.All(item =>
+            item.EvidenceStatus == "Complete" &&
+            item.ProtectiveCapacity is null &&
+            item.ConsumedProtection is null &&
+            item.RemainingProtection is null),
+        "CCR utilization view must stay complete without calculating upstream protection consumption");
 }
 
 static void TestHistoryReviewUsesEffectiveParameterSnapshot()
@@ -8144,6 +8275,27 @@ internal sealed class CapacityProtectionRemovingHistoryOperatingFactSource : IHi
     {
         var facts = _inner.Load(request);
         return facts with { CapacityProtectionFacts = Array.Empty<HistoricalCapacityProtectionFact>() };
+    }
+}
+
+internal sealed class CapacityProtectionTransformingHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+    private readonly Func<IReadOnlyList<HistoricalCapacityProtectionFact>, IReadOnlyList<HistoricalCapacityProtectionFact>> _transform;
+
+    public CapacityProtectionTransformingHistoryOperatingFactSource(
+        IHistoryOperatingFactSource inner,
+        Func<IReadOnlyList<HistoricalCapacityProtectionFact>, IReadOnlyList<HistoricalCapacityProtectionFact>> transform)
+    {
+        _inner = inner;
+        _transform = transform;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        var existing = facts.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>();
+        return facts with { CapacityProtectionFacts = _transform(existing) };
     }
 }
 

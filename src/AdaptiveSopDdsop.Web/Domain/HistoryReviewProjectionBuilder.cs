@@ -390,11 +390,11 @@ public static class HistoryReviewProjectionBuilder
                 .ToList();
             var isUpstream = upstreamRelationships.Count == 1;
             var isCcr = validProtectionFacts.Any(item => item.ProtectedCcrResourceCode == resourceCode);
-            var relationshipRole = isUpstream
-                ? "UpstreamProtection"
-                : isCcr ? "CcrUtilization" : "ObservedResource";
-            var protectedCcr = isUpstream ? upstreamRelationships[0] : null;
-            var relationshipEvidenceComplete = upstreamFacts.Count == 0 || isUpstream;
+            var relationshipRole = isCcr
+                ? "CcrUtilization"
+                : isUpstream ? "UpstreamProtection" : "ObservedResource";
+            var protectedCcr = relationshipRole == "UpstreamProtection" ? upstreamRelationships[0] : null;
+            var relationshipEvidenceComplete = relationshipRole == "CcrUtilization" || upstreamFacts.Count == 0 || isUpstream;
             var points = HistoricalWeeks(weeks)
                 .Select(weekOffset => BuildCapacityPoint(
                     facts,
@@ -517,6 +517,7 @@ public static class HistoryReviewProjectionBuilder
 
     private static bool HasValidProtectionStructure(HistoricalCapacityProtectionFact fact) =>
         fact.EvidenceStatus == Complete &&
+        !string.Equals(fact.UpstreamResourceCode, fact.ProtectedCcrResourceCode, StringComparison.Ordinal) &&
         fact.UpstreamOperationSequence > 0 &&
         fact.CcrOperationSequence > fact.UpstreamOperationSequence &&
         fact.ReservePercent is > 0m and <= 100m &&

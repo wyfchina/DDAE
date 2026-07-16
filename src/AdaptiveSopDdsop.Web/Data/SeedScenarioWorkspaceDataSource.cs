@@ -75,12 +75,14 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         const string protectedCcrResourceCode = "RES-HARNESS";
         var hasCompleteSequenceEvidence = routings
             .Where(item =>
+                ProtectionProductEligibility.IsEligible(item.Sku) &&
                 item.ResourceCode == upstreamResourceCode &&
                 item.ProtectsCcrResourceCode == protectedCcrResourceCode &&
                 item.OperationSequence > 0 &&
                 item.EvidenceStatus == "Complete")
             .Any(upstream => routings.Any(downstream =>
                 downstream.Sku == upstream.Sku &&
+                ProtectionProductEligibility.IsEligible(downstream.Sku) &&
                 downstream.ResourceCode == protectedCcrResourceCode &&
                 downstream.OperationSequence > upstream.OperationSequence &&
                 downstream.EvidenceStatus == "Complete"));
