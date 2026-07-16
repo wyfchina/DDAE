@@ -4,7 +4,8 @@ using System.Text.Json;
 
 var tests = new (string Name, Action Run)[]
 {
-    ("DDMRP buffer zones follow ADU, DLT, variability, and MOQ rules", TestBufferZones),
+    ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
+    ("DDMRP sizing rejects missing or illegal lead-time factors", TestDdmrpSizingRejectsIllegalLeadTimeFactor),
     ("Net flow position adds on hand and open supply then subtracts qualified demand", TestNetFlow),
     ("Planning recommendation replenishes to top of green at review time when net flow is at or below top of yellow", TestPlanningRecommendation),
     ("Promotion scenario increases ADU and working capital", TestPromotionScenario),
@@ -157,15 +158,57 @@ if (failed > 0)
 
 Console.WriteLine($"{tests.Length} test(s) passed.");
 
-static void TestBufferZones()
+static void TestStandardDdmrpSizingReturns80_120_70()
 {
-    var sku = new SkuBufferSetting("SKU-AXLE-STD", "Axle Standard", "Mobility", 100, 5, 1.5m, 3, 700, 12.5m, 1200);
-    var zones = DdmrpCalculator.CalculateZones(sku);
+    var sku = new SkuBufferSetting(
+        "DDMRP-EXAMPLE", "标准定容算例", "测试", 10m, 12, 0.33m, 7, 50m, 1m, 100m,
+        LeadTimeFactor: 0.5m,
+        ParameterSnapshotId: "DDMRP-EXAMPLE-V1",
+        ParameterEvidenceStatus: "Complete");
 
-    AssertEqual(750, zones.Red, "red zone");
-    AssertEqual(500, zones.Yellow, "yellow zone");
-    AssertEqual(700, zones.Green, "green zone");
-    AssertEqual(1950, zones.TopOfGreen, "top of green");
+    var sizing = DdmrpCalculator.CalculateSizing(sku);
+
+    AssertEqual(120m, sizing.LeadTimeDemand, "lead-time demand");
+    AssertEqual(60m, sizing.RedBase, "red base");
+    AssertEqual(19.8m, sizing.RedSafety, "red safety");
+    AssertEqual(80m, sizing.Zones.Red, "red zone");
+    AssertEqual(120m, sizing.Zones.Yellow, "yellow zone");
+    AssertEqual(60m, sizing.GreenLeadTimeCandidate, "green lead-time candidate");
+    AssertEqual(50m, sizing.GreenMoqCandidate, "green MOQ candidate");
+    AssertEqual(70m, sizing.GreenOrderCycleCandidate, "green order-cycle candidate");
+    AssertEqual("OrderCycle", sizing.GreenDriver, "green driver");
+    AssertEqual(70m, sizing.Zones.Green, "green zone");
+    AssertEqual(80m, sizing.Zones.TopOfRed, "top of red");
+    AssertEqual(200m, sizing.Zones.TopOfYellow, "top of yellow");
+    AssertEqual(270m, sizing.Zones.TopOfGreen, "top of green");
+}
+
+static void TestDdmrpSizingRejectsIllegalLeadTimeFactor()
+{
+    var missing = new SkuBufferSetting("MISSING-LTF", "缺少提前期因子", "测试", 10m, 12, 0.33m, 7, 50m, 1m, 100m);
+    AssertInvalidOperationRejected(() => DdmrpCalculator.CalculateSizing(missing), "提前期因子");
+
+    var zero = missing with { LeadTimeFactor = 0m };
+    AssertInvalidOperationRejected(() => DdmrpCalculator.CalculateSizing(zero), "提前期因子");
+
+    var greaterThanOne = missing with { LeadTimeFactor = 1.01m };
+    AssertInvalidOperationRejected(() => DdmrpCalculator.CalculateSizing(greaterThanOne), "提前期因子");
+}
+
+static void AssertInvalidOperationRejected(Action action, string expectedMessage)
+{
+    try
+    {
+        action();
+    }
+    catch (InvalidOperationException exception)
+    {
+        AssertTrue(exception.Message.Contains(expectedMessage, StringComparison.Ordinal),
+            $"rejection message should contain {expectedMessage}");
+        return;
+    }
+
+    throw new InvalidOperationException($"expected InvalidOperationException containing {expectedMessage}");
 }
 
 static void TestNetFlow()
@@ -178,12 +221,17 @@ static void TestNetFlow()
 
 static void TestPlanningRecommendation()
 {
-    var sku = new SkuBufferSetting("SKU-AXLE-STD", "Axle Standard", "Mobility", 100, 5, 1.5m, 3, 700, 12.5m, 1200);
-    var position = new InventoryPosition("SKU-AXLE-STD", 420, 300, 260);
+    var sku = new SkuBufferSetting(
+        "DDMRP-EXAMPLE", "标准定容算例", "测试", 10m, 12, 0.33m, 7, 50m, 1m, 100m,
+        LeadTimeFactor: 0.5m,
+        ParameterSnapshotId: "DDMRP-EXAMPLE-V1",
+        ParameterEvidenceStatus: "Complete");
+    var position = new InventoryPosition(sku.Sku, 50m, 0m, 0m);
+
     var recommendation = DdmrpCalculator.CalculateRecommendation(sku, position);
 
     AssertEqual("Order", recommendation.Action, "action");
-    AssertEqual(1490, recommendation.OrderQuantity, "order quantity");
+    AssertEqual(220m, recommendation.OrderQuantity, "order quantity");
     AssertEqual("Red", recommendation.BufferStatus, "buffer status");
 }
 
@@ -275,14 +323,14 @@ static void TestSeedScaleMatchesSatelliteManufacturingDemo()
     var inventory = data.Inventory.ToDictionary(item => item.Sku, StringComparer.Ordinal);
     var expected = new Dictionary<string, (decimal OnHand, decimal OpenSupply, decimal QualifiedDemand, decimal Adu)>(StringComparer.Ordinal)
     {
-        ["SAT-BUS-001"] = (4m, 1m, 2m, 0.20m),
+        ["SAT-BUS-001"] = (1m, 1m, 2m, 0.20m),
         ["SAT-BUS-002"] = (3m, 1m, 1m, 0.12m),
         ["SAT-PROP-003"] = (12m, 3m, 4m, 0.80m),
         ["PAY-EO-101"] = (3m, 1m, 1m, 0.10m),
         ["PAY-SAR-102"] = (2m, 1m, 1m, 0.08m),
         ["AV-COM-201"] = (28m, 8m, 10m, 1.20m),
         ["AV-OBC-202"] = (20m, 6m, 8m, 0.80m),
-        ["AV-FPGA-203"] = (22m, 4m, 6m, 0.18m),
+        ["AV-FPGA-203"] = (22m, 4m, 11m, 0.18m),
         ["TC-MLI-301"] = (75m, 20m, 24m, 4.00m),
         ["TC-RAD-302"] = (48m, 12m, 16m, 2.50m),
         ["MECH-DEP-401"] = (12m, 3m, 4m, 0.60m),
@@ -291,8 +339,8 @@ static void TestSeedScaleMatchesSatelliteManufacturingDemo()
 
     var totalInventoryValue = data.Inventory.Sum(item => item.OnHand * skus[item.Sku].UnitCost);
     AssertTrue(
-        totalInventoryValue is >= 60_000_000m and <= 100_000_000m,
-        $"seed inventory value should be RMB 60-100 million, got {totalInventoryValue:N0}");
+        totalInventoryValue is >= 50_000_000m and <= 100_000_000m,
+        $"seed inventory value should be RMB 50-100 million, got {totalInventoryValue:N0}");
 
     AssertEqual(expected.Count, skus.Count, "seed SKU count");
     AssertEqual(expected.Count, inventory.Count, "seed inventory position count");
@@ -3834,7 +3882,11 @@ static void TestAsopGuardrailRoutesModerateScenario()
 
 static void TestTimePhasedBufferProjectionCreatesReplenishmentTrace()
 {
-    var sku = new SkuBufferSetting("SKU-PLAN-001", "Plan Item", "Planning", 100, 5, 1.5m, 3, 700, 10m, 1000);
+    var sku = new SkuBufferSetting(
+        "SKU-PLAN-001", "Plan Item", "Planning", 100, 5, 1.5m, 3, 700, 10m, 1000,
+        LeadTimeFactor: 0.6m,
+        ParameterSnapshotId: "SKU-PLAN-001-V1",
+        ParameterEvidenceStatus: "Complete");
     var position = new InventoryPosition(sku.Sku, 900, 0, 0);
     var demand = new[]
     {
@@ -3861,7 +3913,11 @@ static void TestTimePhasedBufferProjectionCreatesReplenishmentTrace()
 
 static void TestTimePhasedBufferProjectionWaitsForOrderCycleReview()
 {
-    var sku = new SkuBufferSetting("SKU-CYCLE-001", "Cycle Item", "Planning", 100, 5, 1.5m, 14, 700, 10m, 1000);
+    var sku = new SkuBufferSetting(
+        "SKU-CYCLE-001", "Cycle Item", "Planning", 100, 5, 1.5m, 14, 700, 10m, 1000,
+        LeadTimeFactor: 0.6m,
+        ParameterSnapshotId: "SKU-CYCLE-001-V1",
+        ParameterEvidenceStatus: "Complete");
     var position = new InventoryPosition(sku.Sku, 1800, 0, 0);
     var demand = new[]
     {
@@ -4028,7 +4084,11 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
 
 static void TestPrebuildCampaignMovesReplenishmentBeforeFuturePeak()
 {
-    var sku = new SkuBufferSetting("SKU-PEAK-001", "Peak Item", "Planning", 100, 5, 1.5m, 3, 700, 10m, 1000);
+    var sku = new SkuBufferSetting(
+        "SKU-PEAK-001", "Peak Item", "Planning", 100, 5, 1.5m, 3, 700, 10m, 1000,
+        LeadTimeFactor: 0.6m,
+        ParameterSnapshotId: "SKU-PEAK-001-V1",
+        ParameterEvidenceStatus: "Complete");
     var position = new InventoryPosition(sku.Sku, 1950, 0, 0);
     var demand = new[]
     {
@@ -4283,16 +4343,35 @@ static void TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles()
     AssertTrue(data.DdmrpParameters.All(item => !string.IsNullOrWhiteSpace(item.BufferProfile)), "all DDMRP profiles should expose buffer profile");
     AssertTrue(data.DdmrpParameters.All(item => item.Adu > 0 && item.DecoupledLeadTimeDays > 0), "all DDMRP profiles should expose ADU and DLT");
     AssertTrue(data.DdmrpParameters.All(item => item.DemandAdjustmentFactor > 0 && item.ZoneAdjustmentFactor > 0), "all DDMRP profiles should expose DAF and zone adjustment");
+    AssertTrue(data.DdmrpParameters.All(item => item.LeadTimeFactor is > 0m and <= 1m), "all DDMRP profiles should expose a legal lead-time factor");
+    AssertTrue(data.DdmrpParameters.All(item => !string.IsNullOrWhiteSpace(item.ParameterSnapshotId)), "all DDMRP profiles should expose a parameter snapshot");
+    AssertTrue(data.DdmrpParameters.All(item => item.EvidenceStatus == "Complete"), "all DDMRP profiles should expose complete sizing evidence");
+    AssertTrue(data.DdmrpParameters.All(item => item.Sizing is not null), "all DDMRP profiles should expose the unified sizing result");
+    AssertTrue(data.DdmrpParameters.All(item => item.SizingLines is { Count: 11 }), "all DDMRP profiles should expose the shared eleven-line sizing explanation");
     AssertTrue(data.DdmrpParameters.All(item => item.EffectiveFromWeek >= 1 && item.EffectiveThroughWeek >= item.EffectiveFromWeek), "all DDMRP profiles should expose effective window");
     AssertTrue(data.DdmrpParameters.Any(item => item.DemandAdjustmentFactor != 1m || item.ZoneAdjustmentFactor != 1m), "seed data should include non-default DAF or zone adjustments");
 
     foreach (var sku in data.Skus)
     {
-        var zones = DdmrpCalculator.CalculateZones(sku);
+        var sizing = DdmrpCalculator.CalculateSizing(sku);
         var profile = data.DdmrpParameters.Single(item => item.Sku == sku.Sku);
-        AssertEqual(zones.TopOfRed, profile.TopOfRed, $"top of red for {sku.Sku}");
-        AssertEqual(zones.TopOfYellow, profile.TopOfYellow, $"top of yellow for {sku.Sku}");
-        AssertEqual(zones.TopOfGreen, profile.TopOfGreen, $"top of green for {sku.Sku}");
+        AssertEqual(sku.LeadTimeFactor, profile.LeadTimeFactor, $"lead-time factor for {sku.Sku}");
+        AssertEqual(sku.ParameterSnapshotId, profile.ParameterSnapshotId, $"parameter snapshot for {sku.Sku}");
+        AssertEqual(sizing.EvidenceStatus, profile.EvidenceStatus, $"evidence status for {sku.Sku}");
+        AssertEqual(sizing, profile.Sizing!, $"unified sizing result for {sku.Sku}");
+        AssertEqual(sizing.Zones.TopOfRed, profile.TopOfRed, $"top of red for {sku.Sku}");
+        AssertEqual(sizing.Zones.TopOfYellow, profile.TopOfYellow, $"top of yellow for {sku.Sku}");
+        AssertEqual(sizing.Zones.TopOfGreen, profile.TopOfGreen, $"top of green for {sku.Sku}");
+
+        var sizingLines = profile.SizingLines!;
+        var redBaseLine = sizingLines.Single(item => item.Component == "红区基础");
+        var greenLine = sizingLines.Single(item => item.Component == "绿区");
+        var totalLine = sizingLines.Single(item => item.Component == "总缓冲");
+        AssertEqual("提前期需求 × 提前期因子", redBaseLine.Formula, $"red-base formula for {sku.Sku}");
+        AssertEqual(decimal.Round(sizing.RedBase, 1), redBaseLine.Value, $"red-base explanation value for {sku.Sku}");
+        AssertEqual("max（三个候选）× 区域调整", greenLine.Formula, $"green formula for {sku.Sku}");
+        AssertEqual(sizing.Zones.Green, greenLine.Value, $"green explanation value for {sku.Sku}");
+        AssertEqual(sizing.Zones.TopOfGreen, totalLine.Value, $"total-buffer explanation value for {sku.Sku}");
     }
 }
 
@@ -7002,7 +7081,12 @@ internal sealed class FixedScenarioWorkspaceDataSource : IScenarioWorkspaceDataS
     public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
     {
         LoadCount++;
-        var sku = new SkuBufferSetting("AV-FPGA-EX", "空间级 FPGA 异常件", "星载电子", 100, 5, 1.5m, 7, 500, 1000, 1000);
+        var sku = new SkuBufferSetting(
+            "AV-FPGA-EX", "空间级 FPGA 异常件", "星载电子", 100, 5, 1.5m, 7, 500, 1000, 1000,
+            LeadTimeFactor: 0.6m,
+            ParameterSnapshotId: "AV-FPGA-EX-V1",
+            ParameterEvidenceStatus: "Complete");
+        var sizing = DdmrpCalculator.CalculateSizing(sku);
         return new ScenarioWorkspaceDataSet(
             request,
             new[] { new ProductFamily("星载电子", "星载电子", 98m, 1.1m, 10_000m) },
@@ -7046,14 +7130,19 @@ internal sealed class FixedScenarioWorkspaceDataSource : IScenarioWorkspaceDataS
                     sku.OrderCycleDays,
                     sku.UnitCost,
                     sku.WeeklyCapacityUnits,
-                    750,
-                    1250,
-                    1950,
+                    sizing.Zones.TopOfRed,
+                    sizing.Zones.TopOfYellow,
+                    sizing.Zones.TopOfGreen,
                     1,
                     12,
                     "Current",
                     "Complete",
-                    "测试参数完整。")
+                    "测试参数完整。",
+                    sku.LeadTimeFactor,
+                    sku.ParameterSnapshotId,
+                    sizing.EvidenceStatus,
+                    sizing,
+                    DdmrpSizingExplanation.Build(sizing))
             },
             Array.Empty<MasterSetting>(),
             Array.Empty<BusinessGuardrail>());

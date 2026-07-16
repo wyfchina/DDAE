@@ -124,7 +124,12 @@ public sealed record DdmrpParameterProfile(
     int EffectiveThroughWeek,
     string ParameterStatus,
     string CompletenessStatus,
-    string ValidationMessage);
+    string ValidationMessage,
+    decimal? LeadTimeFactor = null,
+    string ParameterSnapshotId = "",
+    string EvidenceStatus = "EvidenceMissing",
+    DdmrpSizingResult? Sizing = null,
+    IReadOnlyList<BufferSizingLine>? SizingLines = null);
 
 public sealed record SkuPolicyOverride(
     string Sku,

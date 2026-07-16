@@ -16,30 +16,30 @@ public static class SeedData
 
         var skus = new List<SkuBufferSetting>
         {
-            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 0.20m, 8, 1.5m, 4, 80, 820_000m, 210),
-            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 0.12m, 10, 1.6m, 5, 60, 1_180_000m, 160),
-            new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 1.4m, 4, 90, 260_000m, 260),
-            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 1.9m, 6, 45, 1_960_000m, 120),
-            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 2.1m, 6, 35, 2_850_000m, 90),
-            new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 1.4m, 4, 160, 180_000m, 520),
-            new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 1.7m, 5, 120, 320_000m, 360),
-            new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 0.18m, 16, 2.2m, 6, 80, 540_000m, 180),
-            new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 1.4m, 4, 260, 42_000m, 760),
-            new("TC-RAD-302", "蜂窝散热板", "热控结构", 2.50m, 6, 1.5m, 4, 220, 86_000m, 620),
-            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 0.60m, 11, 1.9m, 5, 100, 420_000m, 240),
-            new("CBL-HAR-402", "星上电缆束套件", "星载电子", 5.00m, 4, 1.2m, 3, 30, 38_000m, 980),
+            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 0.20m, 8, 0.35m, 4, 80, 820_000m, 210),
+            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 0.12m, 10, 0.40m, 5, 60, 1_180_000m, 160),
+            new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 0.30m, 4, 90, 260_000m, 260),
+            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 0.55m, 6, 45, 1_960_000m, 120),
+            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 0.60m, 6, 35, 2_850_000m, 90),
+            new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 0.40m, 4, 160, 180_000m, 520),
+            new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 0.50m, 5, 120, 320_000m, 360),
+            new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 0.18m, 16, 0.65m, 6, 80, 540_000m, 180),
+            new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 0.35m, 4, 260, 42_000m, 760),
+            new("TC-RAD-302", "蜂窝散热板", "热控结构", 2.50m, 6, 0.40m, 4, 220, 86_000m, 620),
+            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 0.60m, 11, 0.55m, 5, 100, 420_000m, 240),
+            new("CBL-HAR-402", "星上电缆束套件", "星载电子", 5.00m, 4, 0.30m, 3, 30, 38_000m, 980),
         }.Select(ApplyDdmrpParameterProfile).ToList();
 
         var inventory = new List<InventoryPosition>
         {
-            new("SAT-BUS-001", 4, 1, 2),
+            new("SAT-BUS-001", 1, 1, 2),
             new("SAT-BUS-002", 3, 1, 1),
             new("SAT-PROP-003", 12, 3, 4),
             new("PAY-EO-101", 3, 1, 1),
             new("PAY-SAR-102", 2, 1, 1),
             new("AV-COM-201", 28, 8, 10),
             new("AV-OBC-202", 20, 6, 8),
-            new("AV-FPGA-203", 22, 4, 6),
+            new("AV-FPGA-203", 22, 4, 11),
             new("TC-MLI-301", 75, 20, 24),
             new("TC-RAD-302", 48, 12, 16),
             new("MECH-DEP-401", 12, 3, 4),
@@ -379,13 +379,22 @@ public static class SeedData
             ZoneAdjustmentFactor = zoneAdjustment,
             EffectiveFromWeek = 1,
             EffectiveThroughWeek = 12,
-            ParameterStatus = sku.Family == "星载电子" ? "Proposed" : "Current"
+            ParameterStatus = sku.Family == "星载电子" ? "Proposed" : "Current",
+            LeadTimeFactor = sku.DecoupledLeadTimeDays switch
+            {
+                <= 5 => 0.80m,
+                <= 8 => 0.60m,
+                <= 12 => 0.50m,
+                _ => 0.30m
+            },
+            ParameterSnapshotId = $"DDMRP-DEMO-2026-06-{sku.Sku}",
+            ParameterEvidenceStatus = "Complete"
         };
     }
 
     private static string FormatDdmrpCurrentValue(SkuBufferSetting sku)
     {
-        return $"解耦点 {sku.DecouplingPoint}，ADU {sku.Adu:0.#}，DLT {sku.DecoupledLeadTimeDays} 天，VF {sku.VariabilityFactor:0.00}，DAF {sku.DemandAdjustmentFactor:0.00}，Zone {sku.ZoneAdjustmentFactor:0.00}，MOQ {sku.MinimumOrderQuantity:0}，订货周期 {sku.OrderCycleDays} 天";
+        return $"解耦点 {sku.DecouplingPoint}，ADU {sku.Adu:0.#}，DLT {sku.DecoupledLeadTimeDays} 天，提前期因子 {sku.LeadTimeFactor:0.00}，波动因子 {sku.VariabilityFactor:0.00}，DAF {sku.DemandAdjustmentFactor:0.00}，Zone {sku.ZoneAdjustmentFactor:0.00}，MOQ {sku.MinimumOrderQuantity:0}，订货周期 {sku.OrderCycleDays} 天";
     }
 
     private static ResourceProfile ResourceRow(StrategicMonth month, string resource, string family, decimal required, decimal available)

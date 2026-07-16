@@ -148,7 +148,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         return skus
             .Select(sku =>
             {
-                var zones = DdmrpCalculator.CalculateZones(sku);
+                var sizing = DdmrpCalculator.CalculateSizing(sku);
                 var missing = new List<string>();
                 if (string.IsNullOrWhiteSpace(sku.DecouplingPoint))
                 {
@@ -172,7 +172,22 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
 
                 if (sku.VariabilityFactor <= 0)
                 {
-                    missing.Add("变异因子");
+                    missing.Add("波动因子");
+                }
+
+                if (sku.LeadTimeFactor is null or <= 0m or > 1m)
+                {
+                    missing.Add("提前期因子");
+                }
+
+                if (string.IsNullOrWhiteSpace(sku.ParameterSnapshotId))
+                {
+                    missing.Add("参数快照");
+                }
+
+                if (sku.ParameterEvidenceStatus != "Complete")
+                {
+                    missing.Add("参数证据");
                 }
 
                 if (sku.OrderCycleDays <= 0)
@@ -208,14 +223,19 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                     sku.OrderCycleDays,
                     sku.UnitCost,
                     sku.WeeklyCapacityUnits,
-                    zones.TopOfRed,
-                    zones.TopOfYellow,
-                    zones.TopOfGreen,
+                    sizing.Zones.TopOfRed,
+                    sizing.Zones.TopOfYellow,
+                    sizing.Zones.TopOfGreen,
                     sku.EffectiveFromWeek,
                     sku.EffectiveThroughWeek,
                     sku.ParameterStatus,
                     completenessStatus,
-                    validationMessage);
+                    validationMessage,
+                    sku.LeadTimeFactor,
+                    sku.ParameterSnapshotId,
+                    sizing.EvidenceStatus,
+                    sizing,
+                    DdmrpSizingExplanation.Build(sizing));
             })
             .OrderBy(item => item.Family)
             .ThenBy(item => item.Sku)

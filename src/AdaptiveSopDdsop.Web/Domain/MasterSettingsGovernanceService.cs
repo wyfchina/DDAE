@@ -505,7 +505,7 @@ public sealed class MasterSettingsGovernanceService
                     "Inventory Buffer",
                     sku.Name,
                     SkuCurrentValue(sku),
-                    "重审 ADU / DLT / 变异因子 / MOQ / 订货周期",
+                    "重审 ADU / DLT / 提前期因子 / 波动因子 / MOQ / 订货周期",
                     "预览结果仍存在红区 SKU。",
                     "下一轮 DDS&OP 生效窗口",
                     2.0m,
@@ -616,7 +616,7 @@ public sealed class MasterSettingsGovernanceService
 
     private static string SkuCurrentValue(SkuBufferSetting sku)
     {
-        return $"ADU {sku.Adu:0.#}, DLT {sku.DecoupledLeadTimeDays} 天, 变异因子 {sku.VariabilityFactor:0.0}, MOQ {sku.MinimumOrderQuantity:0}, 订货周期 {sku.OrderCycleDays} 天";
+        return $"ADU {sku.Adu:0.#}, DLT {sku.DecoupledLeadTimeDays} 天, 提前期因子 {sku.LeadTimeFactor:0.00}, 波动因子 {sku.VariabilityFactor:0.00}, MOQ {sku.MinimumOrderQuantity:0}, 订货周期 {sku.OrderCycleDays} 天";
     }
 
     private static string BusinessUnitLabel(string unit) => unit switch

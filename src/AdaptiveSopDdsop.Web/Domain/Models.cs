@@ -20,7 +20,10 @@ public sealed record SkuBufferSetting(
     decimal ZoneAdjustmentFactor = 1.00m,
     int EffectiveFromWeek = 1,
     int EffectiveThroughWeek = 52,
-    string ParameterStatus = "Current");
+    string ParameterStatus = "Current",
+    decimal? LeadTimeFactor = null,
+    string ParameterSnapshotId = "",
+    string ParameterEvidenceStatus = "EvidenceMissing");
 
 public sealed record InventoryPosition(
     string Sku,
@@ -37,6 +40,23 @@ public sealed record BufferZones(
     public decimal TopOfYellow => Red + Yellow;
     public decimal TopOfGreen => Red + Yellow + Green;
 }
+
+public sealed record DdmrpSizingResult(
+    decimal PeriodAdu,
+    decimal EffectiveAdu,
+    decimal LeadTimeDemand,
+    decimal LeadTimeFactor,
+    decimal VariabilityFactor,
+    decimal ZoneAdjustmentFactor,
+    decimal RedBase,
+    decimal RedSafety,
+    decimal GreenLeadTimeCandidate,
+    decimal GreenMoqCandidate,
+    decimal GreenOrderCycleCandidate,
+    string GreenDriver,
+    BufferZones Zones,
+    string ParameterSnapshotId,
+    string EvidenceStatus);
 
 public sealed record PlanningRecommendation(
     string Sku,
