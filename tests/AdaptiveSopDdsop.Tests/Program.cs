@@ -579,17 +579,25 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
 
     var result = service.GetReview(6);
     var annual = service.GetReview(12);
-    var expectedWeeks = (int)Math.Ceiling(result.MaximumCumulativeLeadTimeDays / 7m);
+    AssertTrue(
+        result.MaximumCumulativeLeadTimeDays.HasValue &&
+        result.DetailWindowWeeks.HasValue &&
+        annual.MaximumCumulativeLeadTimeDays.HasValue &&
+        annual.DetailWindowWeeks.HasValue,
+        "complete historical parameters must expose lead-time metadata");
+    var maximumLeadTimeDays = result.MaximumCumulativeLeadTimeDays.GetValueOrDefault();
+    var detailWindowWeeks = result.DetailWindowWeeks.GetValueOrDefault();
+    var expectedWeeks = (int)Math.Ceiling(maximumLeadTimeDays / 7m);
 
     AssertEqual(6, result.TrendMonths, "history trend months");
     AssertEqual(26, result.ObservedTrendWeeks, "six-month history should expose exactly 26 weekly observations");
     AssertEqual(12, annual.TrendMonths, "annual history trend months");
     AssertEqual(52, annual.ObservedTrendWeeks, "twelve-month history should expose exactly 52 weekly observations");
-    AssertEqual(expectedWeeks, result.DetailWindowWeeks, "history detail window should follow cumulative lead time");
-    AssertTrue(result.DetailWindowWeeks < result.ObservedTrendWeeks, "cumulative lead time must not truncate the 26-week operating trend");
+    AssertEqual(expectedWeeks, detailWindowWeeks, "history detail window should follow cumulative lead time");
+    AssertTrue(detailWindowWeeks < result.ObservedTrendWeeks, "cumulative lead time must not truncate the 26-week operating trend");
     AssertTrue(result.OperatingOutcomes.ServiceLevelPercent is > 0, "history should expose operating outcomes");
     AssertTrue(result.ProtectionRelationships.Any(item => item.ProtectionType == "库存缓冲"), "history should expose inventory protection relationships");
-    AssertTrue(result.ZoneResidence.Any(item => item.ObservedPeriods == result.DetailWindowWeeks), "history should expose zone residence over the detail window");
+    AssertTrue(result.ZoneResidence.Any(item => item.ObservedPeriods == detailWindowWeeks), "history should expose zone residence over the detail window");
     AssertTrue(result.ZoneResidence.All(item => Math.Abs(item.RedPercent + item.YellowPercent + item.GreenPercent + item.OverTopOfGreenPercent - 100m) <= 0.2m), "zone residence proportions should account for the observed window");
     AssertTrue(result.ZoneResidence.All(item => item.RedEntryCount >= 0), "history should count entries into the red zone");
     AssertTrue(result.ZoneResidence.All(item => !string.IsNullOrWhiteSpace(item.PrimaryCause)), "buffer residence should retain explicit historical causes");
@@ -753,14 +761,24 @@ static void TestHistoryReviewProjectsExplicitBufferViews()
     var sizing = recent.DdmrpSizingSnapshots ?? throw new InvalidOperationException("historical sizing projection is missing");
     var time = recent.TimeBuffers ?? throw new InvalidOperationException("six-month time-buffer projection is missing");
     var capacity = recent.CapacityBuffers ?? throw new InvalidOperationException("six-month capacity projection is missing");
+    var annualInventory = annual.InventoryBuffers ?? throw new InvalidOperationException("annual inventory projection is missing");
+    var annualSizing = annual.DdmrpSizingSnapshots ?? throw new InvalidOperationException("annual sizing projection is missing");
+    var annualTime = annual.TimeBuffers ?? throw new InvalidOperationException("annual time-buffer projection is missing");
+    var annualCapacity = annual.CapacityBuffers ?? throw new InvalidOperationException("annual capacity projection is missing");
 
     AssertEqual(5, inventory.Count, "six-month historical inventory material count");
     AssertTrue(inventory.All(item => item.Points.Count == 26), "every six-month inventory material must expose exactly 26 points");
-    AssertTrue((annual.InventoryBuffers ?? Array.Empty<HistoryInventoryBufferView>()).All(item => item.Points.Count == 52), "every annual inventory material must expose exactly 52 points");
+    AssertTrue(
+        annualInventory.Count > 0 &&
+        annualSizing.Count > 0 &&
+        annualTime.Count > 0 &&
+        annualCapacity.Count > 0,
+        "annual inventory sizing time and capacity projections must all be non-empty");
+    AssertTrue(annualInventory.All(item => item.Points.Count == 52), "every annual inventory material must expose exactly 52 points");
     AssertTrue(time.Count > 0 && time.All(item => item.Points.Count == 26), "six-month time-buffer views must expose exactly 26 points");
-    AssertTrue((annual.TimeBuffers ?? Array.Empty<HistoryTimeBufferView>()).All(item => item.Points.Count == 52), "annual time-buffer views must expose exactly 52 points");
+    AssertTrue(annualTime.All(item => item.Points.Count == 52), "annual time-buffer views must expose exactly 52 points");
     AssertTrue(capacity.Count > 0 && capacity.All(item => item.Points.Count == 26), "six-month capacity views must expose exactly 26 points");
-    AssertTrue((annual.CapacityBuffers ?? Array.Empty<HistoryCapacityBufferView>()).All(item => item.Points.Count == 52), "annual capacity views must expose exactly 52 points");
+    AssertTrue(annualCapacity.All(item => item.Points.Count == 52), "annual capacity views must expose exactly 52 points");
     AssertTrue(
         inventory.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Red", "Yellow", "Green", "OverTopOfGreen" }, StringComparer.Ordinal)),
         "inventory distributions must use the four deterministic zone buckets");
@@ -858,8 +876,14 @@ static void TestHistoryReviewUsesEffectiveParameterSnapshot()
         blankIdSnapshot.SizingLines.Count == 0 &&
         blankIdSnapshot.EvidenceStatus == "EvidenceMissing",
         "blank historical snapshot IDs must not produce sizing results or sizing lines");
-    AssertEqual(recent.MaximumCumulativeLeadTimeDays, invalidParameterReview.MaximumCumulativeLeadTimeDays, "invalid historical sizing evidence must not raise maximum cumulative lead time");
-    AssertEqual(recent.DetailWindowWeeks, invalidParameterReview.DetailWindowWeeks, "invalid historical sizing evidence must not widen the detail window");
+    AssertTrue(
+        recent.MaximumCumulativeLeadTimeDays.HasValue &&
+        recent.DetailWindowWeeks.HasValue &&
+        invalidParameterReview.MaximumCumulativeLeadTimeDays.HasValue &&
+        invalidParameterReview.DetailWindowWeeks.HasValue,
+        "remaining complete historical sizing evidence must keep lead-time metadata available");
+    AssertEqual(recent.MaximumCumulativeLeadTimeDays.GetValueOrDefault(), invalidParameterReview.MaximumCumulativeLeadTimeDays.GetValueOrDefault(), "invalid historical sizing evidence must not raise maximum cumulative lead time");
+    AssertEqual(recent.DetailWindowWeeks.GetValueOrDefault(), invalidParameterReview.DetailWindowWeeks.GetValueOrDefault(), "invalid historical sizing evidence must not widen the detail window");
     var invalidParameterPoint = (invalidParameterReview.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
         .Single(item => item.Sku == sku)
         .Points.Single(item => item.WeekOffset == -1);
@@ -884,15 +908,39 @@ static void TestHistoryReviewDoesNotBackfillMissingEvidence()
         gapSource,
         new HistoricalQuantityPoisoningScenarioWorkspaceDataSource(seed)).GetReview(6);
 
-    var missingInventoryPoint = (normal.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
-        .Single(item => item.Sku == missingSnapshotSku)
-        .Points.Single(item => item.WeekOffset == missingTimeWeek);
+    var withoutHistoricalParameters = new HistoryReviewWorkspaceService(
+        new DdmrpParametersRemovingHistoryOperatingFactSource(new SeedHistoryOperatingFactSource(seed)),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    AssertTrue(
+        withoutHistoricalParameters.MaximumCumulativeLeadTimeDays is null &&
+        withoutHistoricalParameters.DetailWindowWeeks is null,
+        "missing all historical DDMRP parameters must leave lead-time metadata unknown");
+    var parameterlessInventory = withoutHistoricalParameters.InventoryBuffers ??
+        throw new InvalidOperationException("parameterless inventory projection is missing");
+    AssertTrue(
+        parameterlessInventory.Count > 0 &&
+        parameterlessInventory.All(item =>
+            item.Points.Count == 26 &&
+            item.EvidenceStatus == "EvidenceMissing" &&
+            item.Points.All(point => point.EvidenceStatus == "EvidenceMissing")),
+        "missing all historical DDMRP parameters must retain strict slots with explicit missing evidence");
+
+    var missingInventoryView = (normal.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
+        .Single(item => item.Sku == missingSnapshotSku);
+    AssertTrue(
+        missingInventoryView.Points.Count == 26 &&
+        missingInventoryView.Points.All(item => item.EvidenceStatus == "EvidenceMissing"),
+        "inventory projection must retain all slots when the effective SKU snapshot is missing");
+    var missingInventoryPoint = missingInventoryView.Points.Single(item => item.WeekOffset == missingTimeWeek);
     AssertEqual("EvidenceMissing", missingInventoryPoint.EvidenceStatus, "inventory point with a missing historical parameter snapshot");
     AssertTrue(
         missingInventoryPoint.TopOfRed is null &&
         missingInventoryPoint.TopOfYellow is null &&
         missingInventoryPoint.TopOfGreen is null,
         "missing historical parameter evidence must leave all zone tops null");
+    AssertTrue(
+        normal.ZoneResidence.All(item => item.Sku != missingSnapshotSku),
+        "zone residence must omit a SKU with no complete detail-window evidence");
 
     var missingTimePoint = (normal.TimeBuffers ?? throw new InvalidOperationException("time-buffer projection is missing"))
         .Single()
@@ -7526,6 +7574,22 @@ internal sealed class CapacityProtectionRemovingHistoryOperatingFactSource : IHi
     {
         var facts = _inner.Load(request);
         return facts with { CapacityProtectionFacts = Array.Empty<HistoricalCapacityProtectionFact>() };
+    }
+}
+
+internal sealed class DdmrpParametersRemovingHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public DdmrpParametersRemovingHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with { DdmrpParameterFacts = Array.Empty<HistoricalDdmrpParameterFact>() };
     }
 }
 

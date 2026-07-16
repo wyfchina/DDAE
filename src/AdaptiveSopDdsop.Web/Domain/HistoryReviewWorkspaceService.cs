@@ -61,8 +61,8 @@ public sealed record ConstraintExposureItem(
     string EvidenceStatus);
 
 public sealed record HistoryReviewWorkspace(
-    int MaximumCumulativeLeadTimeDays,
-    int DetailWindowWeeks,
+    int? MaximumCumulativeLeadTimeDays,
+    int? DetailWindowWeeks,
     int TrendMonths,
     int ObservedTrendWeeks,
     HistoryOperatingOutcomes OperatingOutcomes,
@@ -105,12 +105,14 @@ public sealed class HistoryReviewWorkspaceService
                 HistoryReviewProjectionBuilder.HasCompleteSizingEvidence(item) &&
                 item.EffectiveFromWeekOffset <= -1 &&
                 item.EffectiveThroughWeekOffset >= -requestedWeeks)
-            .Select(item => item.Setting.DecoupledLeadTimeDays)
-            .DefaultIfEmpty(0)
+            .Select(item => (int?)item.Setting.DecoupledLeadTimeDays)
             .Max();
-        var detailWeeks = Math.Clamp((int)Math.Ceiling(maximumLeadTime / 7m), 1, requestedWeeks);
-        var projection = HistoryReviewProjectionBuilder.Build(history, definitions, detailWeeks);
-        var zoneResidence = BuildZoneResidence(projection.InventoryBuffers, detailWeeks);
+        var detailWeeks = maximumLeadTime.HasValue
+            ? Math.Clamp((int)Math.Ceiling(maximumLeadTime.Value / 7m), 1, requestedWeeks)
+            : (int?)null;
+        var projectionDetailWeeks = detailWeeks ?? requestedWeeks;
+        var projection = HistoryReviewProjectionBuilder.Build(history, definitions, projectionDetailWeeks);
+        var zoneResidence = BuildZoneResidence(projection.InventoryBuffers, projectionDetailWeeks);
         var capacity = BuildCapacityProtection(projection.CapacityBuffers, history.CapacityFacts);
         var relationships = BuildProtectionRelationships(projection, capacity, definitions.Resources);
         var exposure = BuildConstraintExposure(history.ConstraintFacts, definitions.Resources);
@@ -219,6 +221,11 @@ public sealed class HistoryReviewWorkspaceService
                         item.EvidenceStatus == Complete)
                     .OrderBy(item => item.WeekOffset)
                     .ToList();
+                if (ordered.Count == 0)
+                {
+                    return null;
+                }
+
                 var statuses = ordered
                     .Select(item => item.Status)
                     .ToList();
@@ -259,6 +266,7 @@ public sealed class HistoryReviewWorkspaceService
                     recovery,
                     primaryCause);
             })
+            .OfType<BufferZoneResidenceSummary>()
             .OrderByDescending(item => item.RedPeriods)
             .ThenBy(item => item.Sku, StringComparer.Ordinal)
             .ToList();
