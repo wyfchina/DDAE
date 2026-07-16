@@ -81,6 +81,7 @@ var tests = new (string Name, Action Run)[]
     ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
     ("History review exposes four selectable visualization workspaces", TestHistoryReviewExposesSelectableVisualizationWorkspaces),
     ("History review retains range and selection state", TestHistoryReviewRetainsRangeAndSelectionState),
+    ("History review request race fixture runs in the standard harness", TestHistoryReviewRequestRaceFixtureRunsInStandardHarness),
     ("History visual renderers use backend evidence without frontend formulas", TestHistoryVisualRenderersUseBackendEvidence),
     ("Future buffer charts use backend sizing and separate volatility", TestFutureBufferChartsUseBackendSizingAndSeparateVolatility),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
@@ -4613,6 +4614,44 @@ static void RunFutureBufferChartFixture(string root, BufferTrendWorkspaceResult 
     {
         File.Delete(dtoPath);
     }
+}
+
+static void TestHistoryReviewRequestRaceFixtureRunsInStandardHarness()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-review-loader-race.fixture.mjs");
+
+    using var process = new Process
+    {
+        StartInfo = new ProcessStartInfo
+        {
+            FileName = FindNodeExecutable(),
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        },
+    };
+    process.StartInfo.ArgumentList.Add(fixturePath);
+    process.Start();
+    var standardOutput = process.StandardOutput.ReadToEndAsync();
+    var standardError = process.StandardError.ReadToEndAsync();
+    if (!process.WaitForExit(30_000))
+    {
+        process.Kill(entireProcessTree: true);
+        throw new InvalidOperationException("Node history request race fixture timed out after 30 seconds");
+    }
+    Task.WaitAll(standardOutput, standardError);
+    var output = standardOutput.Result;
+    var error = standardError.Result;
+    if (process.ExitCode != 0)
+    {
+        throw new InvalidOperationException(
+            $"Node history request race fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+    }
+    AssertTrue(output.Contains("history request race fixture groups passed", StringComparison.Ordinal),
+        $"Node history request race fixture did not report completion: {output}");
 }
 
 static string FindNodeExecutable()

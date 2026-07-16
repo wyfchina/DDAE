@@ -262,3 +262,8 @@ export async function runHistoryReviewRaceFixtures(scriptPath = defaultScriptPat
     );
   }
 }
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await runHistoryReviewRaceFixtures();
+  console.log("history request race fixture groups passed");
+}
