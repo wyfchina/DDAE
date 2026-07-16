@@ -309,6 +309,32 @@ export async function runFutureBufferChartFixtures(trend, scriptPath = defaultSc
     runtime.context,
   ), "", "different lower and upper lengths should produce no area");
 
+  const singletonZone = structuredClone(detail);
+  const singletonZoneIndex = 3;
+  const singletonZonePoint = structuredClone(singletonZone.series[singletonZoneIndex]);
+  singletonZone.series = singletonZone.series.map((item, index) => index === singletonZoneIndex
+    ? item
+    : { ...item, topOfRed: null, topOfYellow: null, topOfGreen: null });
+  runtime.context.__singletonZone = singletonZone;
+  vm.runInContext("renderBufferTrendChart(__singletonZone)", runtime.context);
+  const singletonZoneMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
+  assert.ok(!singletonZoneMarkup.includes('<path class="buffer-zone-'),
+    "one valid zone week should not masquerade as a visible stacked area");
+  assert.equal((singletonZoneMarkup.match(/buffer-zone-evidence-marker/g) || []).length, 3,
+    "one valid zone week should expose exactly three visible boundary markers");
+  for (const [cssClass, label, value] of [
+    ["is-red", "红区上沿", singletonZonePoint.topOfRed],
+    ["is-yellow", "黄区上沿", singletonZonePoint.topOfYellow],
+    ["is-green", "绿区上沿", singletonZonePoint.topOfGreen],
+  ]) {
+    assert.ok(singletonZoneMarkup.includes(`buffer-zone-evidence-marker ${cssClass}`),
+      `${label} should have a visible singleton marker`);
+    assert.ok(singletonZoneMarkup.includes(`${singletonZonePoint.periodStartDate} ${label}：${value}`),
+      `${label} marker should identify its backend period and value`);
+  }
+  assert.ok(singletonZoneMarkup.includes("缓冲区证据缺失"),
+    "singleton zone evidence should retain the surrounding gap warning");
+
   const missingZone = structuredClone(detail);
   const missingZoneIndex = Math.floor(missingZone.series.length / 2);
   missingZone.series[missingZoneIndex] = {
@@ -322,7 +348,91 @@ export async function runFutureBufferChartFixtures(trend, scriptPath = defaultSc
   const missingZoneMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
   assert.equal((missingZoneMarkup.match(/<path class="buffer-zone-/g) || []).length, 6,
     "one missing zone week should split every stacked area instead of bridging or zero-filling it");
+  assert.ok(missingZoneMarkup.includes("缓冲区证据缺失"),
+    "missing zone evidence should produce a visible Chinese warning");
   assert.ok(!/NaN|Infinity/.test(missingZoneMarkup), "missing zone evidence should not create invalid SVG geometry");
+
+  const invalidZone = structuredClone(detail);
+  const invalidZoneIndexes = [2, 5, 8];
+  invalidZone.series[invalidZoneIndexes[0]].topOfRed = "  ";
+  invalidZone.series[invalidZoneIndexes[1]].topOfYellow = Number.NaN;
+  invalidZone.series[invalidZoneIndexes[2]].topOfGreen = Number.POSITIVE_INFINITY;
+  runtime.context.__invalidZone = invalidZone;
+  vm.runInContext("renderBufferTrendChart(__invalidZone)", runtime.context);
+  const invalidZoneMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
+  assert.equal((invalidZoneMarkup.match(/<path class="buffer-zone-/g) || []).length, 12,
+    "blank, NaN, and infinite zone weeks should each split all three stacked areas");
+  assert.ok(invalidZoneMarkup.includes("缓冲区证据缺失"),
+    "invalid zone values should remain visible as missing evidence");
+  assert.ok(!/NaN|Infinity/.test(invalidZoneMarkup),
+    "invalid zone values must not enter SVG geometry");
+  const chartX = index => 62 + index * (940 - 62 - 26) / Math.max(1, detail.series.length - 1);
+  const invalidZonePaths = [...invalidZoneMarkup.matchAll(/<path class="buffer-zone-[^"]+" d="([^"]+)"/g)]
+    .map(match => match[1]);
+  for (const index of invalidZoneIndexes) {
+    assert.ok(invalidZonePaths.every(pathValue => !pathValue.includes(`${chartX(index)},`)),
+      `invalid zone week ${index} must not enter a stacked-area endpoint`);
+  }
+
+  const invalidDemand = structuredClone(detail);
+  const invalidDemandIndexes = [2, 5, 8];
+  invalidDemand.series[invalidDemandIndexes[0]].demand = "";
+  invalidDemand.series[invalidDemandIndexes[1]].demand = Number.NaN;
+  invalidDemand.series[invalidDemandIndexes[2]].demand = Number.NEGATIVE_INFINITY;
+  runtime.context.__invalidDemand = invalidDemand;
+  vm.runInContext("renderBufferVolatilityChart(__invalidDemand)", runtime.context);
+  const invalidDemandMarkup = runtime.elements.get("buffer-volatility-chart").innerHTML;
+  assert.equal((invalidDemandMarkup.match(/buffer-demand-marker/g) || []).length,
+    invalidDemand.series.length - invalidDemandIndexes.length,
+    "blank, NaN, and infinite demand values must not create zero or invalid markers");
+  assert.equal((invalidDemandMarkup.match(/<path class="buffer-demand-area"/g) || []).length, 4,
+    "blank, NaN, and infinite demand weeks should split the demand area");
+  assert.ok(invalidDemandMarkup.includes("计划需求证据缺失"),
+    "invalid demand values should remain visible as missing evidence");
+  assert.ok(!/NaN|Infinity/.test(invalidDemandMarkup),
+    "invalid demand values must not enter SVG geometry or marker titles");
+  const invalidDemandPaths = [...invalidDemandMarkup.matchAll(/<path class="buffer-demand-area" d="([^"]+)"/g)]
+    .map(match => match[1]);
+  for (const index of invalidDemandIndexes) {
+    assert.ok(invalidDemandPaths.every(pathValue => !pathValue.includes(`${chartX(index)},`)),
+      `invalid demand week ${index} must not enter a demand-area endpoint`);
+    assert.ok(!invalidDemandMarkup.includes(`class="buffer-demand-marker" cx="${chartX(index)}"`),
+      `invalid demand week ${index} must not create a zero or invalid marker`);
+  }
+
+  const invalidThreshold = structuredClone(detail);
+  const invalidThresholdIndexes = [2, 5, 8];
+  invalidThreshold.series[invalidThresholdIndexes[0]].demandSpikeThreshold = " ";
+  invalidThreshold.series[invalidThresholdIndexes[1]].demandSpikeThreshold = Number.NaN;
+  invalidThreshold.series[invalidThresholdIndexes[2]].demandSpikeThreshold = Number.POSITIVE_INFINITY;
+  runtime.context.__invalidThreshold = invalidThreshold;
+  vm.runInContext("renderBufferVolatilityChart(__invalidThreshold)", runtime.context);
+  const invalidThresholdMarkup = runtime.elements.get("buffer-volatility-chart").innerHTML;
+  assert.equal((invalidThresholdMarkup.match(/buffer-demand-threshold-marker/g) || []).length,
+    invalidThreshold.series.length - invalidThresholdIndexes.length,
+    "blank, NaN, and infinite thresholds must not create zero or invalid markers");
+  assert.equal((invalidThresholdMarkup.match(/<path class="buffer-demand-threshold"/g) || []).length, 4,
+    "blank, NaN, and infinite threshold weeks should split the backend threshold line");
+  assert.ok(invalidThresholdMarkup.includes("尖峰阈值证据缺失"),
+    "invalid threshold values should remain visible as missing evidence");
+  assert.ok(!/NaN|Infinity/.test(invalidThresholdMarkup),
+    "invalid thresholds must not enter SVG geometry or marker titles");
+  const invalidThresholdPaths = [...invalidThresholdMarkup.matchAll(/<path class="buffer-demand-threshold" d="([^"]+)"/g)]
+    .map(match => match[1]);
+  for (const index of invalidThresholdIndexes) {
+    assert.ok(invalidThresholdPaths.every(pathValue => !pathValue.includes(`${chartX(index)},`)),
+      `invalid threshold week ${index} must not enter a threshold-line endpoint`);
+    assert.ok(!invalidThresholdMarkup.includes(`class="buffer-demand-threshold-marker" cx="${chartX(index)}"`),
+      `invalid threshold week ${index} must not create a zero or invalid marker`);
+  }
+  assert.equal(vm.runInContext("isFiniteChartValue('')", runtime.context), false,
+    "blank chart evidence must not be coerced to zero");
+  assert.equal(vm.runInContext("isFiniteChartValue('   ')", runtime.context), false,
+    "whitespace chart evidence must not be coerced to zero");
+  assert.equal(vm.runInContext("isFiniteChartValue(NaN)", runtime.context), false,
+    "NaN chart evidence should be rejected");
+  assert.equal(vm.runInContext("isFiniteChartValue(Infinity)", runtime.context), false,
+    "infinite chart evidence should be rejected");
 
   const missingThreshold = structuredClone(detail);
   missingThreshold.series = missingThreshold.series.map(item => ({ ...item, demandSpikeThreshold: null }));

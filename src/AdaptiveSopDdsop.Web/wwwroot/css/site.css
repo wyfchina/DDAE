@@ -822,6 +822,11 @@ body.has-focus-panel { overflow: hidden; }
 .buffer-zone-red { fill: #ef3b2d; opacity: .88; }
 .buffer-zone-yellow { fill: #fff34f; opacity: .9; }
 .buffer-zone-green { fill: #35c46f; opacity: .88; }
+.buffer-zone-evidence-marker { stroke: #fff; stroke-width: 1.4; }
+.buffer-zone-evidence-marker.is-red { fill: #ef3b2d; }
+.buffer-zone-evidence-marker.is-yellow { fill: #d9c900; }
+.buffer-zone-evidence-marker.is-green { fill: #239c55; }
+.buffer-zone-evidence-note { fill: #9a3412; font-size: 10px; font-weight: 650; }
 .target-inventory-dot { fill: #f2f4f7; stroke: #c2c8cf; stroke-width: 1.2; }
 .axis-label, .axis-title { fill: #667085; font-size: 10px; }
 .axis-label { text-anchor: end; font-variant-numeric: tabular-nums; }

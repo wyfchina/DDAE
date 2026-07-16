@@ -2067,7 +2067,18 @@ function monotoneCrossingSegments(lowerPoints, upperPoints) {
 }
 
 function isFiniteChartValue(value) {
-  return value !== null && value !== undefined && Number.isFinite(Number(value));
+  return value !== null && value !== undefined &&
+    !(typeof value === "string" && value.trim() === "") &&
+    Number.isFinite(Number(value));
+}
+
+function hasValidBufferZoneEvidence(item) {
+  return isFiniteChartValue(item.topOfRed) &&
+    isFiniteChartValue(item.topOfYellow) &&
+    isFiniteChartValue(item.topOfGreen) &&
+    Number(item.topOfRed) >= 0 &&
+    Number(item.topOfRed) <= Number(item.topOfYellow) &&
+    Number(item.topOfYellow) <= Number(item.topOfGreen);
 }
 
 function renderBufferTrendChart(detail) {
@@ -2100,13 +2111,9 @@ function renderBufferTrendChart(detail) {
   const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
   const zoneSegments = contiguousEvidenceSegments(
     chartSeries.map((item, index) => ({ item, index })),
-    point => isFiniteChartValue(point.item.topOfRed) &&
-      isFiniteChartValue(point.item.topOfYellow) &&
-      isFiniteChartValue(point.item.topOfGreen) &&
-      Number(point.item.topOfRed) >= 0 &&
-      Number(point.item.topOfRed) <= Number(point.item.topOfYellow) &&
-      Number(point.item.topOfYellow) <= Number(point.item.topOfGreen));
+    point => hasValidBufferZoneEvidence(point.item));
   const zoneAreas = zoneSegments.map(segment => {
+    if (segment.length < 2) return "";
     const zeroPoints = segment.map(point => ({ x: x(point.index), y: y(0) }));
     const redPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.topOfRed) }));
     const yellowPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.topOfYellow) }));
@@ -2121,6 +2128,14 @@ function renderBufferTrendChart(detail) {
       <path class="buffer-zone-yellow" d="${buildMonotoneAreaPath(redPoints, yellowPoints, linearSegments)}"></path>
       <path class="buffer-zone-green" d="${buildMonotoneAreaPath(yellowPoints, greenPoints, linearSegments)}"></path>`;
   }).join("");
+  const zoneEvidenceMarkers = zoneSegments.filter(segment => segment.length === 1).map(segment => {
+    const point = segment[0];
+    return `
+      <circle class="buffer-zone-evidence-marker is-red" cx="${x(point.index)}" cy="${y(point.item.topOfRed)}" r="4"><title>${point.item.periodStartDate} 红区上沿：${point.item.topOfRed}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-yellow" cx="${x(point.index)}" cy="${y(point.item.topOfYellow)}" r="4"><title>${point.item.periodStartDate} 黄区上沿：${point.item.topOfYellow}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-green" cx="${x(point.index)}" cy="${y(point.item.topOfGreen)}" r="4"><title>${point.item.periodStartDate} 绿区上沿：${point.item.topOfGreen}</title></circle>`;
+  }).join("");
+  const zoneEvidenceMissing = chartSeries.some(item => !hasValidBufferZoneEvidence(item));
   const redTop = chartSeries.map(item => item.topOfRed).filter(isFiniteChartValue).map(Number);
   const yellowTop = chartSeries.map(item => item.topOfYellow).filter(isFiniteChartValue).map(Number);
   const greenTop = chartSeries.map(item => item.topOfGreen).filter(isFiniteChartValue).map(Number);
@@ -2156,12 +2171,14 @@ function renderBufferTrendChart(detail) {
       <line class="axis-line" x1="${left}" y1="${y(0)}" x2="${width - right}" y2="${y(0)}"></line>
       ${timeGrid}
       ${zoneAreas}
+      ${zoneEvidenceMarkers}
       ${reviewMarkers}
       ${targetDots}
       ${netFlowLine}
       ${baselineLine}
       ${currentLine}
       ${previewLine}
+      ${zoneEvidenceMissing ? `<text class="buffer-zone-evidence-note" x="${left + 8}" y="${top + 14}">缓冲区证据缺失</text>` : ""}
       ${monthLabels}
     </svg>
     <div class="buffer-chart-legend">

@@ -4472,6 +4472,10 @@ static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
 
     var trend = new BufferTrendWorkspaceService(new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetBaseline(12);
     RunFutureBufferChartFixture(root, trend);
+    AssertTrue(styles.Contains(".buffer-zone-evidence-marker", StringComparison.Ordinal),
+        "singleton zone evidence should have an explicit visible marker style");
+    AssertTrue(styles.Contains(".buffer-zone-evidence-note", StringComparison.Ordinal),
+        "missing zone evidence should have an explicit visible warning style");
 
     var trendBody = SourceFunctionBody(script, "renderBufferTrendChart");
     AssertTrue(trendBody.Contains("buildMonotoneAreaPath", StringComparison.Ordinal),
