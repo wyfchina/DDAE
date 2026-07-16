@@ -22,6 +22,9 @@ var tests = new (string Name, Action Run)[]
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
+    ("History review projects stock time capacity and sizing views from explicit facts", TestHistoryReviewProjectsExplicitBufferViews),
+    ("History review uses the effective historical parameter snapshot for every point", TestHistoryReviewUsesEffectiveParameterSnapshot),
+    ("History review exposes missing evidence instead of zero or current-parameter backfill", TestHistoryReviewDoesNotBackfillMissingEvidence),
     ("History facts expose versioned inventory time and capacity evidence", TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence),
     ("History time-buffer costs exclude FPGA event evidence", TestHistoryTimeBufferCostsExcludeFpgaEventEvidence),
     ("History capacity protection excludes FPGA routing evidence", TestHistoryCapacityProtectionExcludesFpgaRoutingEvidence),
@@ -613,10 +616,10 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
     var tvac = result.CapacityProtection.Single(item => item.ResourceCode == "RES-TVAC");
     AssertTrue(tvac.ProtectiveCapacity is null && tvac.ProtectedCcrResourceCode is null, "TVAC must remain a scenario-potential CCR without a protection definition");
 
-    var withoutDefinition = new HistoryReviewWorkspaceService(
-        historySource,
-        new CapacityProtectionRemovingScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
-    var unprotectedAit = withoutDefinition.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
+    var withoutHistoricalProtection = new HistoryReviewWorkspaceService(
+        new CapacityProtectionRemovingHistoryOperatingFactSource(historySource),
+        scenarioSource).GetReview(6);
+    var unprotectedAit = withoutHistoricalProtection.CapacityProtection.Single(item => item.ResourceCode == "RES-AIT");
     AssertTrue(
         unprotectedAit.ProtectiveCapacity is null &&
         unprotectedAit.ConsumedProtection is null &&
@@ -624,8 +627,20 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
         unprotectedAit.ProtectedCcrResourceCode is null &&
         unprotectedAit.RelationshipRole != "UpstreamProtection" &&
         unprotectedAit.EvidenceStatus == "EvidenceMissing",
-        "a routing claim without an explicit sequenced protection definition must not be presented as capacity protection");
-    AssertTrue(withoutDefinition.OperatingOutcomes.RemainingProtectionPercent is null, "missing protection evidence should leave the aggregate percentage empty");
+        "missing historical protection evidence must not be replaced by a scenario protection definition");
+    AssertTrue(withoutHistoricalProtection.OperatingOutcomes.RemainingProtectionPercent is null, "missing historical protection evidence should leave the aggregate percentage empty");
+
+    var withoutScenarioDefinition = new HistoryReviewWorkspaceService(
+        historySource,
+        new CapacityProtectionRemovingScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    AssertEqual(
+        JsonSerializer.Serialize(result.CapacityProtection),
+        JsonSerializer.Serialize(withoutScenarioDefinition.CapacityProtection),
+        "removing only the scenario capacity definition must not alter historical capacity summaries");
+    AssertEqual(
+        JsonSerializer.Serialize(result.CapacityBuffers),
+        JsonSerializer.Serialize(withoutScenarioDefinition.CapacityBuffers),
+        "removing only the scenario capacity definition must not alter historical capacity projections");
     AssertTrue(result.ConstraintExposure.Any(item => item.ExposureType == "场景潜在 CCR"), "history should classify scenario potential CCR exposure");
 }
 
@@ -722,6 +737,215 @@ static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
     }
 
     AssertTrue(failures.Count == 0, string.Join("; ", failures));
+}
+
+static void TestHistoryReviewProjectsExplicitBufferViews()
+{
+    var seed = SeedData.Create();
+    var historySource = new SeedHistoryOperatingFactSource(seed);
+    var service = new HistoryReviewWorkspaceService(
+        historySource,
+        new SeedScenarioWorkspaceDataSource(seed));
+    var recent = service.GetReview(6);
+    var annual = service.GetReview(12);
+    var recentFacts = historySource.Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
+    var inventory = recent.InventoryBuffers ?? throw new InvalidOperationException("six-month inventory projection is missing");
+    var sizing = recent.DdmrpSizingSnapshots ?? throw new InvalidOperationException("historical sizing projection is missing");
+    var time = recent.TimeBuffers ?? throw new InvalidOperationException("six-month time-buffer projection is missing");
+    var capacity = recent.CapacityBuffers ?? throw new InvalidOperationException("six-month capacity projection is missing");
+
+    AssertEqual(5, inventory.Count, "six-month historical inventory material count");
+    AssertTrue(inventory.All(item => item.Points.Count == 26), "every six-month inventory material must expose exactly 26 points");
+    AssertTrue((annual.InventoryBuffers ?? Array.Empty<HistoryInventoryBufferView>()).All(item => item.Points.Count == 52), "every annual inventory material must expose exactly 52 points");
+    AssertTrue(time.Count > 0 && time.All(item => item.Points.Count == 26), "six-month time-buffer views must expose exactly 26 points");
+    AssertTrue((annual.TimeBuffers ?? Array.Empty<HistoryTimeBufferView>()).All(item => item.Points.Count == 52), "annual time-buffer views must expose exactly 52 points");
+    AssertTrue(capacity.Count > 0 && capacity.All(item => item.Points.Count == 26), "six-month capacity views must expose exactly 26 points");
+    AssertTrue((annual.CapacityBuffers ?? Array.Empty<HistoryCapacityBufferView>()).All(item => item.Points.Count == 52), "annual capacity views must expose exactly 52 points");
+    AssertTrue(
+        inventory.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Red", "Yellow", "Green", "OverTopOfGreen" }, StringComparer.Ordinal)),
+        "inventory distributions must use the four deterministic zone buckets");
+    AssertTrue(
+        inventory.All(item => Math.Abs(item.Distribution.Sum(bucket => bucket.Percent) - 100m) <= 0.2m),
+        "complete inventory distributions must total 100 percent");
+
+    var sourceTimeFacts = (recentFacts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+        .ToDictionary(item => (item.BufferId, item.WeekOffset));
+    var sourceCosts = recentFacts.AbnormalCosts.ToDictionary(item => item.EventId, StringComparer.Ordinal);
+    foreach (var view in time)
+    {
+        foreach (var point in view.Points)
+        {
+            var fact = sourceTimeFacts[(view.BufferId, point.WeekOffset)];
+            AssertEqual(fact.EarlyCount, point.EarlyCount, $"{view.BufferId} week {point.WeekOffset} early count");
+            AssertEqual(fact.GreenCount, point.GreenCount, $"{view.BufferId} week {point.WeekOffset} green count");
+            AssertEqual(fact.YellowCount, point.YellowCount, $"{view.BufferId} week {point.WeekOffset} yellow count");
+            AssertEqual(fact.RedCount, point.RedCount, $"{view.BufferId} week {point.WeekOffset} red count");
+            AssertEqual(fact.LateCount, point.LateCount, $"{view.BufferId} week {point.WeekOffset} late count");
+            var expectedCost = fact.AbnormalCostEventId is null
+                ? null
+                : (decimal?)sourceCosts[fact.AbnormalCostEventId].CostAmount;
+            AssertEqual(expectedCost, point.AbnormalCost, $"{view.BufferId} week {point.WeekOffset} abnormal cost link");
+        }
+    }
+    AssertTrue(
+        time.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Early", "Green", "Yellow", "Red", "Late" }, StringComparer.Ordinal) &&
+            Math.Abs(item.Distribution.Sum(bucket => bucket.Percent) - 100m) <= 0.2m),
+        "time distributions must preserve all five bands and total 100 percent");
+
+    var upstreamProtection = capacity.Where(item => item.RelationshipRole == "UpstreamProtection").ToList();
+    AssertEqual(1, upstreamProtection.Count, "historical upstream capacity-protection example count");
+    AssertEqual("RES-AIT", upstreamProtection[0].ResourceCode, "historical upstream protection resource");
+    AssertEqual("RES-HARNESS", upstreamProtection[0].ProtectedCcrResourceCode, "historical protected CCR resource");
+    var ccr = capacity.Single(item => item.ResourceCode == "RES-HARNESS");
+    AssertEqual("CcrUtilization", ccr.RelationshipRole, "CCR must expose utilization reference rather than self-protection");
+    AssertTrue(ccr.Points.All(item => item.ProtectiveCapacity is null && item.ConsumedProtection is null && item.RemainingProtection is null), "CCR must not calculate self-protection");
+    AssertTrue(
+        capacity.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Safe", "High", "NearLimit", "Overload" }, StringComparer.Ordinal) &&
+            Math.Abs(item.Distribution.Sum(bucket => bucket.Percent) - 100m) <= 0.2m),
+        "capacity distributions must use committed-load ratios and total 100 percent");
+
+    AssertTrue(inventory.Any(item => item.Sku == "AV-FPGA-203"), "FPGA must remain in historical inventory");
+    AssertTrue(sizing.Any(item => item.Sku == "AV-FPGA-203"), "FPGA must retain its historical inventory parameter snapshots");
+    AssertTrue(
+        time.All(item => !string.Join(" ", item.BufferId, item.ControlPoint, item.ProtectedActivity).Contains("FPGA", StringComparison.OrdinalIgnoreCase)) &&
+        capacity.All(item => !string.Join(" ", item.ResourceCode, item.ResourceName, item.ProtectedCcrResourceCode).Contains("FPGA", StringComparison.OrdinalIgnoreCase)),
+        "FPGA must not enter historical time or capacity views");
+    AssertTrue(sizing.All(item => item.Sizing is not null && item.SizingLines.Count > 0 && item.AverageOnHand is not null), "complete historical parameter snapshots must expose sizing details and average on-hand evidence");
+}
+
+static void TestHistoryReviewUsesEffectiveParameterSnapshot()
+{
+    const string sku = "AV-COM-201";
+    var service = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+    var annual = service.GetReview(12);
+    var inventory = (annual.InventoryBuffers ?? throw new InvalidOperationException("annual inventory projection is missing"))
+        .Single(item => item.Sku == sku);
+    var priorPoint = inventory.Points.Single(item => item.WeekOffset == -27);
+    var currentPoint = inventory.Points.Single(item => item.WeekOffset == -26);
+
+    AssertEqual($"HIST-{sku}-V1", priorPoint.ParameterSnapshotId, "week -27 historical parameter snapshot");
+    AssertEqual($"HIST-{sku}-V2", currentPoint.ParameterSnapshotId, "week -26 historical parameter snapshot");
+    AssertTrue(
+        priorPoint.TopOfRed != currentPoint.TopOfRed ||
+        priorPoint.TopOfYellow != currentPoint.TopOfYellow ||
+        priorPoint.TopOfGreen != currentPoint.TopOfGreen,
+        "zone tops must change when the effective historical parameter snapshot changes");
+
+    var snapshots = (annual.DdmrpSizingSnapshots ?? throw new InvalidOperationException("annual sizing projection is missing"))
+        .Where(item => item.Sku == sku)
+        .OrderBy(item => item.EffectiveFromWeekOffset)
+        .ToList();
+    AssertEqual(2, snapshots.Count, "annual historical snapshot count for selected material");
+    AssertEqual($"HIST-{sku}-V1", snapshots[0].SnapshotId, "prior sizing snapshot ID");
+    AssertEqual($"HIST-{sku}-V2", snapshots[1].SnapshotId, "current sizing snapshot ID");
+    var priorSizing = snapshots[0].Sizing ?? throw new InvalidOperationException("prior sizing evidence is missing");
+    var currentSizing = snapshots[1].Sizing ?? throw new InvalidOperationException("current sizing evidence is missing");
+    AssertEqual<decimal?>(priorSizing.Zones.TopOfRed, priorPoint.TopOfRed, "week -27 top of red from prior sizing");
+    AssertEqual<decimal?>(currentSizing.Zones.TopOfRed, currentPoint.TopOfRed, "week -26 top of red from current sizing");
+    AssertEqual<decimal?>(priorSizing.Zones.TopOfGreen, priorPoint.TopOfGreen, "week -27 top of green from prior sizing");
+    AssertEqual<decimal?>(currentSizing.Zones.TopOfGreen, currentPoint.TopOfGreen, "week -26 top of green from current sizing");
+
+    var recent = service.GetReview(6);
+    var invalidParameterReview = new HistoryReviewWorkspaceService(
+        new InvalidHistoricalLeadTimeFactorFactSource(new SeedHistoryOperatingFactSource()),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    var blankIdSnapshot = (invalidParameterReview.DdmrpSizingSnapshots ?? throw new InvalidOperationException("historical sizing projection is missing"))
+        .Single(item => item.Sku == "AV-OBC-202");
+    AssertTrue(
+        blankIdSnapshot.Sizing is null &&
+        blankIdSnapshot.SizingLines.Count == 0 &&
+        blankIdSnapshot.EvidenceStatus == "EvidenceMissing",
+        "blank historical snapshot IDs must not produce sizing results or sizing lines");
+    AssertEqual(recent.MaximumCumulativeLeadTimeDays, invalidParameterReview.MaximumCumulativeLeadTimeDays, "invalid historical sizing evidence must not raise maximum cumulative lead time");
+    AssertEqual(recent.DetailWindowWeeks, invalidParameterReview.DetailWindowWeeks, "invalid historical sizing evidence must not widen the detail window");
+    var invalidParameterPoint = (invalidParameterReview.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
+        .Single(item => item.Sku == sku)
+        .Points.Single(item => item.WeekOffset == -1);
+    AssertTrue(
+        invalidParameterPoint.TopOfRed is null && invalidParameterPoint.EvidenceStatus == "EvidenceMissing",
+        "invalid historical lead-time-factor evidence must not produce sizing zones");
+}
+
+static void TestHistoryReviewDoesNotBackfillMissingEvidence()
+{
+    const string missingSnapshotSku = "AV-COM-201";
+    const int missingTimeWeek = -7;
+    var seed = SeedData.Create();
+    var gapSource = new HistoryEvidenceGapOperatingFactSource(
+        new SeedHistoryOperatingFactSource(seed),
+        $"HIST-{missingSnapshotSku}-V2",
+        missingTimeWeek);
+    var normal = new HistoryReviewWorkspaceService(
+        gapSource,
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var poisoned = new HistoryReviewWorkspaceService(
+        gapSource,
+        new HistoricalQuantityPoisoningScenarioWorkspaceDataSource(seed)).GetReview(6);
+
+    var missingInventoryPoint = (normal.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
+        .Single(item => item.Sku == missingSnapshotSku)
+        .Points.Single(item => item.WeekOffset == missingTimeWeek);
+    AssertEqual("EvidenceMissing", missingInventoryPoint.EvidenceStatus, "inventory point with a missing historical parameter snapshot");
+    AssertTrue(
+        missingInventoryPoint.TopOfRed is null &&
+        missingInventoryPoint.TopOfYellow is null &&
+        missingInventoryPoint.TopOfGreen is null,
+        "missing historical parameter evidence must leave all zone tops null");
+
+    var missingTimePoint = (normal.TimeBuffers ?? throw new InvalidOperationException("time-buffer projection is missing"))
+        .Single()
+        .Points.Single(item => item.WeekOffset == missingTimeWeek);
+    AssertEqual("EvidenceMissing", missingTimePoint.EvidenceStatus, "missing weekly time-buffer fact evidence");
+    AssertTrue(
+        missingTimePoint.EarlyCount is null &&
+        missingTimePoint.GreenCount is null &&
+        missingTimePoint.YellowCount is null &&
+        missingTimePoint.RedCount is null &&
+        missingTimePoint.LateCount is null &&
+        missingTimePoint.AbnormalCost is null,
+        "missing time-buffer facts must remain null rather than being backfilled as zero");
+
+    AssertEqual(
+        JsonSerializer.Serialize(normal.InventoryBuffers),
+        JsonSerializer.Serialize(poisoned.InventoryBuffers),
+        "scenario-poisoned current and future quantities must not alter historical inventory projections");
+    AssertEqual(
+        JsonSerializer.Serialize(normal.DdmrpSizingSnapshots),
+        JsonSerializer.Serialize(poisoned.DdmrpSizingSnapshots),
+        "scenario-poisoned current parameters must not alter historical sizing snapshots");
+    AssertEqual(
+        JsonSerializer.Serialize(normal.TimeBuffers),
+        JsonSerializer.Serialize(poisoned.TimeBuffers),
+        "scenario-poisoned current and future quantities must not alter historical time projections");
+    AssertEqual(
+        JsonSerializer.Serialize(normal.CapacityBuffers),
+        JsonSerializer.Serialize(poisoned.CapacityBuffers),
+        "scenario-poisoned current and future quantities must not alter historical capacity projections");
+
+    var duplicateCostEvidence = new HistoryReviewWorkspaceService(
+        new DuplicateCostEventHistoryOperatingFactSource(new SeedHistoryOperatingFactSource(seed)),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var ambiguousCostPoint = (duplicateCostEvidence.TimeBuffers ?? throw new InvalidOperationException("time-buffer projection is missing"))
+        .Single()
+        .Points.Single(item => item.WeekOffset == -18);
+    AssertTrue(
+        ambiguousCostPoint.AbnormalCost is null && ambiguousCostPoint.EvidenceStatus == "EvidenceMissing",
+        "an event ID that joins more than one historical cost event must remain missing evidence");
+
+    var reconciliationFailure = new HistoryReviewWorkspaceService(
+        new InventoryReconciliationPoisonHistoryOperatingFactSource(new SeedHistoryOperatingFactSource(seed)),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var invalidInventoryPoint = (reconciliationFailure.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
+        .Single(item => item.Sku == missingSnapshotSku)
+        .Points.Single(item => item.WeekOffset == -8);
+    AssertTrue(
+        invalidInventoryPoint.TopOfRed is null &&
+        invalidInventoryPoint.TopOfYellow is null &&
+        invalidInventoryPoint.TopOfGreen is null &&
+        invalidInventoryPoint.EvidenceStatus == "EvidenceMissing",
+        "an unreconciled inventory point must not expose zone tops from an otherwise valid snapshot");
 }
 
 static void TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence()
@@ -7254,6 +7478,23 @@ internal sealed class HistoricalQuantityPoisoningScenarioWorkspaceDataSource : I
             Resources = data.Resources
                 .Select(item => item with { WeeklyAvailableUnits = item.WeeklyAvailableUnits * 100m })
                 .ToList(),
+            DdmrpParameters = data.DdmrpParameters
+                .Select(item => item with
+                {
+                    Adu = item.Adu * 100m,
+                    DecoupledLeadTimeDays = item.DecoupledLeadTimeDays * 10,
+                    TopOfRed = item.TopOfRed * 100m,
+                    TopOfYellow = item.TopOfYellow * 100m,
+                    TopOfGreen = item.TopOfGreen * 100m,
+                    Sizing = null
+                })
+                .ToList(),
+            CapacityProtections = (data.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>())
+                .Select(item => item with { ReservePercent = 99m })
+                .ToList(),
+            TimeBuffers = (data.TimeBuffers ?? Array.Empty<TimeBufferDefinition>())
+                .Select(item => item with { BufferDays = item.BufferDays * 100m })
+                .ToList(),
             ResourceCalendar = data.ResourceCalendar
                 .Select(item => item with { CapacityMultiplier = 0.01m, CalendarNote = "future poison" })
                 .ToList(),
@@ -7267,6 +7508,136 @@ internal sealed class HistoricalQuantityPoisoningScenarioWorkspaceDataSource : I
                         .Select(action => action with { Value = 0.01m })
                         .ToList()
                 })
+                .ToList()
+        };
+    }
+}
+
+internal sealed class CapacityProtectionRemovingHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public CapacityProtectionRemovingHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with { CapacityProtectionFacts = Array.Empty<HistoricalCapacityProtectionFact>() };
+    }
+}
+
+internal sealed class HistoryEvidenceGapOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+    private readonly string _removedSnapshotId;
+    private readonly int _removedTimeWeek;
+
+    public HistoryEvidenceGapOperatingFactSource(
+        IHistoryOperatingFactSource inner,
+        string removedSnapshotId,
+        int removedTimeWeek)
+    {
+        _inner = inner;
+        _removedSnapshotId = removedSnapshotId;
+        _removedTimeWeek = removedTimeWeek;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with
+        {
+            DdmrpParameterFacts = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>())
+                .Where(item => item.SnapshotId != _removedSnapshotId)
+                .ToList(),
+            TimeBufferFacts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+                .Where(item => item.WeekOffset != _removedTimeWeek)
+                .ToList()
+        };
+    }
+}
+
+internal sealed class DuplicateCostEventHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public DuplicateCostEventHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        var linked = facts.AbnormalCosts.Single(item => item.EventId == "HAC-2026-002");
+        return facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts
+                .Append(linked with { WeekOffset = linked.WeekOffset - 1 })
+                .ToList()
+        };
+    }
+}
+
+internal sealed class InventoryReconciliationPoisonHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public InventoryReconciliationPoisonHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with
+        {
+            BufferFacts = facts.BufferFacts
+                .Select(item => item.Sku == "AV-COM-201" && item.WeekOffset == -8
+                    ? item with { EndingNetFlow = item.EndingNetFlow + 1m }
+                    : item)
+                .ToList()
+        };
+    }
+}
+
+internal sealed class InvalidHistoricalLeadTimeFactorFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public InvalidHistoricalLeadTimeFactorFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with
+        {
+            DdmrpParameterFacts = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>())
+                .Select(item => item.EffectiveThroughWeekOffset != -1
+                    ? item
+                    : item.Sku == "AV-COM-201"
+                        ? item with
+                        {
+                            Setting = item.Setting with
+                            {
+                                DecoupledLeadTimeDays = 350,
+                                LeadTimeFactor = null
+                            }
+                        }
+                        : item.Sku == "AV-OBC-202"
+                            ? item with
+                            {
+                                SnapshotId = string.Empty,
+                                Setting = item.Setting with { ParameterSnapshotId = string.Empty }
+                            }
+                            : item)
                 .ToList()
         };
     }

@@ -70,7 +70,11 @@ public sealed record HistoryReviewWorkspace(
     IReadOnlyList<BufferZoneResidenceSummary> ZoneResidence,
     IReadOnlyList<CapacityProtectionLayer> CapacityProtection,
     IReadOnlyList<ConstraintExposureItem> ConstraintExposure,
-    string EvidenceLabel);
+    string EvidenceLabel,
+    IReadOnlyList<HistoryInventoryBufferView>? InventoryBuffers = null,
+    IReadOnlyList<HistoryDdmrpSizingSnapshotView>? DdmrpSizingSnapshots = null,
+    IReadOnlyList<HistoryTimeBufferView>? TimeBuffers = null,
+    IReadOnlyList<HistoryCapacityBufferView>? CapacityBuffers = null);
 
 public sealed class HistoryReviewWorkspaceService
 {
@@ -95,15 +99,20 @@ public sealed class HistoryReviewWorkspaceService
         var asOfDate = new DateOnly(2026, 6, 1);
         var history = _historyFactSource.Load(new HistoryFactRequest(requestedWeeks, asOfDate));
         var definitions = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(requestedWeeks, asOfDate));
-        var maximumLeadTime = definitions.DdmrpParameters
-            .Where(item => item.DecoupledLeadTimeDays > 0)
-            .Select(item => item.DecoupledLeadTimeDays)
-            .DefaultIfEmpty(7)
+        var historicalParameters = history.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>();
+        var maximumLeadTime = historicalParameters
+            .Where(item =>
+                HistoryReviewProjectionBuilder.HasCompleteSizingEvidence(item) &&
+                item.EffectiveFromWeekOffset <= -1 &&
+                item.EffectiveThroughWeekOffset >= -requestedWeeks)
+            .Select(item => item.Setting.DecoupledLeadTimeDays)
+            .DefaultIfEmpty(0)
             .Max();
         var detailWeeks = Math.Clamp((int)Math.Ceiling(maximumLeadTime / 7m), 1, requestedWeeks);
-        var zoneResidence = BuildZoneResidence(history.BufferFacts, definitions.DdmrpParameters, detailWeeks);
-        var capacity = BuildCapacityProtection(history.CapacityFacts, definitions);
-        var relationships = BuildProtectionRelationships(definitions, capacity);
+        var projection = HistoryReviewProjectionBuilder.Build(history, definitions, detailWeeks);
+        var zoneResidence = BuildZoneResidence(projection.InventoryBuffers, detailWeeks);
+        var capacity = BuildCapacityProtection(projection.CapacityBuffers, history.CapacityFacts);
+        var relationships = BuildProtectionRelationships(projection, capacity, definitions.Resources);
         var exposure = BuildConstraintExposure(history.ConstraintFacts, definitions.Resources);
         var outcomes = BuildOperatingOutcomes(history, capacity);
         var observedTrendWeeks = history.OperatingFacts
@@ -121,7 +130,11 @@ public sealed class HistoryReviewWorkspaceService
             zoneResidence,
             capacity,
             exposure,
-            $"{history.EvidenceLabel} / SourceAuthority={history.SourceAuthority} / AsOf={history.AsOfUtc}");
+            $"{history.EvidenceLabel} / SourceAuthority={history.SourceAuthority} / AsOf={history.AsOfUtc}",
+            projection.InventoryBuffers,
+            projection.DdmrpSizingSnapshots,
+            projection.TimeBuffers,
+            projection.CapacityBuffers);
     }
 
     private static HistoryOperatingOutcomes BuildOperatingOutcomes(
@@ -193,25 +206,21 @@ public sealed class HistoryReviewWorkspaceService
     }
 
     private static IReadOnlyList<BufferZoneResidenceSummary> BuildZoneResidence(
-        IReadOnlyList<WeeklyBufferFact> facts,
-        IReadOnlyList<DdmrpParameterProfile> parameters,
+        IReadOnlyList<HistoryInventoryBufferView> inventory,
         int detailWeeks)
     {
-        var parameterBySku = parameters.ToDictionary(item => item.Sku, StringComparer.Ordinal);
-        return facts
-            .Where(item =>
-                item.WeekOffset < 0 &&
-                Math.Abs(item.WeekOffset) <= detailWeeks &&
-                item.EndingNetFlow is not null &&
-                item.EvidenceStatus == Complete &&
-                parameterBySku.ContainsKey(item.Sku))
-            .GroupBy(item => item.Sku, StringComparer.Ordinal)
-            .Select(group =>
+        return inventory
+            .Select(view =>
             {
-                var parameter = parameterBySku[group.Key];
-                var ordered = group.OrderBy(item => item.WeekOffset).ToList();
+                var ordered = view.Points
+                    .Where(item =>
+                        item.WeekOffset < 0 &&
+                        Math.Abs(item.WeekOffset) <= detailWeeks &&
+                        item.EvidenceStatus == Complete)
+                    .OrderBy(item => item.WeekOffset)
+                    .ToList();
                 var statuses = ordered
-                    .Select(item => Zone(item.EndingNetFlow!.Value, parameter))
+                    .Select(item => item.Status)
                     .ToList();
                 var redEntries = Enumerable.Range(0, statuses.Count)
                     .Where(index => statuses[index] == "Red" && (index == 0 || statuses[index - 1] != "Red"))
@@ -223,8 +232,8 @@ public sealed class HistoryReviewWorkspaceService
                         .FirstOrDefault(index => statuses[index] is "Green" or "OverTopOfGreen", -1);
                 int? recovery = recoveryIndex < 0 ? null : recoveryIndex - lastRedEntry;
                 var primaryCause = ordered
-                    .Where(item => !string.IsNullOrWhiteSpace(item.ExplicitCause))
-                    .GroupBy(item => item.ExplicitCause, StringComparer.Ordinal)
+                    .Where(item => !string.IsNullOrWhiteSpace(item.Cause))
+                    .GroupBy(item => item.Cause, StringComparer.Ordinal)
                     .OrderByDescending(causeGroup => causeGroup.Count())
                     .ThenBy(causeGroup => causeGroup.Key, StringComparer.Ordinal)
                     .Select(causeGroup => causeGroup.Key)
@@ -234,8 +243,8 @@ public sealed class HistoryReviewWorkspaceService
                     : decimal.Round(statuses.Count(item => item == status) * 100m / statuses.Count, 1);
 
                 return new BufferZoneResidenceSummary(
-                    group.Key,
-                    parameter.Name,
+                    view.Sku,
+                    view.Name,
                     statuses.Count,
                     statuses.Count(item => item == "Red"),
                     statuses.Count(item => item == "Yellow"),
@@ -256,103 +265,65 @@ public sealed class HistoryReviewWorkspaceService
     }
 
     private static IReadOnlyList<CapacityProtectionLayer> BuildCapacityProtection(
-        IReadOnlyList<WeeklyCapacityFact> facts,
-        ScenarioWorkspaceDataSet definitions)
+        IReadOnlyList<HistoryCapacityBufferView> capacityViews,
+        IReadOnlyList<WeeklyCapacityFact> facts)
     {
-        var resourceNames = definitions.Resources
-            .ToDictionary(item => item.Code, item => item.Name, StringComparer.Ordinal);
-        var factGroups = facts
-            .GroupBy(item => item.ResourceCode, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
-        var resourceCodes = resourceNames.Keys
-            .Concat(factGroups.Keys)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(item => item, StringComparer.Ordinal)
-            .ToList();
-        var protectionDefinitions = definitions.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>();
-        var claimedCcrCodes = definitions.ResourceRoutings
-            .Where(item => !string.IsNullOrWhiteSpace(item.ProtectsCcrResourceCode))
-            .Select(item => item.ProtectsCcrResourceCode!)
-            .Concat(protectionDefinitions.Select(item => item.ProtectedCcrResourceCode))
-            .ToHashSet(StringComparer.Ordinal);
-
-        return resourceCodes.Select(resourceCode =>
-        {
-            var resourceFacts = factGroups.GetValueOrDefault(resourceCode) ?? new List<WeeklyCapacityFact>();
-            var theoretical = CapacityAverage(resourceFacts, item => item.TheoreticalCapacity);
-            var standard = CapacityAverage(resourceFacts, item => item.StandardCapacity);
-            var demonstrated = CapacityAverage(resourceFacts, item => item.DemonstratedCapacity);
-            var planned = CapacityAverage(resourceFacts, item => item.PlannedAvailableCapacity);
-            var committed = CapacityAverage(resourceFacts, item => item.CommittedLoad);
-            var lossReason = resourceFacts
-                .Where(item => item.EvidenceStatus == Complete && !string.IsNullOrWhiteSpace(item.LossReason))
-                .Select(item => item.LossReason)
-                .Distinct(StringComparer.Ordinal)
-                .DefaultIfEmpty("证据缺失")
-                .Aggregate((left, right) => $"{left}；{right}");
-            var definition = protectionDefinitions.FirstOrDefault(item => item.UpstreamResourceCode == resourceCode);
-            var routingClaim = definitions.ResourceRoutings
-                .FirstOrDefault(item =>
-                    item.ResourceCode == resourceCode &&
-                    !string.IsNullOrWhiteSpace(item.ProtectsCcrResourceCode));
-            var hasProtectionClaim = definition is not null || routingClaim is not null;
-            var hasCompleteDefinition = definition is not null &&
-                definition.EvidenceStatus == Complete &&
-                HasCompleteSequenceEvidence(definitions.ResourceRoutings, definition);
-            var protectedCcrCode = hasCompleteDefinition ? definition!.ProtectedCcrResourceCode : null;
-            var capacityEvidenceComplete = theoretical is not null &&
-                standard is not null &&
-                demonstrated is not null &&
-                planned is not null &&
-                committed is not null;
-
-            decimal? protective = null;
-            decimal? consumed = null;
-            decimal? remaining = null;
-            if (hasCompleteDefinition && planned is not null && committed is not null)
+        return capacityViews
+            .Select(view =>
             {
-                var reservePercent = Math.Clamp(definition!.ReservePercent, 0m, 100m);
-                protective = decimal.Round(planned.Value * reservePercent / 100m, 1);
-                var protectionStart = planned.Value - protective.Value;
-                consumed = decimal.Round(
-                    Math.Clamp(committed.Value - protectionStart, 0m, protective.Value),
-                    1);
-                remaining = decimal.Round(protective.Value - consumed.Value, 1);
-            }
+                var completePoints = view.Points
+                    .Where(item => item.EvidenceStatus == Complete)
+                    .ToList();
+                var lossReasons = facts
+                    .Where(item =>
+                        item.ResourceCode == view.ResourceCode &&
+                        item.EvidenceStatus == Complete &&
+                        !string.IsNullOrWhiteSpace(item.LossReason))
+                    .Select(item => item.LossReason)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(item => item, StringComparer.Ordinal)
+                    .ToList();
+                var theoretical = CapacityPointAverage(completePoints, item => item.TheoreticalCapacity);
+                var standard = CapacityPointAverage(completePoints, item => item.StandardCapacity);
+                var demonstrated = CapacityPointAverage(completePoints, item => item.DemonstratedCapacity);
+                var planned = CapacityPointAverage(completePoints, item => item.PlannedAvailableCapacity);
+                var committed = CapacityPointAverage(completePoints, item => item.CommittedLoad);
+                var protective = CapacityPointAverage(completePoints, item => item.ProtectiveCapacity);
+                decimal? consumed = null;
+                decimal? remaining = null;
+                if (planned is not null && committed is not null && protective is not null)
+                {
+                    var protectionStart = planned.Value - protective.Value;
+                    consumed = decimal.Round(
+                        Math.Clamp(committed.Value - protectionStart, 0m, protective.Value),
+                        1);
+                    remaining = decimal.Round(protective.Value - consumed.Value, 1);
+                }
 
-            var relationshipRole = hasCompleteDefinition
-                ? "UpstreamProtection"
-                : claimedCcrCodes.Contains(resourceCode)
-                    ? "CcrUtilization"
-                    : "ObservedResource";
-            var evidenceStatus = capacityEvidenceComplete && (!hasProtectionClaim || hasCompleteDefinition)
-                ? Complete
-                : EvidenceMissing;
-
-            return new CapacityProtectionLayer(
-                resourceCode,
-                resourceNames.GetValueOrDefault(resourceCode, resourceCode),
-                protectedCcrCode,
-                relationshipRole,
-                theoretical,
-                standard,
-                demonstrated,
-                planned,
-                committed,
-                protective,
-                consumed,
-                remaining,
-                lossReason,
-                evidenceStatus);
-        }).ToList();
+                return new CapacityProtectionLayer(
+                    view.ResourceCode,
+                    view.ResourceName,
+                    view.ProtectedCcrResourceCode,
+                    view.RelationshipRole,
+                    theoretical,
+                    standard,
+                    demonstrated,
+                    planned,
+                    committed,
+                    protective,
+                    consumed,
+                    remaining,
+                    lossReasons.Count == 0 ? "证据缺失" : string.Join("；", lossReasons),
+                    view.EvidenceStatus);
+            })
+            .ToList();
     }
 
-    private static decimal? CapacityAverage(
-        IReadOnlyList<WeeklyCapacityFact> facts,
-        Func<WeeklyCapacityFact, decimal?> selector)
+    private static decimal? CapacityPointAverage(
+        IReadOnlyList<HistoryCapacityPoint> points,
+        Func<HistoryCapacityPoint, decimal?> selector)
     {
-        var values = facts
-            .Where(item => item.EvidenceStatus == Complete)
+        var values = points
             .Select(selector)
             .Where(item => item.HasValue)
             .Select(item => item!.Value)
@@ -360,50 +331,43 @@ public sealed class HistoryReviewWorkspaceService
         return values.Count == 0 ? null : decimal.Round(values.Average(), 1);
     }
 
-    private static bool HasCompleteSequenceEvidence(
-        IReadOnlyList<ResourceRouting> routings,
-        CapacityProtectionDefinition definition)
-    {
-        return routings
-            .Where(item =>
-                item.ResourceCode == definition.UpstreamResourceCode &&
-                item.ProtectsCcrResourceCode == definition.ProtectedCcrResourceCode &&
-                item.OperationSequence > 0 &&
-                item.EvidenceStatus == Complete)
-            .Any(upstream => routings.Any(downstream =>
-                downstream.Sku == upstream.Sku &&
-                downstream.ResourceCode == definition.ProtectedCcrResourceCode &&
-                downstream.OperationSequence > upstream.OperationSequence &&
-                downstream.EvidenceStatus == Complete));
-    }
-
     private static IReadOnlyList<ControlPointProtectionRelationship> BuildProtectionRelationships(
-        ScenarioWorkspaceDataSet definitions,
-        IReadOnlyList<CapacityProtectionLayer> capacity)
+        HistoryReviewProjection projection,
+        IReadOnlyList<CapacityProtectionLayer> capacity,
+        IReadOnlyList<CapacityResource> resources)
     {
-        var results = definitions.DdmrpParameters
-            .Select(item => new ControlPointProtectionRelationship(
-                item.DecouplingPoint,
-                item.Sku,
-                "库存缓冲",
-                string.IsNullOrWhiteSpace(item.BufferProfile) ? "证据缺失" : "有保护设计",
-                item.TopOfGreen > 0 ? "保护可用" : "证据缺失",
-                item.CompletenessStatus == Complete ? "保护有效" : "待验证",
-                $"{item.BufferProfile} / {item.ParameterStatus} / {item.CompletenessStatus}"))
+        var results = projection.InventoryBuffers
+            .Select(view =>
+            {
+                var snapshotIds = view.Points
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ParameterSnapshotId))
+                    .Select(item => item.ParameterSnapshotId!)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(item => item, StringComparer.Ordinal);
+                return new ControlPointProtectionRelationship(
+                    view.ControlPoint,
+                    view.Sku,
+                    "库存缓冲",
+                    view.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
+                    view.Points.Any(item => item.EvidenceStatus == Complete && item.TopOfGreen is > 0m) ? "保护可用" : "证据缺失",
+                    view.EvidenceStatus == Complete ? "保护有效" : "待验证",
+                    $"{string.Join(" / ", snapshotIds)} / {view.EvidenceStatus}");
+            })
             .ToList();
 
-        results.AddRange((definitions.TimeBuffers ?? Array.Empty<TimeBufferDefinition>())
-            .Select(item => new ControlPointProtectionRelationship(
-                item.ControlPoint,
-                item.ProtectedActivity,
+        results.AddRange(projection.TimeBuffers.Select(view =>
+            new ControlPointProtectionRelationship(
+                view.ControlPoint,
+                view.ProtectedActivity,
                 "时间缓冲",
-                item.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
-                item.BufferDays > 0 ? "保护可用" : "证据缺失",
-                item.EvidenceStatus == Complete ? "保护有效" : "待验证",
-                $"{item.BufferDays:0.0} 天 / {item.Applicability} / {item.EvidenceStatus}")));
+                view.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
+                view.Points.Any(item => item.EvidenceStatus == Complete) ? "保护可用" : "证据缺失",
+                view.EvidenceStatus == Complete ? "保护有效" : "待验证",
+                $"{view.BufferId} / {view.EvidenceStatus}")));
 
-        var resourceNames = definitions.Resources
-            .ToDictionary(item => item.Code, item => item.Name, StringComparer.Ordinal);
+        var resourceNames = resources
+            .GroupBy(item => item.Code, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
         results.AddRange(capacity
             .Where(item => item.RelationshipRole == "UpstreamProtection")
             .Select(item => new ControlPointProtectionRelationship(
@@ -413,11 +377,12 @@ public sealed class HistoryReviewWorkspaceService
                     : resourceNames.GetValueOrDefault(item.ProtectedCcrResourceCode, item.ProtectedCcrResourceCode),
                 "产能保护",
                 item.EvidenceStatus == Complete ? "有保护设计" : "证据缺失",
-                item.RemainingProtection is > 0 ? "保护可用" : item.RemainingProtection is null ? "证据缺失" : "保护不足",
+                item.RemainingProtection is > 0m ? "保护可用" : item.RemainingProtection is null ? "证据缺失" : "保护不足",
                 item.CommittedLoad is not null && item.PlannedAvailableCapacity is not null
                     ? item.CommittedLoad <= item.PlannedAvailableCapacity ? "保护有效" : "保护被穿透"
                     : "待验证",
                 $"{item.ResourceName} -> {item.ProtectedCcrResourceCode ?? "证据缺失"} / {item.LossReason} / {item.EvidenceStatus}")));
+
         return results;
     }
 
@@ -436,14 +401,6 @@ public sealed class HistoryReviewWorkspaceService
                 item.EvidenceStatus))
             .ToList();
     }
-
-    private static string Zone(decimal netFlow, DdmrpParameterProfile parameter) => netFlow <= parameter.TopOfRed
-        ? "Red"
-        : netFlow <= parameter.TopOfYellow
-            ? "Yellow"
-            : netFlow <= parameter.TopOfGreen
-                ? "Green"
-                : "OverTopOfGreen";
 
     private static int MaximumStreak(IReadOnlyList<string> values, string target)
     {
