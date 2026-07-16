@@ -18,6 +18,11 @@ const state = {
   savedScenarioRuns: [],
   historyReview: null,
   historyTrendMonths: 6,
+  selectedHistoryControlPoint: null,
+  selectedHistoryInventorySku: null,
+  selectedHistorySizingSnapshot: null,
+  selectedHistoryTimeBufferId: null,
+  selectedHistoryCapacityResource: null,
   historyRequestGeneration: 0,
   workspaceErrorSource: null,
   historySelection: {
@@ -1599,6 +1604,7 @@ function renderDdmrpParameterCompleteness(parameters) {
 function renderDdmrpParameterDetail(skuCode) {
   const item = state.data?.ddmrpParameters?.find(parameter => parameter.sku === skuCode);
   if (!item) return;
+  const sizingLines = valueOr(item.sizingLines, []);
   openWorkspaceDrawer("参数详情", [
     {
       title: `${item.sku} ${item.name}`,
@@ -1618,6 +1624,7 @@ function renderDdmrpParameterDetail(skuCode) {
         ["ADU 来源", `${escapeHtml(businessEvidenceLabel(item.aduSource))} / ${number(item.aduCalculationWindowDays)} 天窗口`],
         ["DLT", `${number(item.decoupledLeadTimeDays)} 天`],
         ["DLT 来源", escapeHtml(item.dltSource)],
+        ["提前期因子", item.leadTimeFactor == null ? "证据缺失" : number(item.leadTimeFactor)],
         ["变异因子", number(item.variabilityFactor)],
         ["DAF", number(item.demandAdjustmentFactor)],
         ["区域调整因子", number(item.zoneAdjustmentFactor)],
@@ -1626,6 +1633,8 @@ function renderDdmrpParameterDetail(skuCode) {
         ["单位成本", money(item.unitCost)],
         ["周能力参考", number(item.weeklyCapacityUnits)],
         ["生效窗口", `第 ${number(item.effectiveFromWeek)}-${number(item.effectiveThroughWeek)} 周`],
+        ["参数快照", escapeHtml(item.parameterSnapshotId || "证据缺失")],
+        ["证据状态", escapeHtml(evidenceStatusLabel(item.evidenceStatus))],
       ],
     },
     {
@@ -1634,10 +1643,16 @@ function renderDdmrpParameterDetail(skuCode) {
         ["红区上沿", number(item.topOfRed)],
         ["黄区上沿", number(item.topOfYellow)],
         ["绿区上沿", number(item.topOfGreen)],
-        ["红区公式", "ADU × DAF × DLT × 区域调整因子 × 变异因子"],
-        ["黄区公式", "红区上沿 + ADU × DAF × DLT × 区域调整因子"],
-        ["绿区公式", "黄区上沿 + max(MOQ, ADU × DAF × 订货周期) × 区域调整因子"],
       ],
+    },
+    {
+      title: "后端定容明细",
+      items: sizingLines.length
+        ? sizingLines.map(line => [
+            line.component,
+            `${escapeHtml(line.formula)} · ${number(line.value)} · ${escapeHtml(businessEvidenceLabel(line.explanation))}`,
+          ])
+        : [["定容明细", "旧版本缺少提前期因子，不能生成定容明细"]],
     },
   ]);
 }
@@ -3669,31 +3684,64 @@ function syncHistorySelectionState(history) {
   const capacity = history.capacityBuffers || [];
   const selectAvailable = (selected, values) => values.includes(selected) ? selected : valueOr(values[0], null);
 
-  const inventoryControlPoints = [...new Set(inventory.map(item => item.controlPoint))];
-  state.historySelection.inventoryControlPoint = selectAvailable(state.historySelection.inventoryControlPoint, inventoryControlPoints);
-  const inventorySkus = inventory
-    .filter(item => item.controlPoint === state.historySelection.inventoryControlPoint)
-    .map(item => item.sku);
-  state.historySelection.inventorySku = selectAvailable(state.historySelection.inventorySku, inventorySkus);
+  const controlPoints = [...new Set([
+    ...inventory.map(item => item.controlPoint),
+    ...sizing.map(item => item.controlPoint),
+  ])];
+  state.selectedHistoryControlPoint = selectAvailable(state.selectedHistoryControlPoint, controlPoints);
 
-  state.historySelection.timeBufferId = selectAvailable(
-    state.historySelection.timeBufferId,
+  const skus = [...new Set([
+    ...inventory
+      .filter(item => item.controlPoint === state.selectedHistoryControlPoint)
+      .map(item => item.sku),
+    ...sizing
+      .filter(item => item.controlPoint === state.selectedHistoryControlPoint)
+      .map(item => item.sku),
+  ])];
+  state.selectedHistoryInventorySku = selectAvailable(state.selectedHistoryInventorySku, skus);
+
+  const sizingSnapshots = sizing
+    .filter(item => item.controlPoint === state.selectedHistoryControlPoint && item.sku === state.selectedHistoryInventorySku)
+    .map(item => item.snapshotId);
+  state.selectedHistorySizingSnapshot = selectAvailable(state.selectedHistorySizingSnapshot, sizingSnapshots);
+  state.selectedHistoryTimeBufferId = selectAvailable(
+    state.selectedHistoryTimeBufferId,
     timeBuffers.map(item => item.bufferId));
 
-  const sizingControlPoints = [...new Set(sizing.map(item => item.controlPoint))];
-  state.historySelection.sizingControlPoint = selectAvailable(state.historySelection.sizingControlPoint, sizingControlPoints);
-  const sizingSkus = [...new Set(sizing
-    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint)
-    .map(item => item.sku))];
-  state.historySelection.sizingSku = selectAvailable(state.historySelection.sizingSku, sizingSkus);
-  const sizingSnapshots = sizing
-    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint && item.sku === state.historySelection.sizingSku)
-    .map(item => item.snapshotId);
-  state.historySelection.sizingSnapshotId = selectAvailable(state.historySelection.sizingSnapshotId, sizingSnapshots);
+  const capacityCodes = capacity.map(item => item.resourceCode);
+  if (!capacityCodes.includes(state.selectedHistoryCapacityResource)) {
+    const defaultCapacity = capacity.find(item => item.resourceCode === "RES-AIT" && item.relationshipRole === "UpstreamProtection")
+      || capacity.find(item => item.relationshipRole === "UpstreamProtection")
+      || capacity[0];
+    state.selectedHistoryCapacityResource = valueOr(defaultCapacity?.resourceCode, null);
+  }
 
-  state.historySelection.capacityResourceCode = selectAvailable(
-    state.historySelection.capacityResourceCode,
-    capacity.map(item => item.resourceCode));
+  state.historySelection.inventoryControlPoint = state.selectedHistoryControlPoint;
+  state.historySelection.inventorySku = state.selectedHistoryInventorySku;
+  state.historySelection.timeBufferId = state.selectedHistoryTimeBufferId;
+  state.historySelection.sizingControlPoint = state.selectedHistoryControlPoint;
+  state.historySelection.sizingSku = state.selectedHistoryInventorySku;
+  state.historySelection.sizingSnapshotId = state.selectedHistorySizingSnapshot;
+  state.historySelection.capacityResourceCode = state.selectedHistoryCapacityResource;
+}
+
+function historyControlPointLabel(controlPoint) {
+  if (controlPoint === "关键进口 FPGA 库存控制点") return "关键进口 FPGA 独立库存控制点";
+  return controlPoint || "未命名控制点";
+}
+
+function historyCapacityRoleLabel(item) {
+  if (item.relationshipRole === "UpstreamProtection") return "上游保护";
+  if (item.relationshipRole === "CcrUtilization") return "CCR 利用率参照";
+  return capacityRoleLabel(item.relationshipRole, item.protectedCcrResourceCode);
+}
+
+function historyOptionButton(attribute, value, label, note, isSelected) {
+  return `
+    <button class="inventory-option${isSelected ? " is-selected" : ""}" type="button" data-${attribute}="${escapeHtml(value)}" aria-pressed="${isSelected}">
+      <span class="option-radio" aria-hidden="true"></span>
+      <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(note)}</small></span>
+    </button>`;
 }
 
 function renderHistoryWorkspaceOptions(history) {
@@ -3701,87 +3749,481 @@ function renderHistoryWorkspaceOptions(history) {
   const sizing = history.ddmrpSizingSnapshots || [];
   const timeBuffers = history.timeBuffers || [];
   const capacity = history.capacityBuffers || [];
-  const optionButton = (attribute, value, label, note, isSelected) => `
-    <button class="inventory-option${isSelected ? " is-selected" : ""}" type="button" data-${attribute}="${escapeHtml(value)}" aria-pressed="${isSelected}">
-      <span class="option-radio" aria-hidden="true"></span>
-      <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(note)}</small></span>
-    </button>`;
   const emptyOptions = label => `<p class="history-empty-options">${escapeHtml(label)}</p>`;
-
-  byId("history-buffer-overview").innerHTML = [
-    ["库存缓冲", number(inventory.length), "可选 SKU"],
-    ["时间缓冲", number(timeBuffers.length), "可选控制点"],
-    ["定容快照", number(sizing.length), "历史参数版本"],
-    ["能力资源", number(capacity.length), "可选资源"],
-  ].map(item => stageKpi(...item)).join("");
-
-  const inventoryControlPoints = [...new Set(inventory.map(item => item.controlPoint))];
-  byId("history-inventory-control-point-options").innerHTML = inventoryControlPoints.length
-    ? inventoryControlPoints.map(controlPoint => optionButton(
-        "history-inventory-control-point",
+  const controlPoints = [...new Set([
+    ...inventory.map(item => item.controlPoint),
+    ...sizing.map(item => item.controlPoint),
+  ])];
+  const controlPointOptions = controlPoints.length
+    ? controlPoints.map(controlPoint => historyOptionButton(
+        "history-control-point",
         controlPoint,
-        controlPoint,
-        `${inventory.filter(item => item.controlPoint === controlPoint).length} 个 SKU`,
-        controlPoint === state.historySelection.inventoryControlPoint)).join("")
+        historyControlPointLabel(controlPoint),
+        `${new Set([...inventory, ...sizing].filter(item => item.controlPoint === controlPoint).map(item => item.sku)).size} 个 SKU`,
+        controlPoint === state.selectedHistoryControlPoint)).join("")
     : emptyOptions("暂无库存控制点证据");
-  const inventorySkus = inventory.filter(item => item.controlPoint === state.historySelection.inventoryControlPoint);
+  byId("history-inventory-control-point-options").innerHTML = controlPointOptions;
+  byId("history-sizing-control-point-options").innerHTML = controlPointOptions;
+
+  const inventorySkus = inventory.filter(item => item.controlPoint === state.selectedHistoryControlPoint);
   byId("history-inventory-sku-options").innerHTML = inventorySkus.length
-    ? inventorySkus.map(item => optionButton(
+    ? inventorySkus.map(item => historyOptionButton(
         "history-inventory-sku",
         item.sku,
         item.sku,
         item.name,
-        item.sku === state.historySelection.inventorySku)).join("")
+        item.sku === state.selectedHistoryInventorySku)).join("")
     : emptyOptions("暂无库存 SKU 证据");
 
-  byId("history-time-buffer-options").innerHTML = timeBuffers.length
-    ? timeBuffers.map(item => optionButton(
-        "history-time-buffer",
-        item.bufferId,
-        item.controlPoint,
-        item.protectedActivity,
-        item.bufferId === state.historySelection.timeBufferId)).join("")
-    : emptyOptions("暂无时间缓冲证据");
-
-  const sizingControlPoints = [...new Set(sizing.map(item => item.controlPoint))];
-  byId("history-sizing-control-point-options").innerHTML = sizingControlPoints.length
-    ? sizingControlPoints.map(controlPoint => optionButton(
-        "history-sizing-control-point",
-        controlPoint,
-        controlPoint,
-        `${new Set(sizing.filter(item => item.controlPoint === controlPoint).map(item => item.sku)).size} 个 SKU`,
-        controlPoint === state.historySelection.sizingControlPoint)).join("")
-    : emptyOptions("暂无定容控制点证据");
   const sizingSkus = [...new Map(sizing
-    .filter(item => item.controlPoint === state.historySelection.sizingControlPoint)
+    .filter(item => item.controlPoint === state.selectedHistoryControlPoint)
     .map(item => [item.sku, item])).values()];
   byId("history-sizing-sku-options").innerHTML = sizingSkus.length
-    ? sizingSkus.map(item => optionButton(
-        "history-sizing-sku",
+    ? sizingSkus.map(item => historyOptionButton(
+        "history-inventory-sku",
         item.sku,
         item.sku,
         item.name,
-        item.sku === state.historySelection.sizingSku)).join("")
+        item.sku === state.selectedHistoryInventorySku)).join("")
     : emptyOptions("暂无定容 SKU 证据");
+
   const sizingSnapshots = sizing.filter(item =>
-    item.controlPoint === state.historySelection.sizingControlPoint && item.sku === state.historySelection.sizingSku);
+    item.controlPoint === state.selectedHistoryControlPoint && item.sku === state.selectedHistoryInventorySku);
   byId("history-sizing-snapshot-options").innerHTML = sizingSnapshots.length
-    ? sizingSnapshots.map(item => optionButton(
+    ? sizingSnapshots.map(item => historyOptionButton(
         "history-sizing-snapshot",
         item.snapshotId,
         item.snapshotId,
-        `第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`,
-        item.snapshotId === state.historySelection.sizingSnapshotId)).join("")
+        `生效周第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`,
+        item.snapshotId === state.selectedHistorySizingSnapshot)).join("")
     : emptyOptions("暂无历史定容快照");
 
+  byId("history-time-buffer-options").innerHTML = timeBuffers.length
+    ? timeBuffers.map(item => historyOptionButton(
+        "history-time-buffer-id",
+        item.bufferId,
+        historyControlPointLabel(item.controlPoint),
+        item.protectedActivity,
+        item.bufferId === state.selectedHistoryTimeBufferId)).join("")
+    : emptyOptions("暂无时间缓冲证据");
+
   byId("history-capacity-resource-options").innerHTML = capacity.length
-    ? capacity.map(item => optionButton(
+    ? capacity.map(item => historyOptionButton(
         "history-capacity-resource",
         item.resourceCode,
         item.resourceName,
-        item.resourceCode,
-        item.resourceCode === state.historySelection.capacityResourceCode)).join("")
+        `${item.resourceCode} · ${historyCapacityRoleLabel(item)}`,
+        item.resourceCode === state.selectedHistoryCapacityResource)).join("")
     : emptyOptions("暂无能力资源证据");
+}
+
+function contiguousEvidenceSegments(points, predicate) {
+  return points.reduce((segments, point) => {
+    if (!predicate(point)) {
+      if (segments.length && segments[segments.length - 1].length) segments.push([]);
+      return segments;
+    }
+    if (!segments.length) segments.push([]);
+    segments[segments.length - 1].push(point);
+    return segments;
+  }, []).filter(segment => segment.length > 0);
+}
+
+function buildLinearAreaPath(lowerPoints, upperPoints) {
+  const points = [...lowerPoints, ...upperPoints];
+  if (lowerPoints.length !== upperPoints.length || lowerPoints.length === 0 ||
+      points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return "";
+  const upper = upperPoints.map((point, index) => `${index ? "L" : "M"} ${point.x},${point.y}`).join(" ");
+  const lower = [...lowerPoints].reverse().map(point => `L ${point.x},${point.y}`).join(" ");
+  return `${upper} ${lower} Z`;
+}
+
+function buildHistoryLinePath(points) {
+  if (!points.length || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return "";
+  return points.map((point, index) => `${index ? "L" : "M"} ${point.x},${point.y}`).join(" ");
+}
+
+function isFiniteHistoryValue(value) {
+  return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
+function historyValueScale(values, top, bottom) {
+  const finiteValues = values.filter(isFiniteHistoryValue).map(Number);
+  if (!finiteValues.length) return null;
+  const minimum = Math.min(0, ...finiteValues);
+  const maximum = Math.max(0, ...finiteValues);
+  const span = Math.max(1, maximum - minimum);
+  return {
+    minimum,
+    maximum,
+    y: value => bottom - ((Number(value) - minimum) / span) * (bottom - top),
+  };
+}
+
+function renderHistoryMissing(hostId, detail = "所选对象在当前历史窗口内没有可绘制证据") {
+  byId(hostId).innerHTML = `<div class="history-chart-empty"><strong>证据缺失</strong><span>${escapeHtml(detail)}</span></div>`;
+}
+
+function renderHistoryBufferOverview(history) {
+  const inventory = history.inventoryBuffers || [];
+  const sizing = history.ddmrpSizingSnapshots || [];
+  const timeBuffers = history.timeBuffers || [];
+  const capacity = history.capacityBuffers || [];
+  const controlPoints = [...new Set(inventory.map(item => item.controlPoint))];
+  byId("history-buffer-overview").innerHTML = [
+    ["库存控制点", number(controlPoints.length), controlPoints.length ? controlPoints.map(historyControlPointLabel).join("、") : "证据缺失"],
+    ["库存 SKU", number(inventory.length), "图、表和原因使用同一选择"],
+    ["时间缓冲", number(timeBuffers.length), "五段历史与异常费用"],
+    ["定容快照", number(sizing.length), "读取后端定容证据"],
+    ["能力资源", number(capacity.length), "AIT 上游保护优先"],
+  ].map(item => stageKpi(...item)).join("");
+}
+
+function renderHistoryInventoryBuffer(history) {
+  const item = (history.inventoryBuffers || []).find(candidate =>
+    candidate.controlPoint === state.selectedHistoryControlPoint && candidate.sku === state.selectedHistoryInventorySku);
+  const host = byId("history-inventory-chart");
+  if (!item || !item.points?.length) {
+    renderHistoryMissing("history-inventory-chart");
+    return;
+  }
+
+  const points = item.points;
+  const indexed = points.map((point, index) => ({ point, index }));
+  const values = points.flatMap(point => [
+    point.topOfRed,
+    point.topOfYellow,
+    point.topOfGreen,
+    point.endingOnHand,
+    point.netFlow,
+  ]).filter(isFiniteHistoryValue);
+  const width = 920;
+  const height = 320;
+  const left = 58;
+  const right = 20;
+  const top = 22;
+  const bottom = 270;
+  const scale = historyValueScale(values, top, bottom);
+  if (!scale) {
+    renderHistoryMissing("history-inventory-chart");
+    return;
+  }
+  const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
+  const zoneSegments = contiguousEvidenceSegments(indexed, entry => {
+    const point = entry.point;
+    return isFiniteHistoryValue(point.topOfRed)
+      && isFiniteHistoryValue(point.topOfYellow)
+      && isFiniteHistoryValue(point.topOfGreen);
+  });
+  const endingSegments = contiguousEvidenceSegments(indexed, entry => {
+    const point = entry.point;
+    return isFiniteHistoryValue(point.endingOnHand);
+  });
+  const netFlowSegments = contiguousEvidenceSegments(indexed, entry => {
+    const point = entry.point;
+    return isFiniteHistoryValue(point.netFlow);
+  });
+
+  const zonePaths = zoneSegments.map(segment => {
+    const redLower = segment.map(entry => ({ x: x(entry.index), y: scale.y(0) }));
+    const redUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfRed) }));
+    const yellowLower = redUpper;
+    const yellowUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfYellow) }));
+    const greenLower = yellowUpper;
+    const greenUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfGreen) }));
+    return `
+      <path class="history-zone-fill is-red" d="${buildLinearAreaPath(redLower, redUpper)}"></path>
+      <path class="history-zone-fill is-yellow" d="${buildLinearAreaPath(yellowLower, yellowUpper)}"></path>
+      <path class="history-zone-fill is-green" d="${buildLinearAreaPath(greenLower, greenUpper)}"></path>`;
+  }).join("");
+  const endingPaths = endingSegments.map(segment => `<path class="history-series-line is-on-hand" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.endingOnHand) })))}"></path>`).join("");
+  const netFlowPaths = netFlowSegments.map(segment => `<path class="history-series-line is-net-flow" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.netFlow) })))}"></path>`).join("");
+  const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
+    ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
+    : "").join("");
+  const evidenceRows = points.map(point => row([
+    escapeHtml(point.periodStartDate),
+    metricOrEvidenceMissing(point.endingOnHand),
+    metricOrEvidenceMissing(point.netFlow),
+    escapeHtml(businessEvidenceLabel(point.cause)),
+    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
+  ])).join("");
+
+  host.innerHTML = `
+    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)}</strong><span>${number(item.detailWindowWeeks)} 周证据</span></div>
+    <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="库存缓冲历史水位">
+      <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
+      ${zonePaths}${endingPaths}${netFlowPaths}${periodLabels}
+      <text class="history-axis-label" x="${left - 8}" y="${scale.y(scale.maximum) + 4}" text-anchor="end">${number(scale.maximum)}</text>
+      <text class="history-axis-label" x="${left - 8}" y="${scale.y(0) + 4}" text-anchor="end">0</text>
+    </svg>
+    <div class="history-chart-legend"><span><i class="zone red"></i>红区</span><span><i class="zone yellow"></i>黄区</span><span><i class="zone green"></i>绿区</span><span><i class="line on-hand"></i>期末现有量</span><span><i class="line net-flow"></i>净流量位置</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>期末现有量</th><th>净流量位置</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+}
+
+function historyGreenDriverLabel(value) {
+  const labels = {
+    OrderCycle: "订货周期",
+    MinimumOrderQuantity: "最小订购量",
+    LeadTime: "提前期",
+  };
+  return labels[value] || businessEvidenceLabel(value);
+}
+
+function renderHistoryDdmrpZoneSvg(item) {
+  if (!item?.sizing?.zones) {
+    renderHistoryMissing("history-ddmrp-zone-chart", "旧版本缺少提前期因子，不能生成定容图");
+    return;
+  }
+  const red = item.sizing.zones.red;
+  const yellow = item.sizing.zones.yellow;
+  const green = item.sizing.zones.green;
+  const total = item.sizing.zones.topOfGreen;
+  if (![red, yellow, green, total].every(isFiniteHistoryValue) || Number(total) <= 0) {
+    renderHistoryMissing("history-ddmrp-zone-chart", "所选快照没有完整的后端定容区域证据");
+    return;
+  }
+
+  const width = 660;
+  const height = 320;
+  const top = 24;
+  const bottom = 282;
+  const plotHeight = bottom - top;
+  const barX = 74;
+  const barWidth = 190;
+  const redHeight = Number(red) * plotHeight / Number(total);
+  const yellowHeight = Number(yellow) * plotHeight / Number(total);
+  const greenHeight = Number(green) * plotHeight / Number(total);
+  const redY = bottom - redHeight;
+  const yellowY = redY - yellowHeight;
+  const greenY = yellowY - greenHeight;
+  const averageOnHand = item.averageOnHand;
+  const averageY = isFiniteHistoryValue(averageOnHand)
+    ? Math.max(top, Math.min(bottom, bottom - Number(averageOnHand) * plotHeight / Number(total)))
+    : null;
+  const averageMarker = averageY === null ? "" : `
+    <line class="history-average-marker" x1="${barX - 12}" y1="${averageY}" x2="${barX + barWidth + 28}" y2="${averageY}"></line>
+    <text class="history-average-label" x="${barX + barWidth + 36}" y="${averageY + 4}">平均现有量 ${number(averageOnHand)}</text>`;
+  const metadata = [
+    ["控制点", historyControlPointLabel(item.controlPoint)],
+    ["SKU", `${item.sku} ${item.name}`],
+    ["快照", item.snapshotId],
+    ["生效周段", `第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`],
+    ["来源截止", item.asOfUtc],
+    ["绿色区驱动", historyGreenDriverLabel(item.sizing.greenDriver)],
+    ["总缓冲", number(total)],
+    ["平均现有量", metricOrEvidenceMissing(item.averageOnHand)],
+    ["证据", evidenceStatusLabel(item.evidenceStatus)],
+  ].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+
+  byId("history-ddmrp-zone-chart").innerHTML = `
+    <div class="history-zone-layout">
+      <svg class="history-zone-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="历史 DDMRP 红黄绿定容区">
+        <rect class="history-zone-block is-green" x="${barX}" y="${greenY}" width="${barWidth}" height="${greenHeight}"></rect>
+        <rect class="history-zone-block is-yellow" x="${barX}" y="${yellowY}" width="${barWidth}" height="${yellowHeight}"></rect>
+        <rect class="history-zone-block is-red" x="${barX}" y="${redY}" width="${barWidth}" height="${redHeight}"></rect>
+        <text class="history-zone-value" x="${barX + barWidth / 2}" y="${greenY + greenHeight / 2 + 4}">绿区 ${number(green)}</text>
+        <text class="history-zone-value" x="${barX + barWidth / 2}" y="${yellowY + yellowHeight / 2 + 4}">黄区 ${number(yellow)}</text>
+        <text class="history-zone-value is-light" x="${barX + barWidth / 2}" y="${redY + redHeight / 2 + 4}">红区 ${number(red)}</text>
+        ${averageMarker}
+      </svg>
+      <div class="history-zone-metadata">${metadata}</div>
+    </div>`;
+}
+
+function renderHistoryDdmrpSizingTrace(history) {
+  const item = (history.ddmrpSizingSnapshots || []).find(candidate =>
+    candidate.controlPoint === state.selectedHistoryControlPoint
+      && candidate.sku === state.selectedHistoryInventorySku
+      && candidate.snapshotId === state.selectedHistorySizingSnapshot);
+  if (!item) {
+    byId("history-ddmrp-input-summary").innerHTML = `<div><dt>定容证据</dt><dd>证据缺失</dd></div>`;
+    byId("history-ddmrp-sizing-body").innerHTML = emptyRow("旧版本缺少提前期因子，不能生成定容明细", 4);
+    renderHistoryMissing("history-ddmrp-zone-chart", "所选控制点、SKU 或快照没有历史定容证据");
+    return;
+  }
+
+  const setting = item.setting || {};
+  byId("history-ddmrp-input-summary").innerHTML = [
+    ["控制点", historyControlPointLabel(item.controlPoint)],
+    ["SKU", `${item.sku} ${item.name}`],
+    ["参数快照", item.snapshotId],
+    ["提前期因子", setting.leadTimeFactor == null ? "证据缺失" : number(setting.leadTimeFactor)],
+    ["变异因子", metricOrEvidenceMissing(setting.variabilityFactor)],
+    ["最小订购量", metricOrEvidenceMissing(setting.minimumOrderQuantity)],
+    ["订货周期", setting.orderCycleDays == null ? "证据缺失" : `${number(setting.orderCycleDays)} 天`],
+    ["来源", businessEvidenceLabel(item.sourceAuthority)],
+    ["来源截止", item.asOfUtc],
+    ["证据状态", evidenceStatusLabel(item.evidenceStatus)],
+  ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  byId("history-ddmrp-sizing-body").innerHTML = item.sizingLines.length
+    ? item.sizingLines.map(line => row([
+        escapeHtml(line.component),
+        escapeHtml(line.formula),
+        number(line.value),
+        escapeHtml(businessEvidenceLabel(line.explanation)),
+      ])).join("")
+    : emptyRow("旧版本缺少提前期因子，不能生成定容明细", 4);
+  renderHistoryDdmrpZoneSvg(item);
+}
+
+function renderHistoryTimeBuffer(history) {
+  const item = (history.timeBuffers || []).find(candidate => candidate.bufferId === state.selectedHistoryTimeBufferId);
+  const host = byId("history-time-buffer-chart");
+  if (!item || !item.points?.length) {
+    renderHistoryMissing("history-time-buffer-chart");
+    return;
+  }
+
+  const points = item.points;
+  const indexed = points.map((point, index) => ({ point, index }));
+  const bandPoints = indexed.filter(entry => {
+    const point = entry.point;
+    return [point.earlyCount, point.greenCount, point.yellowCount, point.redCount, point.lateCount]
+      .every(isFiniteHistoryValue);
+  });
+  const totals = bandPoints.map(entry => {
+    const point = entry.point;
+    return Number(point.earlyCount) + Number(point.greenCount) + Number(point.yellowCount) + Number(point.redCount) + Number(point.lateCount);
+  });
+  const costSegments = contiguousEvidenceSegments(indexed, entry => {
+    const point = entry.point;
+    return isFiniteHistoryValue(point.abnormalCost);
+  });
+  if (!bandPoints.length && !costSegments.length) {
+    renderHistoryMissing("history-time-buffer-chart");
+    return;
+  }
+
+  const width = 920;
+  const height = 320;
+  const left = 56;
+  const right = 24;
+  const top = 20;
+  const bottom = 270;
+  const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
+  const countScale = historyValueScale([0, ...totals], top, bottom);
+  const costValues = costSegments.flatMap(segment => segment.map(entry => entry.point.abnormalCost));
+  const costScale = historyValueScale([0, ...costValues], top, bottom);
+  const barWidth = Math.max(3, Math.min(22, (width - left - right) / Math.max(1, points.length) * 0.7));
+  const bands = [
+    ["is-early", point => point.earlyCount],
+    ["is-green", point => point.greenCount],
+    ["is-yellow", point => point.yellowCount],
+    ["is-red", point => point.redCount],
+    ["is-late", point => point.lateCount],
+  ];
+  const bars = countScale ? bandPoints.map(entry => {
+    let cumulative = 0;
+    return bands.map(([cssClass, read]) => {
+      const next = cumulative + Number(read(entry.point));
+      const y = countScale.y(next);
+      const bandHeight = countScale.y(cumulative) - y;
+      cumulative = next;
+      return `<rect class="history-time-band ${cssClass}" x="${x(entry.index) - barWidth / 2}" y="${y}" width="${barWidth}" height="${Math.max(0, bandHeight)}"></rect>`;
+    }).join("");
+  }).join("") : "";
+  const costPaths = costScale ? costSegments.map(segment => `<path class="history-cost-line" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: costScale.y(entry.point.abnormalCost) })))}"></path>`).join("") : "";
+  const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
+    ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
+    : "").join("");
+  const evidenceRows = points.map(point => row([
+    escapeHtml(point.periodStartDate),
+    metricOrEvidenceMissing(point.earlyCount),
+    metricOrEvidenceMissing(point.greenCount),
+    metricOrEvidenceMissing(point.yellowCount),
+    metricOrEvidenceMissing(point.redCount),
+    metricOrEvidenceMissing(point.lateCount),
+    metricOrEvidenceMissing(point.abnormalCost, money),
+    escapeHtml(businessEvidenceLabel(point.cause)),
+  ])).join("");
+
+  host.innerHTML = `
+    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))}</strong><span>${escapeHtml(item.protectedActivity)}</span></div>
+    <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="时间缓冲五段历史">
+      <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
+      ${bars}${costPaths}${periodLabels}
+    </svg>
+    <div class="history-chart-legend"><span><i class="band early"></i>提前</span><span><i class="band green"></i>绿色</span><span><i class="band yellow"></i>黄色</span><span><i class="band red"></i>红色</span><span><i class="band late"></i>延误</span><span><i class="line cost"></i>异常费用</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>提前</th><th>绿色</th><th>黄色</th><th>红色</th><th>延误</th><th>异常费用</th><th>原因</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+}
+
+function renderHistoryCapacityBuffer(history) {
+  const item = (history.capacityBuffers || []).find(candidate => candidate.resourceCode === state.selectedHistoryCapacityResource);
+  if (!item || !item.points?.length) {
+    renderHistoryMissing("history-capacity-buffer-chart");
+    return;
+  }
+
+  const points = item.points;
+  const indexed = points.map((point, index) => ({ point, index }));
+  const isUpstreamProtection = item.relationshipRole === "UpstreamProtection";
+  const roleLabel = item.relationshipRole === "CcrUtilization" ? "CCR 利用率参照" : historyCapacityRoleLabel(item);
+  const lineSeries = [
+    ["理论能力", "is-theoretical", point => point.theoreticalCapacity],
+    ["标准能力", "is-standard", point => point.standardCapacity],
+    ["经验证能力", "is-demonstrated", point => point.demonstratedCapacity],
+    ["计划可用能力", "is-planned", point => point.plannedAvailableCapacity],
+    ["保护起点", "is-protection-start", point => point.protectionStart],
+  ];
+  if (isUpstreamProtection) {
+    lineSeries.push(["已消耗保护", "is-consumed-protection", point => point.consumedProtection]);
+  }
+  const values = points.flatMap(point => [
+    point.committedLoad,
+    point.theoreticalCapacity,
+    point.standardCapacity,
+    point.demonstratedCapacity,
+    point.plannedAvailableCapacity,
+    point.protectionStart,
+    ...(isUpstreamProtection ? [point.consumedProtection] : []),
+  ]).filter(isFiniteHistoryValue);
+  const width = 920;
+  const height = 330;
+  const left = 58;
+  const right = 24;
+  const top = 20;
+  const bottom = 278;
+  const scale = historyValueScale(values, top, bottom);
+  if (!scale) {
+    renderHistoryMissing("history-capacity-buffer-chart");
+    return;
+  }
+  const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
+  const barWidth = Math.max(3, Math.min(22, (width - left - right) / Math.max(1, points.length) * 0.58));
+  const loadBars = indexed.filter(entry => isFiniteHistoryValue(entry.point.committedLoad)).map(entry => {
+    const valueY = scale.y(entry.point.committedLoad);
+    const zeroY = scale.y(0);
+    return `<rect class="history-capacity-load" x="${x(entry.index) - barWidth / 2}" y="${Math.min(valueY, zeroY)}" width="${barWidth}" height="${Math.abs(zeroY - valueY)}"></rect>`;
+  }).join("");
+  const paths = lineSeries.map(([label, cssClass, read]) => {
+    const segments = contiguousEvidenceSegments(indexed, entry => isFiniteHistoryValue(read(entry.point)));
+    return segments.map(segment => `<path class="history-capacity-line ${cssClass}" aria-label="${escapeHtml(label)}" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(read(entry.point)) })))}"></path>`).join("");
+  }).join("");
+  const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
+    ? `<text class="history-axis-label" x="${x(index)}" y="304" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
+    : "").join("");
+  const legend = [
+    ["bar load", "承诺负荷"],
+    ...lineSeries.map(([label, cssClass]) => [`line ${cssClass}`, label]),
+  ].map(([cssClass, label]) => `<span><i class="${cssClass}"></i>${escapeHtml(label)}</span>`).join("");
+  const evidenceRows = points.map(point => row([
+    escapeHtml(point.periodStartDate),
+    metricOrEvidenceMissing(point.committedLoad),
+    metricOrEvidenceMissing(point.plannedAvailableCapacity),
+    metricOrEvidenceMissing(point.protectionStart),
+    isUpstreamProtection ? metricOrEvidenceMissing(point.consumedProtection) : "不适用",
+    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
+  ])).join("");
+
+  byId("history-capacity-buffer-chart").innerHTML = `
+    <div class="history-chart-heading"><strong>${escapeHtml(item.resourceName)} · ${escapeHtml(item.resourceCode)}</strong><span>${escapeHtml(roleLabel)}</span></div>
+    <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="历史能力分层与保护">
+      <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
+      ${loadBars}${paths}${periodLabels}
+    </svg>
+    <div class="history-chart-legend">${legend}</div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>承诺负荷</th><th>计划可用</th><th>保护起点</th><th>保护消耗</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
 }
 
 function renderHistoryReview(history) {
@@ -3835,7 +4277,7 @@ function renderHistoryReview(history) {
     const protectionRows = item.relationshipRole === "UpstreamProtection"
       ? `${bar("保护能力", item.protectiveCapacity, "is-protection")}${bar("已消耗保护", item.consumedProtection, "is-load")}${bar("剩余保护", item.remainingProtection, "is-available")}`
       : "";
-    return `<article class="capacity-layer-item"><div><strong>${escapeHtml(item.resourceName)}</strong><small>${escapeHtml(item.resourceCode)} · ${escapeHtml(capacityRoleLabel(item.relationshipRole, item.protectedCcrResourceCode))}</small><small>${escapeHtml(businessEvidenceLabel(item.lossReason))} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}</small></div>${bar("理论", item.theoreticalCapacity, "is-theoretical")}${bar("标准", item.standardCapacity, "is-standard")}${bar("经验证", item.demonstratedCapacity, "is-demonstrated")}${bar("计划可用", item.plannedAvailableCapacity, "is-available")}${bar(item.relationshipRole === "CcrUtilization" ? "CCR 承诺负荷" : "承诺负荷", item.committedLoad, "is-load")}${protectionRows}</article>`;
+    return `<article class="capacity-layer-item"><div><strong>${escapeHtml(item.resourceName)}</strong><small>${escapeHtml(item.resourceCode)} · ${escapeHtml(capacityRoleLabel(item.relationshipRole, item.protectedCcrResourceCode))}</small><small>${escapeHtml(businessEvidenceLabel(item.lossReason))} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}</small></div>${bar("理论", item.theoreticalCapacity, "is-theoretical")}${bar("标准", item.standardCapacity, "is-standard")}${bar("经验证", item.demonstratedCapacity, "is-demonstrated")}${bar("计划可用", item.plannedAvailableCapacity, "is-available")}${bar(item.relationshipRole === "CcrUtilization" ? "CCR 利用率参照" : "承诺负荷", item.committedLoad, "is-load")}${protectionRows}</article>`;
   }).join("");
   byId("history-constraint-body").innerHTML = history.constraintExposure.length
     ? history.constraintExposure.map(item => row([
@@ -3846,6 +4288,12 @@ function renderHistoryReview(history) {
         escapeHtml(businessEvidenceLabel(item.evidence)),
       ])).join("")
     : emptyRow("没有约束暴露证据", 5);
+
+  renderHistoryBufferOverview(history);
+  renderHistoryInventoryBuffer(history);
+  renderHistoryDdmrpSizingTrace(history);
+  renderHistoryTimeBuffer(history);
+  renderHistoryCapacityBuffer(history);
 }
 
 function isStaleHistoryRequest(requestGeneration, currentGeneration) {
@@ -3982,6 +4430,23 @@ async function loadBaselineAudit(snapshotId) {
     ? audit.map(item => `<div class="diagnostic-item"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(baselineAuditMessage(item))}</span><small>${escapeHtml(item.createdAtUtc)}</small></div>`).join("")
     : `<div class="table-empty"><strong>没有审计记录</strong></div>`;
   renderBaselineReferences(references);
+}
+
+async function openBaselineSnapshotDetail(snapshotId) {
+  const response = await fetch(`/api/current-baselines/${snapshotId}`, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`冻结基线详情接口失败：${response.status}`);
+  const snapshot = await response.json();
+  const parameters = valueOr(snapshot.payload?.planningInputs?.ddmrpParameters, []);
+  const items = parameters.map(item => [
+    `${item.sku} ${item.name}`,
+    item.leadTimeFactor == null
+      ? "旧版本缺少提前期因子；该快照保持只读，不能用于重算"
+      : `提前期因子 ${number(item.leadTimeFactor)} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}`,
+  ]);
+  openWorkspaceDrawer("冻结基线定容证据", [{
+    title: `${snapshot.snapshotNumber} · ${baselineStatusLabel(snapshot.status)}`,
+    items: items.length ? items : [["定容证据", "旧版本未保存 DDMRP 参数明细"]],
+  }]);
 }
 
 function renderBaselineReferences(references) {
@@ -4655,37 +5120,41 @@ document.addEventListener("click", event => {
   }
   if (!state.historyReview) return;
 
-  const inventoryControlPoint = event.target.closest("[data-history-inventory-control-point]");
+  const controlPoint = event.target.closest("[data-history-control-point]");
   const inventorySku = event.target.closest("[data-history-inventory-sku]");
-  const timeBuffer = event.target.closest("[data-history-time-buffer]");
-  const sizingControlPoint = event.target.closest("[data-history-sizing-control-point]");
-  const sizingSku = event.target.closest("[data-history-sizing-sku]");
+  const timeBuffer = event.target.closest("[data-history-time-buffer-id]");
   const sizingSnapshot = event.target.closest("[data-history-sizing-snapshot]");
   const capacityResource = event.target.closest("[data-history-capacity-resource]");
-  if (inventoryControlPoint) {
-    state.historySelection.inventoryControlPoint = inventoryControlPoint.dataset.historyInventoryControlPoint;
-    state.historySelection.inventorySku = null;
+  if (controlPoint) {
+    state.selectedHistoryControlPoint = controlPoint.dataset.historyControlPoint;
+    state.selectedHistoryInventorySku = null;
+    state.selectedHistorySizingSnapshot = null;
   } else if (inventorySku) {
-    state.historySelection.inventorySku = inventorySku.dataset.historyInventorySku;
+    state.selectedHistoryInventorySku = inventorySku.dataset.historyInventorySku;
+    state.selectedHistorySizingSnapshot = null;
   } else if (timeBuffer) {
-    state.historySelection.timeBufferId = timeBuffer.dataset.historyTimeBuffer;
-  } else if (sizingControlPoint) {
-    state.historySelection.sizingControlPoint = sizingControlPoint.dataset.historySizingControlPoint;
-    state.historySelection.sizingSku = null;
-    state.historySelection.sizingSnapshotId = null;
-  } else if (sizingSku) {
-    state.historySelection.sizingSku = sizingSku.dataset.historySizingSku;
-    state.historySelection.sizingSnapshotId = null;
+    state.selectedHistoryTimeBufferId = timeBuffer.dataset.historyTimeBufferId;
   } else if (sizingSnapshot) {
-    state.historySelection.sizingSnapshotId = sizingSnapshot.dataset.historySizingSnapshot;
+    state.selectedHistorySizingSnapshot = sizingSnapshot.dataset.historySizingSnapshot;
   } else if (capacityResource) {
-    state.historySelection.capacityResourceCode = capacityResource.dataset.historyCapacityResource;
+    state.selectedHistoryCapacityResource = capacityResource.dataset.historyCapacityResource;
   } else {
     return;
   }
 
   syncHistorySelectionState(state.historyReview);
   renderHistoryWorkspaceOptions(state.historyReview);
+  if (controlPoint || inventorySku) {
+    renderHistoryBufferOverview(state.historyReview);
+    renderHistoryInventoryBuffer(state.historyReview);
+    renderHistoryDdmrpSizingTrace(state.historyReview);
+  } else if (timeBuffer) {
+    renderHistoryTimeBuffer(state.historyReview);
+  } else if (sizingSnapshot) {
+    renderHistoryDdmrpSizingTrace(state.historyReview);
+  } else if (capacityResource) {
+    renderHistoryCapacityBuffer(state.historyReview);
+  }
 });
 
 document.addEventListener("keydown", event => {
@@ -4836,7 +5305,10 @@ document.addEventListener("click", event => {
 document.addEventListener("click", event => {
   const row = event.target.closest("[data-baseline-snapshot-id]");
   if (!row) return;
-  loadBaselineAudit(row.dataset.baselineSnapshotId).catch(showWorkspaceError);
+  Promise.all([
+    loadBaselineAudit(row.dataset.baselineSnapshotId),
+    openBaselineSnapshotDetail(row.dataset.baselineSnapshotId),
+  ]).catch(showWorkspaceError);
 });
 
 document.addEventListener("click", event => {

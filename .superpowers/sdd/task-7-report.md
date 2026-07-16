@@ -1,71 +1,81 @@
-# Task 7 Report: Known Local Smoke Record Repair
+# Task 7 Report: Render Historical Buffer Evidence
 
-Base commit: `35d9e1e`
+Base commit: `05dccce130744bd1db1a457bbb06b57ed8bc5c9e`
 
-Commit message: `fix: repair known local smoke records safely`
+Commit message: `feat: render historical buffer evidence`
 
 ## Delivered
 
-- Added `LocalDatabaseRepairService` with the fixed repair ID `2026-07-15-smoke-mojibake-v1` and the required public result/interface signatures.
-- The repair uses one SQLite transaction to create/check its journal, delete audits for only the two exact coordination IDs, delete only those two items, repair only `BASE-20260714-002 + Codex ??`, append one `DataRepairApplied` audit when that update occurs, write the journal last, and commit.
-- Enabled `PRAGMA foreign_keys = ON` before beginning the repair transaction.
-- Read the original `trg_current_baseline_snapshots_no_update` name and SQL from `sqlite_master`, dropped only that trigger, restored it immediately from its stored SQL, and left the other three immutable-baseline triggers untouched.
-- Used `COALESCE(MAX(sequence), 0) + 1` for the corrective baseline audit sequence. Existing audit rows and messages are never updated.
-- The corrective audit message contains correct Chinese and does not repeat the old consecutive-question-mark value.
-- Registered the repair as an internal singleton. After `builder.Build()`, startup explicitly resolves `CurrentBaselineService`, `CoordinationLedgerService`, `ScenarioRunPersistenceService`, and `MasterSettingsGovernanceService` in order, then invokes repair `Apply()` once. No repair endpoint or contract/public-demo initialization was added.
-- Added real-service Unicode round-trip coverage for coordination `title`, `owner`, `decision`, `decision_rationale`, `actual_outcome`, and `created_by`, plus current-baseline `created_by`.
+- Replaced placeholder historical-buffer panels with native SVG/DOM evidence views for inventory, historical DDMRP sizing, five-band time buffers, and capacity layers.
+- Kept business calculations in the backend. JavaScript reads the Task 5 DTO and performs only pixel scaling, stacking, path construction, selection, and display formatting.
+- Added persistent selectors for control point, inventory SKU, sizing snapshot, time-buffer ID, and capacity resource. Valid selections survive 6↔12-month refreshes.
+- Inventory history reads the backend red/yellow/green tops, ending on-hand, and net-flow values. Missing evidence splits paths instead of becoming zero.
+- Historical DDMRP shows backend sizing lines, the standard 80/120/70 case, green driver, effective weeks, source cutoff, evidence status, and average on-hand.
+- Time history renders all five backend bands and a gap-aware abnormal-cost line.
+- Capacity history renders committed load plus theoretical, standard, demonstrated, planned-available, and protection-start layers. AIT defaults to upstream protection; HARNESS is labelled `CCR 利用率参照` and never renders protective consumption.
+- The source control-point value `关键进口 FPGA 库存控制点` remains unchanged while the UI maps it to `关键进口 FPGA 独立库存控制点`.
+- Empty collections and all-missing points show `证据缺失` without producing an empty SVG.
+- Frozen-baseline detail reads only `/api/current-baselines/{snapshotId}`; legacy missing lead-time factors show the exact read-only warning and are never substituted with a current candidate.
+- Drawer labels now cross one escaping boundary. Malicious parameter and frozen-baseline labels are escaped exactly once.
 
-The actual `snapshot_number` column is `UNIQUE`. Therefore the exact target and a same-number normal-Chinese control cannot coexist in one database. With controller confirmation, the test uses a second isolated temporary SQLite database for the same-number normal-Chinese control while preserving the requested product semantics.
+## Standard Runtime Fixture
 
-## Review Follow-up
+The C# harness now:
 
-The independent code review found no Critical or Important issues. Its one Minor finding was that the rollback test initially accepted any `SqliteException`. The test now captures the exception message and requires the fixed test-trigger text `test blocks corrective audit`, so an unrelated earlier SQLite failure cannot falsely prove atomic rollback. After that change, the full `111/111` suite, serial build, and protected-boundary verification were rerun successfully.
+1. Builds the real six-month Task 5 DTO through `HistoryReviewWorkspaceService`.
+2. Serializes it with web/camelCase JSON options.
+3. Discovers Node from `NODE_BINARY`, `PATH`, the installed Codex runtime, or standard install locations.
+4. Executes `tests/AdaptiveSopDdsop.Tests/Js/history-buffer-renderers.fixture.mjs`.
+5. Fails explicitly if Node is absent, times out, exits nonzero, or does not report completion.
+
+The Node fixture compiles the real `app.js` with `vm.Script` and executes six runtime groups:
+
+1. Backend sizing, evidence gaps, five time bands, and capacity layers.
+2. Delegated selectors, FPGA source preservation/display mapping, and HARNESS reference-only behavior.
+3. Frozen legacy baseline endpoint and exact warning.
+4. Empty collections and all-missing points, with no SVG.
+5. Malicious drawer labels escaped exactly once.
+6. Overall fixture completion against the serialized real DTO.
 
 ## TDD Evidence
 
-- Initial RED: `dotnet run --project tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj --no-restore` exited 1 with `CS0246` for the intentionally absent `ILocalDatabaseRepairService` and `LocalDatabaseRepairService`.
-- Initial GREEN: both required tests passed and the complete suite reported `111/111`.
-- Review RED: after adding an assertion that the new corrective audit must not contain `??` or `U+FFFD`, only `TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent` failed because the first message version repeated the old match value.
-- Review GREEN: changed the new audit message to `已将已知本地烟测创建人乱码修复为 Codex 烟测。`; the complete suite returned to `111/111`.
-- Atomicity control: a third temporary database adds a test-only trigger that rejects only `DataRepairApplied` inserts. `Apply()` throws, and assertions prove rollback restored both exact items, all three item audits, the old baseline creator, the original baseline audit, the exact snapshot no-update trigger SQL, and the journal/table state. The complete suite remains `111/111`.
-
-Added the two planned tests:
-
-- `TestKnownSmokeRecordRepairIsScopedAuditedAndIdempotent`
-- `TestSqliteRoundTripsChineseWithoutQuestionMarks`
-
-## Apply Results
-
-| Case | WasAlreadyApplied | Deleted Items | Deleted Item Audits | Repaired Baselines | Added Baseline Audits |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Exact-target database, first `Apply()` | `false` | 2 | 3 | 1 | 1 |
-| Exact-target database, second `Apply()` | `true` | 0 | 0 | 0 | 0 |
-| Same-number normal-Chinese control, first `Apply()` | `false` | 0 | 0 | 0 | 0 |
-| Same-number normal-Chinese control, second `Apply()` | `true` | 0 | 0 | 0 | 0 |
-
-Both successful first calls write exactly one journal row. Both second calls produce an identical logical database fingerprint before and after the call.
-
-## Trigger and Rollback Verification
-
-- Success path: the saved and restored `trg_current_baseline_snapshots_no_update` SQL strings compare exactly, all four `trg_current_baseline*` triggers remain, and a direct baseline update is still blocked.
-- Zero-match path: the trigger SQL also compares exactly and no corrective audit is added.
-- Failure path: the test-only audit rejection aborts the transaction; SQLite rolls back item/audit deletions, baseline update, trigger DDL, corrective audit, and journal creation. The original no-update trigger still blocks updates.
+- Initial renderer RED: the complete harness failed only the newly registered history-renderer test because the renderer state/selectors did not exist.
+- Initial renderer GREEN: the implementation brought the complete suite to `142/142`.
+- Review RED: after wiring the Node fixture into the standard harness and adding malicious-label assertions, the suite reported `141 PASS / 1 FAIL` on the double-escaped parameter label.
+- Review GREEN: passing raw labels into `openWorkspaceDrawer` restored one escaping boundary; the complete suite returned to `142/142`, including all six Node runtime groups.
 
 ## Final Verification
 
 ```text
-dotnet run --project tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj --no-restore
-111 test(s) passed.
+dotnet restore src\AdaptiveSopDdsop.Web\AdaptiveSopDdsop.Web.csproj -p:NuGetAudit=false
+dotnet restore tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj -p:NuGetAudit=false
+Both restores succeeded with projects up to date.
 ```
 
 ```text
 dotnet build AdaptiveSopDdsop.sln --no-restore -m:1
-Build succeeded: 0 errors, 2 NU1900 warnings because the offline environment could not query the NuGet vulnerability service.
+Build succeeded.
+0 warnings, 0 errors.
 ```
 
 ```text
-& .\scripts\verify-protected-boundaries.ps1 -Baseline 4e39ec5
-Protected boundaries match baseline 4e39ec5.
+dotnet run --project tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj --no-restore
+142 test(s) passed.
+Node renderer fixture: 6/6 groups passed.
 ```
 
-`git diff --check` reported no whitespace errors. Strict UTF-8 decoding passed for every changed implementation/test file. The replacement-character/common-mojibake scan found none; `Codex ??` appears in production only as the single fixed old-value match constant and in tests only as explicit seed/assertion data. The new corrective audit is separately asserted free of `??` and `U+FFFD`.
+```text
+& .\scripts\verify-protected-boundaries.ps1
+PASS 11 whole-file protected boundaries.
+Protected CONTRACT, SDBR, Network, validation, trace, and public-demo blocks match baseline 4e39ec5.
+```
+
+- `git diff --check`: no whitespace errors; only Git's informational LF→CRLF notices.
+- CSS delimiter check: 567 opening and 567 closing braces.
+- JavaScript syntax: the standard Node fixture compiled the real `app.js`.
+- Frontend-formula gate: historical renderers contain no copied DDMRP sizing or capacity-protection business formulas.
+- Independent re-review after fixes: no Critical, Important, or Minor findings; ready to merge.
+
+## Environment Note
+
+No in-app browser session was available in this worker. Runtime DOM behavior was therefore verified through the standard Node fixture using the real serialized Task 5 DTO. This did not block the required gates.

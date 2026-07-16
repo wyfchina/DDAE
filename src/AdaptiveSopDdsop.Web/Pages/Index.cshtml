@@ -162,11 +162,11 @@
                     <div class="history-object-options">
                         <section class="history-visual-card">
                             <div class="panel-heading compact-heading"><div><span class="panel-kicker">库存缓冲</span><h2>水位与区域历史</h2></div></div>
-                            <div id="history-inventory-chart" class="history-chart" aria-label="历史库存缓冲图"></div>
+                            <div id="history-inventory-chart" class="history-chart" aria-label="历史库存缓冲图" aria-live="polite"></div>
                         </section>
                         <section class="history-visual-card">
-                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间缓冲</span><h2>提前与延误历史</h2></div></div>
-                            <div id="history-time-buffer-chart" class="history-chart" aria-label="历史时间缓冲图"></div>
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间缓冲</span><h2>五段时效与异常费用</h2></div></div>
+                            <div id="history-time-buffer-chart" class="history-chart" aria-label="历史时间缓冲图" aria-live="polite"></div>
                         </section>
                     </div>
                 </div>
@@ -205,12 +205,12 @@
                             <div id="history-ddmrp-input-summary" class="metadata-list"></div>
                         </section>
                         <section class="history-visual-card">
-                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">白盒定容</span><h2>公式、输入与结果</h2></div></div>
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">后端定容证据</span><h2>公式、输入与结果</h2></div></div>
                             <div class="table-scroll"><table class="data-table"><thead><tr><th>组成</th><th>公式</th><th>值</th><th>证据</th></tr></thead><tbody id="history-ddmrp-sizing-body"></tbody></table></div>
                         </section>
                         <section class="history-visual-card">
                             <div class="panel-heading compact-heading"><div><span class="panel-kicker">区域结构</span><h2>红黄绿定容区</h2></div></div>
-                            <div id="history-ddmrp-zone-chart" class="history-chart" aria-label="历史 DDMRP 定容区图"></div>
+                            <div id="history-ddmrp-zone-chart" class="history-chart" aria-label="历史 DDMRP 定容区图" aria-live="polite"></div>
                             <p class="history-evidence-note">所选快照只展示其当期参数与证据，不用当前参数回填历史缺口。</p>
                         </section>
                     </div>
@@ -233,8 +233,8 @@
                         </section>
                     </aside>
                     <section class="history-visual-card">
-                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">期间能力</span><h2>负荷、边界与保护</h2></div></div>
-                        <div id="history-capacity-buffer-chart" class="history-chart" aria-label="历史能力缓冲图"></div>
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">期间能力</span><h2>AIT 上游保护与 CCR 利用率参照</h2></div></div>
+                        <div id="history-capacity-buffer-chart" class="history-chart" aria-label="历史能力缓冲图" aria-live="polite"></div>
                     </section>
                 </div>
                 <div class="stage-grid two-column">

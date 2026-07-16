@@ -1,5 +1,6 @@
 using AdaptiveSopDdsop.Web.Data;
 using AdaptiveSopDdsop.Web.Domain;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -80,6 +81,7 @@ var tests = new (string Name, Action Run)[]
     ("Only the selected stage or child view is visible", TestOnlySelectedStageOrChildViewIsVisible),
     ("History review exposes four selectable visualization workspaces", TestHistoryReviewExposesSelectableVisualizationWorkspaces),
     ("History review retains range and selection state", TestHistoryReviewRetainsRangeAndSelectionState),
+    ("History visual renderers use backend evidence without frontend formulas", TestHistoryVisualRenderersUseBackendEvidence),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
     ("Five-stage business views localize ordinary unit tokens", TestBusinessViewsLocalizeOrdinaryUnitTokens),
     ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
@@ -4310,6 +4312,239 @@ static void TestHistoryReviewRetainsRangeAndSelectionState()
         "history range failures should display a history-owned error");
 }
 
+static void TestHistoryVisualRenderersUseBackendEvidence()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var fixture = File.ReadAllText(Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs"));
+
+    foreach (var stateField in new[]
+    {
+        "historyTrendMonths: 6",
+        "selectedHistoryControlPoint: null",
+        "selectedHistoryInventorySku: null",
+        "selectedHistorySizingSnapshot: null",
+        "selectedHistoryTimeBufferId: null",
+        "selectedHistoryCapacityResource: null"
+    })
+    {
+        AssertTrue(script.Contains(stateField, StringComparison.Ordinal), $"history visual state should include {stateField}");
+    }
+
+    foreach (var renderer in new[]
+    {
+        "renderHistoryBufferOverview",
+        "renderHistoryInventoryBuffer",
+        "renderHistoryDdmrpSizingTrace",
+        "renderHistoryTimeBuffer",
+        "renderHistoryCapacityBuffer",
+        "renderHistoryDdmrpZoneSvg",
+        "historyControlPointLabel",
+        "contiguousEvidenceSegments",
+        "buildLinearAreaPath"
+    })
+    {
+        AssertTrue(script.Contains($"function {renderer}(", StringComparison.Ordinal), $"history UI should expose {renderer}");
+    }
+
+    var historyReviewBody = SourceFunctionBody(script, "renderHistoryReview");
+    foreach (var renderer in new[]
+    {
+        "renderHistoryBufferOverview(history)",
+        "renderHistoryInventoryBuffer(history)",
+        "renderHistoryDdmrpSizingTrace(history)",
+        "renderHistoryTimeBuffer(history)",
+        "renderHistoryCapacityBuffer(history)"
+    })
+    {
+        AssertTrue(historyReviewBody.Contains(renderer, StringComparison.Ordinal), $"history review should invoke {renderer}");
+    }
+
+    var inventoryBody = SourceFunctionBody(script, "renderHistoryInventoryBuffer");
+    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow" })
+    {
+        AssertTrue(inventoryBody.Contains(backendField, StringComparison.Ordinal), $"inventory history must read backend {backendField}");
+    }
+    AssertTrue(inventoryBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal),
+        "inventory history should split paths at evidence gaps");
+
+    var sizingBody = SourceFunctionBody(script, "renderHistoryDdmrpSizingTrace");
+    AssertTrue(sizingBody.Contains("item.sizingLines", StringComparison.Ordinal),
+        "historical DDMRP table should render backend sizing lines");
+    AssertTrue(sizingBody.Contains("renderHistoryDdmrpZoneSvg(item)", StringComparison.Ordinal),
+        "historical DDMRP trace should render the backend zone result");
+    foreach (var forbidden in new[] { "leadTimeFactor *", "variabilityFactor *", "Math.max(item.minimumOrderQuantity", "\"EvidenceMissing\"", "\"Trace\"" })
+    {
+        AssertTrue(!sizingBody.Contains(forbidden, StringComparison.Ordinal), $"historical DDMRP renderer must not contain {forbidden}");
+    }
+
+    var zoneBody = SourceFunctionBody(script, "renderHistoryDdmrpZoneSvg");
+    foreach (var backendField in new[] { "item.sizing.zones.red", "item.sizing.zones.yellow", "item.sizing.zones.green", "item.averageOnHand", "item.effectiveFromWeekOffset", "item.effectiveThroughWeekOffset", "item.asOfUtc", "item.sizing.greenDriver" })
+    {
+        AssertTrue(zoneBody.Contains(backendField, StringComparison.Ordinal), $"zone SVG must read backend {backendField}");
+    }
+
+    var timeBody = SourceFunctionBody(script, "renderHistoryTimeBuffer");
+    foreach (var backendField in new[] { "point.earlyCount", "point.greenCount", "point.yellowCount", "point.redCount", "point.lateCount", "point.abnormalCost" })
+    {
+        AssertTrue(timeBody.Contains(backendField, StringComparison.Ordinal), $"time-buffer history must read backend {backendField}");
+    }
+    AssertTrue(timeBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal),
+        "time-buffer cost line should split at evidence gaps");
+
+    var capacityBody = SourceFunctionBody(script, "renderHistoryCapacityBuffer");
+    foreach (var backendField in new[] { "point.committedLoad", "point.theoreticalCapacity", "point.standardCapacity", "point.demonstratedCapacity", "point.plannedAvailableCapacity", "point.protectionStart" })
+    {
+        AssertTrue(capacityBody.Contains(backendField, StringComparison.Ordinal), $"capacity history must read backend {backendField}");
+    }
+    AssertTrue(capacityBody.Contains("item.relationshipRole === \"UpstreamProtection\"", StringComparison.Ordinal),
+        "only upstream protection resources should show protective consumption");
+    AssertTrue(capacityBody.Contains("CCR 利用率参照", StringComparison.Ordinal),
+        "CCR utilization history should be labelled as a reference");
+
+    foreach (var selector in new[]
+    {
+        "history-control-point",
+        "history-inventory-sku",
+        "history-sizing-snapshot",
+        "history-time-buffer-id",
+        "history-capacity-resource"
+    })
+    {
+        AssertTrue(script.Contains(selector, StringComparison.Ordinal), $"history UI should expose {selector} selectors");
+    }
+    foreach (var selectionBehavior in new[]
+    {
+        "state.selectedHistoryControlPoint = controlPoint.dataset.historyControlPoint",
+        "state.selectedHistoryInventorySku = inventorySku.dataset.historyInventorySku",
+        "state.selectedHistorySizingSnapshot = sizingSnapshot.dataset.historySizingSnapshot",
+        "state.selectedHistoryTimeBufferId = timeBuffer.dataset.historyTimeBufferId",
+        "state.selectedHistoryCapacityResource = capacityResource.dataset.historyCapacityResource",
+        "renderHistoryInventoryBuffer(state.historyReview)",
+        "renderHistoryDdmrpSizingTrace(state.historyReview)",
+        "renderHistoryTimeBuffer(state.historyReview)",
+        "renderHistoryCapacityBuffer(state.historyReview)"
+    })
+    {
+        AssertTrue(script.Contains(selectionBehavior, StringComparison.Ordinal), $"history selector behavior should include {selectionBehavior}");
+    }
+    AssertTrue(script.Contains("item.resourceCode === \"RES-AIT\" && item.relationshipRole === \"UpstreamProtection\"", StringComparison.Ordinal),
+        "AIT upstream protection should be the default capacity history resource");
+
+    var snapshotDetailBody = SourceFunctionBody(script, "openBaselineSnapshotDetail");
+    AssertTrue(snapshotDetailBody.Contains("/api/current-baselines/${snapshotId}", StringComparison.Ordinal),
+        "baseline details should read the selected frozen snapshot endpoint");
+    AssertTrue(snapshotDetailBody.Contains("旧版本缺少提前期因子；该快照保持只读，不能用于重算", StringComparison.Ordinal),
+        "legacy snapshot details should expose the exact missing-evidence warning");
+    AssertTrue(!snapshotDetailBody.Contains("state.currentBaselineCandidate", StringComparison.Ordinal),
+        "legacy snapshot details must not substitute the current candidate");
+    AssertTrue(program.Contains("app.MapGet(\"/api/current-baselines/{snapshotId}\"", StringComparison.Ordinal),
+        "baseline details should expose the selected frozen snapshot endpoint");
+    AssertTrue(fixture.Contains("export async function runHistoryBufferRendererFixtures", StringComparison.Ordinal)
+        && fixture.Contains("new vm.Script(source", StringComparison.Ordinal)
+        && fixture.Contains("renderHistoryReview(__historyFixture)", StringComparison.Ordinal),
+        "runtime fixture should compile and execute the real app.js renderers against a backend-shaped history DTO");
+
+    var seed = SeedData.Create();
+    var history = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(seed),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    RunHistoryBufferRendererFixture(root, history);
+}
+
+static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace history)
+{
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs");
+    var dtoPath = Path.Combine(Path.GetTempPath(), $"history-review-{Guid.NewGuid():N}.json");
+    File.WriteAllText(
+        dtoPath,
+        JsonSerializer.Serialize(history, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+    try
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = FindNodeExecutable(),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add(fixturePath);
+        process.StartInfo.ArgumentList.Add(dtoPath);
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Node renderer fixture timed out after 30 seconds");
+        }
+        Task.WaitAll(standardOutput, standardError);
+        var output = standardOutput.Result;
+        var error = standardError.Result;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Node renderer fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+        }
+        AssertTrue(output.Contains("renderer fixture groups passed", StringComparison.Ordinal),
+            $"Node renderer fixture did not report completion: {output}");
+    }
+    finally
+    {
+        File.Delete(dtoPath);
+    }
+}
+
+static string FindNodeExecutable()
+{
+    var executableName = OperatingSystem.IsWindows() ? "node.exe" : "node";
+    var candidates = new List<string?>
+    {
+        Environment.GetEnvironmentVariable("NODE_BINARY"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "bin", executableName),
+        OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", executableName)
+            : null,
+    };
+    candidates.AddRange((Environment.GetEnvironmentVariable("PATH") ?? "")
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        .Select(path => Path.Combine(Environment.ExpandEnvironmentVariables(path.Trim()), executableName)));
+
+    var executable = candidates
+        .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+        .FirstOrDefault(candidate => File.Exists(candidate));
+    if (executable is not null)
+    {
+        return executable;
+    }
+
+    var runtimeRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OpenAI",
+        "Codex",
+        "runtimes",
+        "cua_node");
+    if (Directory.Exists(runtimeRoot))
+    {
+        executable = Directory.EnumerateFiles(runtimeRoot, executableName, SearchOption.AllDirectories)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+        if (executable is not null)
+        {
+            return executable;
+        }
+    }
+
+    throw new InvalidOperationException(
+        "Node.js is required for the historical renderer fixture. Install Node, expose it on PATH, or set NODE_BINARY.");
+}
+
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
 {
     var pagePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml");
@@ -5303,7 +5538,7 @@ static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
     var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
-    var businessStart = page.IndexOf("id=\"history-review-panel\"", StringComparison.Ordinal);
+    var businessStart = page.IndexOf("<section id=\"history-review-panel\"", StringComparison.Ordinal);
     var protectedStart = page.IndexOf("id=\"saved-scenarios-panel\"", businessStart, StringComparison.Ordinal);
     AssertTrue(businessStart >= 0 && protectedStart > businessStart, "business region should precede protected validation pages");
     var businessPage = page.Substring(businessStart, protectedStart - businessStart);
@@ -5330,7 +5565,7 @@ static void TestBusinessViewsTranslateInternalCodesWithoutMojibake()
         AssertTrue(script.Contains(mapping, StringComparison.Ordinal), $"business translation should contain {mapping}");
     }
 
-    foreach (var forbidden in new[] { "当前占用", "库存口径", "红色供应窗口", "缓冲 sizing", ">Trace<", "??", "\uFFFD" })
+    foreach (var forbidden in new[] { "当前占用", "库存口径", "红色供应窗口", "缓冲 sizing", ">Trace<", "??", "\uFFFD", "EvidenceMissing", "UpstreamProtection", "Trace" })
     {
         AssertTrue(!businessPage.Contains(forbidden, StringComparison.Ordinal), $"business page should not expose {forbidden}");
     }
