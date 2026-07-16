@@ -4251,6 +4251,7 @@ static void TestHistoryReviewRetainsRangeAndSelectionState()
     {
         "historyTrendMonths: 6",
         "historyRequestGeneration: 0",
+        "workspaceErrorSource: null",
         "historySelection:",
         "inventoryControlPoint: null",
         "inventorySku: null",
@@ -4271,18 +4272,42 @@ static void TestHistoryReviewRetainsRangeAndSelectionState()
     AssertTrue(loadWorkspaceBody.Contains("loadHistoryReview()", StringComparison.Ordinal), "workspace refresh should preserve the selected history range");
     AssertTrue(!loadWorkspaceBody.Contains("loadHistoryReview(6)", StringComparison.Ordinal), "workspace refresh should not reset history to six months");
 
+    var staleRequestBody = SourceFunctionBody(script, "isStaleHistoryRequest");
+    AssertTrue(staleRequestBody.Contains("return requestGeneration !== currentGeneration", StringComparison.Ordinal),
+        "history generation comparison should remain a pure helper shared by success and rejection paths");
+
     var loadHistoryBody = SourceFunctionBody(script, "loadHistoryReview");
     var generationStart = loadHistoryBody.IndexOf("const requestGeneration = ++state.historyRequestGeneration", StringComparison.Ordinal);
-    var firstStaleGuard = loadHistoryBody.IndexOf("if (requestGeneration !== state.historyRequestGeneration) return", generationStart, StringComparison.Ordinal);
+    var tryStart = loadHistoryBody.IndexOf("try {", generationStart, StringComparison.Ordinal);
+    var responseFetch = loadHistoryBody.IndexOf("const response = await fetch", StringComparison.Ordinal);
     var responseStatus = loadHistoryBody.IndexOf("if (!response.ok)", StringComparison.Ordinal);
     var responsePayload = loadHistoryBody.IndexOf("const history = await response.json()", StringComparison.Ordinal);
-    var secondStaleGuard = loadHistoryBody.IndexOf("if (requestGeneration !== state.historyRequestGeneration) return", firstStaleGuard + 1, StringComparison.Ordinal);
+    var successStaleGuard = loadHistoryBody.IndexOf("if (isStaleHistoryRequest(requestGeneration, state.historyRequestGeneration)) return", responsePayload, StringComparison.Ordinal);
     var rangeCommit = loadHistoryBody.IndexOf("state.historyTrendMonths = trendMonths", StringComparison.Ordinal);
+    var clearHistoryError = loadHistoryBody.IndexOf("clearWorkspaceError(\"history-review\")", StringComparison.Ordinal);
     var renderCommit = loadHistoryBody.IndexOf("renderHistoryReview(history)", StringComparison.Ordinal);
-    AssertTrue(generationStart >= 0 && firstStaleGuard > generationStart && responseStatus > firstStaleGuard,
-        "stale history requests should exit before reporting a failed obsolete response");
-    AssertTrue(responsePayload > responseStatus && secondStaleGuard > responsePayload && rangeCommit > secondStaleGuard && renderCommit > rangeCommit,
-        "only the latest successful history response should commit range state and render data");
+    var catchStart = loadHistoryBody.IndexOf("catch (error)", renderCommit, StringComparison.Ordinal);
+    var rejectionStaleGuard = loadHistoryBody.IndexOf("if (isStaleHistoryRequest(requestGeneration, state.historyRequestGeneration)) return", catchStart, StringComparison.Ordinal);
+    var currentRethrow = loadHistoryBody.IndexOf("throw error", rejectionStaleGuard, StringComparison.Ordinal);
+    AssertTrue(generationStart >= 0 && tryStart > generationStart && responseFetch > tryStart && responseStatus > responseFetch && responsePayload > responseStatus,
+        "history fetch, response validation, and JSON parsing should share one stale-aware try block");
+    AssertTrue(successStaleGuard > responsePayload && rangeCommit > successStaleGuard && clearHistoryError > rangeCommit && renderCommit > clearHistoryError,
+        "only the latest successful history response should commit range state, clear its own error, and render data");
+    AssertTrue(catchStart > renderCommit && rejectionStaleGuard > catchStart && currentRethrow > rejectionStaleGuard,
+        "obsolete history rejections should become no-ops while the current generation still rethrows");
+
+    AssertTrue(script.Contains("function showWorkspaceError(error, source = \"workspace\")", StringComparison.Ordinal),
+        "workspace errors should record their source");
+    var showErrorBody = SourceFunctionBody(script, "showWorkspaceError");
+    AssertTrue(showErrorBody.Contains("state.workspaceErrorSource = source", StringComparison.Ordinal),
+        "workspace error ownership should be retained for scoped recovery");
+    var clearErrorBody = SourceFunctionBody(script, "clearWorkspaceError");
+    AssertTrue(clearErrorBody.Contains("if (state.workspaceErrorSource !== source) return", StringComparison.Ordinal),
+        "workspace recovery should ignore errors owned by another workspace");
+    AssertTrue(clearErrorBody.Contains("state.workspaceErrorSource = null", StringComparison.Ordinal),
+        "workspace recovery should release matching error ownership");
+    AssertTrue(script.Contains(".catch(error => showWorkspaceError(error, \"history-review\"))", StringComparison.Ordinal),
+        "history range failures should display a history-owned error");
 }
 
 static void TestScenarioRunWorkspaceReplacesTeachingPageShell()

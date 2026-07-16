@@ -19,6 +19,7 @@ const state = {
   historyReview: null,
   historyTrendMonths: 6,
   historyRequestGeneration: 0,
+  workspaceErrorSource: null,
   historySelection: {
     inventoryControlPoint: null,
     inventorySku: null,
@@ -1140,14 +1141,25 @@ function setWorkspaceStatus(status, message) {
 function showWorkspaceContent() {
   byId("workspace-loading").hidden = true;
   byId("workspace-error").hidden = true;
+  byId("workspace-error-message").textContent = "";
+  state.workspaceErrorSource = null;
   applyWorkspaceRoute(parseWorkspaceRoute(window.location.hash));
 }
 
-function showWorkspaceError(error) {
+function showWorkspaceError(error, source = "workspace") {
   byId("workspace-loading").hidden = true;
   byId("workspace-error").hidden = false;
   byId("workspace-error-message").textContent = error.message;
+  state.workspaceErrorSource = source;
   setWorkspaceStatus("Red", "数据不可用");
+}
+
+function clearWorkspaceError(source) {
+  if (state.workspaceErrorSource !== source) return;
+  state.workspaceErrorSource = null;
+  byId("workspace-error").hidden = true;
+  byId("workspace-error-message").textContent = "";
+  setWorkspaceStatus("Green", "工作台已就绪");
 }
 
 function unique(values) {
@@ -3836,21 +3848,30 @@ function renderHistoryReview(history) {
     : emptyRow("没有约束暴露证据", 5);
 }
 
+function isStaleHistoryRequest(requestGeneration, currentGeneration) {
+  return requestGeneration !== currentGeneration;
+}
+
 async function loadHistoryReview(trendMonths = state.historyTrendMonths) {
   trendMonths = trendMonths === 12 ? 12 : 6;
   const requestGeneration = ++state.historyRequestGeneration;
-  const response = await fetch(`/api/history-review?trendMonths=${trendMonths}`, { headers: { Accept: "application/json" } });
-  if (requestGeneration !== state.historyRequestGeneration) return;
-  if (!response.ok) throw new Error(`历史回顾接口失败：${response.status}`);
-  const history = await response.json();
-  if (requestGeneration !== state.historyRequestGeneration) return;
-  state.historyTrendMonths = trendMonths;
-  document.querySelectorAll("[data-history-range-months]").forEach(button => {
-    const isSelected = Number(button.dataset.historyRangeMonths) === state.historyTrendMonths;
-    button.classList.toggle("is-selected", isSelected);
-    button.setAttribute("aria-pressed", String(isSelected));
-  });
-  renderHistoryReview(history);
+  try {
+    const response = await fetch(`/api/history-review?trendMonths=${trendMonths}`, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`历史回顾接口失败：${response.status}`);
+    const history = await response.json();
+    if (isStaleHistoryRequest(requestGeneration, state.historyRequestGeneration)) return;
+    state.historyTrendMonths = trendMonths;
+    document.querySelectorAll("[data-history-range-months]").forEach(button => {
+      const isSelected = Number(button.dataset.historyRangeMonths) === state.historyTrendMonths;
+      button.classList.toggle("is-selected", isSelected);
+      button.setAttribute("aria-pressed", String(isSelected));
+    });
+    clearWorkspaceError("history-review");
+    renderHistoryReview(history);
+  } catch (error) {
+    if (isStaleHistoryRequest(requestGeneration, state.historyRequestGeneration)) return;
+    throw error;
+  }
 }
 
 function configureFutureBaselineSelect() {
@@ -4629,7 +4650,7 @@ document.addEventListener("click", event => {
 document.addEventListener("click", event => {
   const rangeButton = event.target.closest("[data-history-range-months]");
   if (rangeButton) {
-    loadHistoryReview(Number(rangeButton.dataset.historyRangeMonths)).catch(showWorkspaceError);
+    loadHistoryReview(Number(rangeButton.dataset.historyRangeMonths)).catch(error => showWorkspaceError(error, "history-review"));
     return;
   }
   if (!state.historyReview) return;
