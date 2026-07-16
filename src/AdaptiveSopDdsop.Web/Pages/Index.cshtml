@@ -754,8 +754,11 @@
                                 <aside id="buffer-inventory-options" class="buffer-inventory-options" aria-label="库存选项"></aside>
                                 <div class="buffer-chart-area">
                                     <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
-                                    <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="缓冲波动图"></div>
-                                    <div class="buffer-static-legend"><span>红 / 黄 / 绿山形缓冲区</span><span>净流动量位置</span><span>预计库存水位</span><span>目标库存</span><span>需求脉冲</span></div>
+                                    <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="需求波动图"></div>
+                                    <div class="buffer-static-legend">
+                                        <div class="buffer-static-legend-group"><strong>动态红黄绿缓冲带</strong><span>净流动量位置</span><span>预计库存水位</span><span>目标库存</span></div>
+                                        <div class="buffer-static-legend-group"><strong>需求波动</strong><span>计划需求</span><span>后端尖峰阈值</span></div>
+                                    </div>
                                 </div>
                             </div>
                             <div id="buffer-comparison-strip" class="buffer-comparison-strip"></div>

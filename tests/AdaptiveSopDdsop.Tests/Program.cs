@@ -82,6 +82,7 @@ var tests = new (string Name, Action Run)[]
     ("History review exposes four selectable visualization workspaces", TestHistoryReviewExposesSelectableVisualizationWorkspaces),
     ("History review retains range and selection state", TestHistoryReviewRetainsRangeAndSelectionState),
     ("History visual renderers use backend evidence without frontend formulas", TestHistoryVisualRenderersUseBackendEvidence),
+    ("Future buffer charts use backend sizing and separate volatility", TestFutureBufferChartsUseBackendSizingAndSeparateVolatility),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
     ("Five-stage business views localize ordinary unit tokens", TestBusinessViewsLocalizeOrdinaryUnitTokens),
     ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
@@ -4453,6 +4454,67 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     RunHistoryBufferRendererFixture(root, history);
 }
 
+static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var styles = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css"));
+
+    AssertEqual(1, page.Split("id=\"buffer-trend-chart\"", StringSplitOptions.None).Length - 1,
+        "upper buffer chart host count");
+    AssertEqual(1, page.Split("id=\"buffer-volatility-chart\"", StringSplitOptions.None).Length - 1,
+        "lower volatility chart host count");
+    AssertTrue(styles.Contains(".buffer-volatility-svg { min-width: 900px;", StringComparison.Ordinal),
+        "upper and lower future charts should use the same minimum plot width");
+    AssertTrue(styles.Contains(".history-buffer-svg { display: block; min-width: 760px;", StringComparison.Ordinal),
+        "historical SVGs should retain their independent 760px minimum width");
+
+    var trend = new BufferTrendWorkspaceService(new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetBaseline(12);
+    RunFutureBufferChartFixture(root, trend);
+
+    var trendBody = SourceFunctionBody(script, "renderBufferTrendChart");
+    AssertTrue(trendBody.Contains("buildMonotoneAreaPath", StringComparison.Ordinal),
+        "upper chart should use shape-preserving stacked area paths");
+    foreach (var forbidden in new[] { "demand-pulse-bar", "pulseTop", "topOfRed) * 0.5", "topOfRed * 0.5" })
+    {
+        AssertTrue(!trendBody.Contains(forbidden, StringComparison.Ordinal),
+            $"upper chart must not contain {forbidden}");
+    }
+
+    var volatilityBody = SourceFunctionBody(script, "renderBufferVolatilityChart");
+    AssertTrue(volatilityBody.Contains("item.demand", StringComparison.Ordinal),
+        "lower chart should read backend planned demand");
+    AssertTrue(volatilityBody.Contains("item.demandSpikeThreshold", StringComparison.Ordinal),
+        "lower chart should read the backend spike threshold");
+    AssertTrue(volatilityBody.Contains("尖峰阈值证据缺失", StringComparison.Ordinal),
+        "lower chart should expose missing threshold evidence");
+
+    var workspaceBody = SourceFunctionBody(script, "renderBufferTrendWorkspace");
+    var upperRender = workspaceBody.IndexOf("renderBufferTrendChart(detail)", StringComparison.Ordinal);
+    var lowerRender = workspaceBody.IndexOf("renderBufferVolatilityChart(detail)", StringComparison.Ordinal);
+    AssertTrue(upperRender >= 0 && lowerRender > upperRender,
+        "workspace should render the upper buffer chart before the lower volatility chart");
+
+    var partsBody = SourceFunctionBody(script, "monotonePathParts");
+    AssertTrue(partsBody.Contains("Math.sign(delta[index - 1]) !== Math.sign(delta[index])", StringComparison.Ordinal)
+        && partsBody.Contains("slopes[index] = 0", StringComparison.Ordinal),
+        "monotone helper should clamp direction changes to a zero slope");
+    AssertTrue(partsBody.Contains("firstWeight / delta[index - 1] + secondWeight / delta[index]", StringComparison.Ordinal),
+        "monotone helper should use a weighted harmonic mean");
+    AssertTrue(SourceFunctionBody(script, "buildMonotoneAreaPath").Contains(" Z`", StringComparison.Ordinal),
+        "monotone area path should close the stacked band");
+
+    AssertTrue(page.Contains("动态红黄绿缓冲带", StringComparison.Ordinal),
+        "upper chart should have a Chinese dynamic-buffer label");
+    AssertTrue(page.Contains("需求波动", StringComparison.Ordinal),
+        "lower chart should have a Chinese volatility label");
+    AssertTrue(!page.Contains("订单尖峰阈值", StringComparison.Ordinal),
+        "static page should not retain the old spike-threshold label");
+    AssertTrue(!page.Contains("需求脉冲", StringComparison.Ordinal),
+        "static page should not retain the old demand-pulse label");
+}
+
 static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace history)
 {
     var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs");
@@ -4494,6 +4556,54 @@ static void RunHistoryBufferRendererFixture(string root, HistoryReviewWorkspace 
         }
         AssertTrue(output.Contains("renderer fixture groups passed", StringComparison.Ordinal),
             $"Node renderer fixture did not report completion: {output}");
+    }
+    finally
+    {
+        File.Delete(dtoPath);
+    }
+}
+
+static void RunFutureBufferChartFixture(string root, BufferTrendWorkspaceResult trend)
+{
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "future-buffer-charts.fixture.mjs");
+    var dtoPath = Path.Combine(Path.GetTempPath(), $"future-buffer-trend-{Guid.NewGuid():N}.json");
+    File.WriteAllText(
+        dtoPath,
+        JsonSerializer.Serialize(trend, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+    try
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = FindNodeExecutable(),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add(fixturePath);
+        process.StartInfo.ArgumentList.Add(dtoPath);
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Node future-buffer chart fixture timed out after 30 seconds");
+        }
+        Task.WaitAll(standardOutput, standardError);
+        var output = standardOutput.Result;
+        var error = standardError.Result;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Node future-buffer chart fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+        }
+        AssertTrue(output.Contains("future buffer chart fixture groups passed", StringComparison.Ordinal),
+            $"Node future-buffer chart fixture did not report completion: {output}");
     }
     finally
     {
@@ -4920,12 +5030,12 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
 
     AssertTrue(page.Contains("缓冲 / 库存趋势", StringComparison.Ordinal), "page should expose graphical buffer trend label");
     AssertTrue(page.Contains("库存选项", StringComparison.Ordinal), "page should expose left-side inventory options");
-    AssertTrue(page.Contains("红 / 黄 / 绿山形缓冲区", StringComparison.Ordinal), "page should expose mountain-style buffer bands");
+    AssertTrue(page.Contains("动态红黄绿缓冲带", StringComparison.Ordinal), "page should expose dynamic mountain-style buffer bands");
     AssertTrue(page.Contains("净流动量位置", StringComparison.Ordinal), "page should expose net flow position label");
     AssertTrue(page.Contains("预计库存水位", StringComparison.Ordinal), "page should expose projected inventory level label");
     AssertTrue(page.Contains("目标库存", StringComparison.Ordinal), "page should expose target inventory label");
     AssertTrue(page.Contains("时间相位 ADU", StringComparison.Ordinal), "page should expose time-phased ADU label");
-    AssertTrue(page.Contains("需求脉冲", StringComparison.Ordinal), "page should expose demand pulse label");
+    AssertTrue(page.Contains("需求波动", StringComparison.Ordinal), "page should expose the independent demand-volatility label");
     AssertTrue(page.Contains("单 SKU 仿真工作台", StringComparison.Ordinal), "page should expose single SKU simulation workbench");
     AssertTrue(page.Contains("活动列表", StringComparison.Ordinal), "page should expose SKU activity list");
     AssertTrue(page.Contains("缓冲定容", StringComparison.Ordinal), "page should expose Chinese buffer sizing label");

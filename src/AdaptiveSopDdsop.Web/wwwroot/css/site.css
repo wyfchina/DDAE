@@ -809,7 +809,6 @@ body.has-focus-panel { overflow: hidden; }
 }
 .buffer-svg { min-width: 900px; width: 100%; height: auto; display: block; }
 .buffer-plot-bg { fill: #f4f5f2; stroke: #e4e8e2; }
-.buffer-pulse-bg { fill: #fff; stroke: #e4e8e2; }
 .buffer-baseline-line, .buffer-preview-line, .buffer-net-flow-line, .buffer-inventory-line {
   fill: none;
   stroke-width: 2.5;
@@ -824,9 +823,7 @@ body.has-focus-panel { overflow: hidden; }
 .buffer-zone-yellow { fill: #fff34f; opacity: .9; }
 .buffer-zone-green { fill: #35c46f; opacity: .88; }
 .target-inventory-dot { fill: #f2f4f7; stroke: #c2c8cf; stroke-width: 1.2; }
-.demand-pulse-bar { fill: #2f80c3; opacity: .86; }
-.order-spike-line { stroke: #111827; stroke-width: 2; fill: none; }
-.order-spike-label, .axis-label, .axis-title { fill: #667085; font-size: 10px; }
+.axis-label, .axis-title { fill: #667085; font-size: 10px; }
 .axis-label { text-anchor: end; font-variant-numeric: tabular-nums; }
 .axis-title { font-weight: 650; }
 .axis-line { stroke: #cfd6dc; stroke-width: 1; }
@@ -849,14 +846,16 @@ body.has-focus-panel { overflow: hidden; }
 .buffer-chart-legend .line.preview { border-top-color: #c026d3; }
 .buffer-chart-legend .line.inventory { border-top-color: #4f8bd6; }
 .buffer-chart-legend .line.net-flow { border-top-color: #111827; }
-.buffer-chart-legend .line.spike { border-top-color: #111827; border-top-width: 2px; }
-.buffer-chart-legend .zone, .buffer-chart-legend .bar { width: 14px; height: 10px; border-radius: 1px; }
+.buffer-chart-legend .line.demand-threshold { border-top-color: #1f2937; border-top-width: 2px; border-top-style: dashed; }
+.buffer-chart-legend .zone, .buffer-chart-legend .area { width: 14px; height: 10px; border-radius: 1px; }
 .buffer-chart-legend .dot { width: 9px; height: 9px; border-radius: 50%; background: #f2f4f7; border: 1px solid #c2c8cf; }
 .buffer-chart-legend .zone.red { background: #ef3b2d; }
 .buffer-chart-legend .zone.yellow { background: #fff34f; border: 1px solid #dfcf23; }
 .buffer-chart-legend .zone.green { background: #35c46f; }
-.buffer-chart-legend .bar.pulse { background: #2f80c3; }
-.buffer-static-legend { display: flex; flex-wrap: wrap; gap: 8px; color: var(--color-muted); font-size: 11px; }
+.buffer-chart-legend .area.demand { background: rgba(47, 128, 195, .58); }
+.buffer-static-legend { display: grid; gap: 6px; color: var(--color-muted); font-size: 11px; }
+.buffer-static-legend-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.buffer-static-legend-group strong { min-width: 112px; color: var(--color-primary-strong); font-size: 11px; }
 .buffer-static-legend span { padding: 3px 7px; border: 1px solid var(--color-border); border-radius: 999px; background: #f8fbfa; }
 .buffer-comparison-strip {
   display: grid;
@@ -1514,9 +1513,16 @@ body.has-focus-panel { overflow: hidden; }
 .history-selector-group .inventory-option.is-selected { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary-strong); }
 .history-selector-group .inventory-option.is-selected .option-radio { background: var(--color-primary); }
 .history-empty-options, .history-evidence-note { margin: 0; color: var(--color-muted); font-size: 12px; line-height: 1.5; }
-.history-chart, .buffer-volatility-chart { min-height: 260px; overflow-x: auto; }
-.buffer-volatility-chart { border: 1px solid var(--color-border); border-radius: 6px; background: #f7f7f5; }
-.history-buffer-svg, .buffer-volatility-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+.history-chart { min-height: 260px; overflow-x: auto; }
+.buffer-volatility-chart { min-height: 190px; overflow-x: auto; border: 1px solid var(--color-border); border-radius: 6px; background: #f7f7f5; }
+.history-buffer-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+.buffer-volatility-svg { min-width: 900px; display: block; width: 100%; height: auto; }
+.buffer-volatility-bg { fill: #fff; stroke: #e4e8e2; }
+.buffer-demand-area { fill: rgba(47, 128, 195, .58); stroke: #2f80c3; stroke-width: 1.2; }
+.buffer-demand-threshold { fill: none; stroke: #1f2937; stroke-width: 2; stroke-dasharray: 6 4; }
+.buffer-demand-marker { fill: #2f80c3; stroke: #fff; stroke-width: 1; }
+.buffer-demand-threshold-marker { fill: #1f2937; stroke: #fff; stroke-width: 1; }
+.buffer-demand-evidence-note { fill: #9a3412; font-size: 10px; font-weight: 650; }
 .history-zone-stack { display: grid; align-content: end; min-height: 320px; max-width: 180px; margin: 0 auto; }
 .history-zone-stack > div { display: grid; place-items: center; min-height: 42px; color: #10243d; font-weight: 700; }
 .history-zone-stack-red { background: #dc624d; }

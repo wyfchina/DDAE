@@ -1905,6 +1905,7 @@ function renderBufferTrendWorkspace(trend) {
   if (!filteredTrend) {
     byId("buffer-trend-kpis").innerHTML = "";
     byId("buffer-trend-chart").innerHTML = `<div class="table-empty"><strong>没有缓冲趋势图数据</strong></div>`;
+    byId("buffer-volatility-chart").innerHTML = `<div class="table-empty"><strong>没有需求波动证据</strong></div>`;
     byId("buffer-trend-heatmap").innerHTML = `<div class="table-empty"><strong>没有缓冲热力格数据</strong></div>`;
     byId("buffer-family-summary-body").innerHTML = emptyRow("没有产品族汇总数据", 6);
     byId("buffer-trend-body").innerHTML = emptyRow("没有缓冲趋势数据", 10);
@@ -1926,6 +1927,7 @@ function renderBufferTrendWorkspace(trend) {
   ].map(([label, value, note]) => `<div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join("");
 
   renderBufferTrendChart(detail);
+  renderBufferVolatilityChart(detail);
   renderBufferInventoryOptions(filteredTrend, detail);
   renderBufferComparison(filteredTrend);
   renderBufferHeatmap(filteredTrend);
@@ -1963,6 +1965,111 @@ function renderBufferInventoryOptions(trend, detail) {
     </div>`;
 }
 
+function monotonePathParts(points) {
+  if (!Array.isArray(points)) return null;
+  const isBlankCoordinate = value => value === null || value === undefined ||
+    (typeof value === "string" && value.trim() === "");
+  if (points.some(point => !point || isBlankCoordinate(point.x) || isBlankCoordinate(point.y))) return null;
+  const values = points.map(point => ({ x: Number(point.x), y: Number(point.y) }));
+  if (values.length === 0 || values.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
+  if (values.length === 1) return { start: values[0], end: values[0], segments: [] };
+  if (values.some((point, index) => index > 0 && point.x <= values[index - 1].x)) return null;
+
+  const h = values.slice(0, -1).map((point, index) => values[index + 1].x - point.x);
+  const delta = values.slice(0, -1).map((point, index) => (values[index + 1].y - point.y) / h[index]);
+  const slopes = new Array(values.length).fill(0);
+
+  const endpointSlope = (h0, h1, delta0, delta1) => {
+    let slope = ((2 * h0 + h1) * delta0 - h0 * delta1) / (h0 + h1);
+    if (Math.sign(slope) !== Math.sign(delta0)) slope = 0;
+    else if (Math.sign(delta0) !== Math.sign(delta1) && Math.abs(slope) > Math.abs(3 * delta0)) slope = 3 * delta0;
+    return slope;
+  };
+
+  if (values.length === 2) {
+    slopes[0] = delta[0];
+    slopes[1] = delta[0];
+  } else {
+    slopes[0] = endpointSlope(h[0], h[1], delta[0], delta[1]);
+    slopes[values.length - 1] = endpointSlope(
+      h[h.length - 1], h[h.length - 2], delta[delta.length - 1], delta[delta.length - 2]);
+    for (let index = 1; index < values.length - 1; index += 1) {
+      if (delta[index - 1] === 0 || delta[index] === 0 || Math.sign(delta[index - 1]) !== Math.sign(delta[index])) {
+        slopes[index] = 0;
+      } else {
+        const firstWeight = 2 * h[index] + h[index - 1];
+        const secondWeight = h[index] + 2 * h[index - 1];
+        slopes[index] = (firstWeight + secondWeight) /
+          (firstWeight / delta[index - 1] + secondWeight / delta[index]);
+      }
+    }
+  }
+
+  const segments = values.slice(0, -1).map((point, index) => {
+    const next = values[index + 1];
+    const width = next.x - point.x;
+    const firstControl = { x: point.x + width / 3, y: point.y + slopes[index] * width / 3 };
+    const secondControl = { x: next.x - width / 3, y: next.y - slopes[index + 1] * width / 3 };
+    return { start: point, firstControl, secondControl, end: next };
+  });
+  return { start: values[0], end: values[values.length - 1], segments };
+}
+
+function buildMonotonePath(points) {
+  const parts = monotonePathParts(points);
+  if (!parts) return "";
+  const commands = parts.segments.map(segment =>
+    `C ${segment.firstControl.x},${segment.firstControl.y} ` +
+    `${segment.secondControl.x},${segment.secondControl.y} ${segment.end.x},${segment.end.y}`);
+  return `M ${parts.start.x},${parts.start.y} ${commands.join(" ")}`;
+}
+
+function buildMonotoneAreaPath(lowerPoints, upperPoints, linearSegmentIndexes = new Set()) {
+  const upper = monotonePathParts(upperPoints);
+  const lower = monotonePathParts(lowerPoints);
+  if (!upper || !lower || upperPoints.length !== lowerPoints.length ||
+      lowerPoints.some((point, index) => Number(point.x) !== Number(upperPoints[index].x))) return "";
+  const fallback = linearSegmentIndexes instanceof Set
+    ? linearSegmentIndexes
+    : new Set(valueOr(linearSegmentIndexes, []));
+  const upperCommands = upper.segments.map((segment, index) => fallback.has(index)
+    ? `L ${segment.end.x},${segment.end.y}`
+    : `C ${segment.firstControl.x},${segment.firstControl.y} ` +
+      `${segment.secondControl.x},${segment.secondControl.y} ${segment.end.x},${segment.end.y}`);
+  const reverseLowerCommands = [...lower.segments].reverse().map((segment, reverseIndex) => {
+    const index = lower.segments.length - reverseIndex - 1;
+    return fallback.has(index)
+      ? `L ${segment.start.x},${segment.start.y}`
+      : `C ${segment.secondControl.x},${segment.secondControl.y} ` +
+        `${segment.firstControl.x},${segment.firstControl.y} ${segment.start.x},${segment.start.y}`;
+  });
+  return `M ${upper.start.x},${upper.start.y} ${upperCommands.join(" ")} ` +
+    `L ${lower.end.x},${lower.end.y} ${reverseLowerCommands.join(" ")} Z`;
+}
+
+function monotoneCrossingSegments(lowerPoints, upperPoints) {
+  const lower = monotonePathParts(lowerPoints);
+  const upper = monotonePathParts(upperPoints);
+  const crossings = new Set();
+  if (!lower || !upper || lowerPoints.length !== upperPoints.length ||
+      lowerPoints.some((point, index) => Number(point.x) !== Number(upperPoints[index].x))) return crossings;
+  lower.segments.forEach((segment, index) => {
+    const upperSegment = upper.segments[index];
+    const clearances = [
+      segment.start.y - upperSegment.start.y,
+      segment.firstControl.y - upperSegment.firstControl.y,
+      segment.secondControl.y - upperSegment.secondControl.y,
+      segment.end.y - upperSegment.end.y,
+    ];
+    if (clearances.some(value => value < -1e-7)) crossings.add(index);
+  });
+  return crossings;
+}
+
+function isFiniteChartValue(value) {
+  return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
 function renderBufferTrendChart(detail) {
   if (!detail || detail.series.length === 0) {
     byId("buffer-selected-title").textContent = "选中 SKU 水位趋势";
@@ -1974,38 +2081,49 @@ function renderBufferTrendChart(detail) {
   const showPreview = state.bufferTrend?.caseId && state.baselineBufferTrend?.caseId && state.bufferTrend.caseId !== state.baselineBufferTrend.caseId;
   byId("buffer-selected-title").textContent = `${detail.sku} 库存与净流动量趋势`;
   const width = 940;
-  const height = 430;
+  const height = 310;
   const left = 62;
   const right = 26;
   const top = 24;
   const mainHeight = 250;
-  const pulseTop = 318;
-  const pulseHeight = 72;
   const plotWidth = width - left - right;
   const chartSeries = detail.series;
   const baselineSeries = valueOr(baselineDetail?.series, []);
   const allNetFlowValues = [
-    ...chartSeries.flatMap(item => [Number(item.endNetFlowBeforeReplenishment), Number(item.endNetFlowAfterReplenishment)]),
-    ...baselineSeries.flatMap(item => [Number(item.endNetFlowBeforeReplenishment), Number(item.endNetFlowAfterReplenishment)]),
-    ...chartSeries.flatMap(item => [Number(item.topOfRed), Number(item.topOfYellow), Number(item.topOfGreen), Number(item.targetInventory)]),
+    ...chartSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
+    ...baselineSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
+    ...chartSeries.flatMap(item => [item.topOfRed, item.topOfYellow, item.topOfGreen, item.targetInventory]),
     0,
-  ];
+  ].filter(isFiniteChartValue).map(Number);
   const yMax = Math.max(...allNetFlowValues) * 1.08;
   const y = value => top + (yMax - Math.max(0, Number(value))) * mainHeight / Math.max(1, yMax);
   const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
-  const barWidth = Math.max(10, Math.min(24, plotWidth / Math.max(1, chartSeries.length) * 0.42));
-  const redTop = chartSeries.map(item => Number(item.topOfRed));
-  const yellowTop = chartSeries.map(item => Number(item.topOfYellow));
-  const greenTop = chartSeries.map(item => Number(item.topOfGreen));
-  const areaPoints = (lowerValues, upperValues) => [
-    ...upperValues.map((value, index) => `${x(index)},${y(value)}`),
-    ...lowerValues.map((value, index) => `${x(index)},${y(value)}`).reverse(),
-  ].join(" ");
-  const zeroLine = chartSeries.map(() => 0);
-  const zoneAreas = `
-    <polygon class="buffer-zone-red" points="${areaPoints(zeroLine, redTop)}"></polygon>
-    <polygon class="buffer-zone-yellow" points="${areaPoints(redTop, yellowTop)}"></polygon>
-    <polygon class="buffer-zone-green" points="${areaPoints(yellowTop, greenTop)}"></polygon>`;
+  const zoneSegments = contiguousEvidenceSegments(
+    chartSeries.map((item, index) => ({ item, index })),
+    point => isFiniteChartValue(point.item.topOfRed) &&
+      isFiniteChartValue(point.item.topOfYellow) &&
+      isFiniteChartValue(point.item.topOfGreen) &&
+      Number(point.item.topOfRed) >= 0 &&
+      Number(point.item.topOfRed) <= Number(point.item.topOfYellow) &&
+      Number(point.item.topOfYellow) <= Number(point.item.topOfGreen));
+  const zoneAreas = zoneSegments.map(segment => {
+    const zeroPoints = segment.map(point => ({ x: x(point.index), y: y(0) }));
+    const redPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.topOfRed) }));
+    const yellowPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.topOfYellow) }));
+    const greenPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.topOfGreen) }));
+    const linearSegments = new Set([
+      ...monotoneCrossingSegments(zeroPoints, redPoints),
+      ...monotoneCrossingSegments(redPoints, yellowPoints),
+      ...monotoneCrossingSegments(yellowPoints, greenPoints),
+    ]);
+    return `
+      <path class="buffer-zone-red" d="${buildMonotoneAreaPath(zeroPoints, redPoints, linearSegments)}"></path>
+      <path class="buffer-zone-yellow" d="${buildMonotoneAreaPath(redPoints, yellowPoints, linearSegments)}"></path>
+      <path class="buffer-zone-green" d="${buildMonotoneAreaPath(yellowPoints, greenPoints, linearSegments)}"></path>`;
+  }).join("");
+  const redTop = chartSeries.map(item => item.topOfRed).filter(isFiniteChartValue).map(Number);
+  const yellowTop = chartSeries.map(item => item.topOfYellow).filter(isFiniteChartValue).map(Number);
+  const greenTop = chartSeries.map(item => item.topOfGreen).filter(isFiniteChartValue).map(Number);
   const linePoints = (series, valueSelector) => series.map((item, index) => `${x(index)},${y(valueSelector(item))}`).join(" ");
   const baselineLine = showPreview && baselineSeries.length
     ? `<polyline class="buffer-baseline-line" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准库存水位</title></polyline>`
@@ -2017,15 +2135,9 @@ function renderBufferTrendChart(detail) {
     ? ""
     : `<polyline class="buffer-inventory-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>预计库存水位</title></polyline>`;
   const netFlowLine = `<polyline class="buffer-net-flow-line" points="${linePoints(chartSeries, item => item.endNetFlowBeforeReplenishment)}"><title>净流动量位置</title></polyline>`;
-  const targetDots = chartSeries.map((item, index) => `<circle class="target-inventory-dot" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${item.periodStartDate} 目标库存：${number(item.targetInventory)}</title></circle>`).join("");
-  const demandThreshold = Number(detail.zone.topOfRed) * 0.5;
-  const maxDemand = Math.max(demandThreshold, ...chartSeries.map(item => Number(item.demand)), 1);
-  const pulseY = value => pulseTop + (maxDemand - Number(value)) * pulseHeight / Math.max(1, maxDemand);
-  const pulseBars = chartSeries.map((item, index) => {
-    const yTop = pulseY(item.demand);
-    const yBottom = pulseY(0);
-    return `<rect class="demand-pulse-bar" x="${x(index) - barWidth / 2}" y="${yTop}" width="${barWidth}" height="${Math.max(1, yBottom - yTop)}"><title>第 ${item.week} 周需求脉冲：${number(item.demand)}</title></rect>`;
-  }).join("");
+  const targetDots = chartSeries.map((item, index) => isFiniteChartValue(item.targetInventory)
+    ? `<circle class="target-inventory-dot" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${item.periodStartDate} 目标库存：${number(item.targetInventory)}</title></circle>`
+    : "").join("");
   const reviewMarkers = chartSeries
     .map((item, index) => item.isReplenishment
       ? `<line class="${item.isPrebuild ? "review-marker prebuild" : "review-marker"}" x1="${x(index)}" y1="${top}" x2="${x(index)}" y2="${top + mainHeight}"><title>${item.isPrebuild ? "提前建库订单" : "订货周期补货订单"}：${number(item.replenishmentQuantity)}</title></line>`
@@ -2035,12 +2147,12 @@ function renderBufferTrendChart(detail) {
   const monthLabels = chartSeries.map((item, index) => `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
 
   byId("buffer-trend-chart").innerHTML = `
-    <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${detail.sku} 缓冲趋势图">
+    <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${detail.sku} 动态红黄绿缓冲带与库存趋势">
       <rect class="buffer-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${mainHeight}"></rect>
       <text class="axis-title vertical" transform="translate(16 ${top + mainHeight / 2}) rotate(-90)">缓冲区 / 净流动量</text>
-      <text class="axis-label" x="${left - 8}" y="${y(Math.max(...greenTop))}">${number(Math.max(...greenTop))}</text>
-      <text class="axis-label" x="${left - 8}" y="${y(Math.max(...yellowTop))}">${number(Math.max(...yellowTop))}</text>
-      <text class="axis-label" x="${left - 8}" y="${y(Math.max(...redTop))}">${number(Math.max(...redTop))}</text>
+      ${greenTop.length ? `<text class="axis-label" x="${left - 8}" y="${y(Math.max(...greenTop))}">${number(Math.max(...greenTop))}</text>` : ""}
+      ${yellowTop.length ? `<text class="axis-label" x="${left - 8}" y="${y(Math.max(...yellowTop))}">${number(Math.max(...yellowTop))}</text>` : ""}
+      ${redTop.length ? `<text class="axis-label" x="${left - 8}" y="${y(Math.max(...redTop))}">${number(Math.max(...redTop))}</text>` : ""}
       <line class="axis-line" x1="${left}" y1="${y(0)}" x2="${width - right}" y2="${y(0)}"></line>
       ${timeGrid}
       ${zoneAreas}
@@ -2050,11 +2162,6 @@ function renderBufferTrendChart(detail) {
       ${baselineLine}
       ${currentLine}
       ${previewLine}
-      <rect class="buffer-pulse-bg" x="${left}" y="${pulseTop}" width="${plotWidth}" height="${pulseHeight}"></rect>
-      <text class="axis-title vertical" transform="translate(16 ${pulseTop + pulseHeight / 2}) rotate(-90)">需求脉冲</text>
-      ${pulseBars}
-      <line class="order-spike-line" x1="${left}" y1="${pulseY(demandThreshold)}" x2="${width - right}" y2="${pulseY(demandThreshold)}"></line>
-      <text class="order-spike-label" x="${width - right - 120}" y="${pulseY(demandThreshold) - 6}">订单尖峰阈值</text>
       ${monthLabels}
     </svg>
     <div class="buffer-chart-legend">
@@ -2066,7 +2173,75 @@ function renderBufferTrendChart(detail) {
         ? `<span><i class="line baseline"></i>基准库存水位</span><span><i class="line preview"></i>预览库存水位</span>`
         : `<span><i class="line inventory"></i>预计库存水位</span>`}
       <span><i class="dot target"></i>目标库存</span>
-      <span><i class="bar pulse"></i>需求脉冲</span>
+    </div>`;
+}
+
+function renderBufferVolatilityChart(detail) {
+  if (!detail || detail.series.length === 0) {
+    byId("buffer-volatility-chart").innerHTML = `<div class="table-empty"><strong>没有需求波动证据</strong></div>`;
+    return;
+  }
+
+  const width = 940;
+  const height = 190;
+  const left = 62;
+  const right = 26;
+  const top = 22;
+  const plotHeight = 108;
+  const plotBottom = top + plotHeight;
+  const plotWidth = width - left - right;
+  const chartSeries = detail.series;
+  const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
+  const chartPoints = chartSeries.map((item, index) => ({ item, index }));
+  const demandSegments = contiguousEvidenceSegments(
+    chartPoints,
+    point => isFiniteChartValue(point.item.demand) && Number(point.item.demand) >= 0);
+  const thresholdSegments = contiguousEvidenceSegments(
+    chartPoints,
+    point => isFiniteChartValue(point.item.demandSpikeThreshold) && Number(point.item.demandSpikeThreshold) >= 0);
+  const scaleValues = [
+    ...demandSegments.flatMap(segment => segment.map(point => Number(point.item.demand))),
+    ...thresholdSegments.flatMap(segment => segment.map(point => Number(point.item.demandSpikeThreshold))),
+    0,
+  ];
+  const yMax = Math.max(1, ...scaleValues) * 1.08;
+  const y = value => top + (yMax - Number(value)) * plotHeight / yMax;
+  const demandAreas = demandSegments.map(segment => {
+    if (segment.length < 2) return "";
+    const lowerPoints = segment.map(point => ({ x: x(point.index), y: y(0) }));
+    const upperPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.demand) }));
+    return `<path class="buffer-demand-area" d="${buildMonotoneAreaPath(lowerPoints, upperPoints)}"></path>`;
+  }).join("");
+  const thresholdLines = thresholdSegments.map(segment => {
+    if (segment.length < 2) return "";
+    const points = segment.map(point => ({ x: x(point.index), y: y(point.item.demandSpikeThreshold) }));
+    return `<path class="buffer-demand-threshold" d="${buildMonotonePath(points)}"></path>`;
+  }).join("");
+  const demandMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demand)).map(point =>
+    `<circle class="buffer-demand-marker" cx="${x(point.index)}" cy="${y(point.item.demand)}" r="2.5"><title>${point.item.periodStartDate} 计划需求：${number(point.item.demand)}</title></circle>`).join("");
+  const thresholdMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demandSpikeThreshold)).map(point =>
+    `<circle class="buffer-demand-threshold-marker" cx="${x(point.index)}" cy="${y(point.item.demandSpikeThreshold)}" r="2.5"><title>${point.item.periodStartDate} 后端尖峰阈值：${number(point.item.demandSpikeThreshold)}</title></circle>`).join("");
+  const thresholdMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demandSpikeThreshold));
+  const demandMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demand));
+  const dateLabels = chartSeries.map((item, index) =>
+    `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
+
+  byId("buffer-volatility-chart").innerHTML = `
+    <svg class="buffer-volatility-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${detail.sku} 需求波动图">
+      <rect class="buffer-volatility-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"></rect>
+      <text class="axis-title vertical" transform="translate(16 ${top + plotHeight / 2}) rotate(-90)">计划需求</text>
+      <line class="axis-line" x1="${left}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}"></line>
+      ${demandAreas}
+      ${demandMarkers}
+      ${thresholdLines}
+      ${thresholdMarkers}
+      ${thresholdMissing ? `<text class="buffer-demand-evidence-note" x="${left + 8}" y="${top + 14}">尖峰阈值证据缺失</text>` : ""}
+      ${demandMissing ? `<text class="buffer-demand-evidence-note" x="${left + 8}" y="${top + 28}">计划需求证据缺失</text>` : ""}
+      ${dateLabels}
+    </svg>
+    <div class="buffer-chart-legend">
+      <span><i class="area demand"></i>计划需求</span>
+      <span><i class="line demand-threshold"></i>后端尖峰阈值</span>
     </div>`;
 }
 
