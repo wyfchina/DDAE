@@ -129,6 +129,16 @@ var tests = new (string Name, Action Run)[]
     ("Frozen evidence rejects generated receipts", TestFrozenEvidenceRejectsGeneratedReceipts),
     ("Planning evidence requires supplier capacity DDMRP and open-supply mappings", TestPlanningEvidenceRequiresSupportingMappings),
     ("Planning evidence preserves legacy JSON", TestPlanningEvidencePreservesLegacyJson),
+    ("Inventory flow conserves weekly quantity", TestInventoryFlowConservesWeeklyQuantity),
+    ("Inventory flow fulfills oldest demand first", TestInventoryFlowFulfillsOldestDemandFirst),
+    ("Simulated receipt respects DLT arrival", TestSimulatedReceiptRespectsDltArrival),
+    ("Inventory flow separates receipt sources", TestInventoryFlowSeparatesReceiptSources),
+    ("Prebuild receipt is counted once", TestPrebuildReceiptIsCountedOnce),
+    ("Conflicting prebuild IDs are evidence missing", TestConflictingPrebuildIdsAreEvidenceMissing),
+    ("Inventory flow scopes demand before ledger", TestInventoryFlowScopesDemandBeforeLedger),
+    ("Zero new demand service is not applicable", TestZeroDemandServiceIsNotApplicable),
+    ("Projection beyond coverage is evidence missing", TestProjectionBeyondCoverageIsEvidenceMissing),
+    ("Inventory flow fields preserve legacy scenario JSON", TestInventoryFlowFieldsPreserveLegacyScenarioJson),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -6156,6 +6166,360 @@ static ScenarioWorkspaceDataSet BuildCompletePlanningEvidenceData()
         },
         PlanningEvidenceCoverage = new PlanningEvidenceCoverage(anchor, 1, 52, "Complete")
     };
+}
+
+static void TestInventoryFlowConservesWeeklyQuantity()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 5m, 4m },
+        openingOnHand: 10m,
+        openingBacklog: 3m,
+        qualifiedDemand: 999m,
+        frozenReceipts: new[] { ("REC-W2", 2, 2m, "ConfirmedInTransit") });
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "conservation",
+        new[] { sku },
+        data.Demand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        Array.Empty<PrebuildCampaign>(),
+        Array.Empty<SupplierCapacityLimit>(),
+        "BASE-CONSERVATION");
+
+    AssertEqual("Complete", result.Status, "inventory flow status");
+    AssertEqual("BASE-CONSERVATION", result.BaselineSnapshotId!, "inventory flow baseline lineage");
+    AssertEqual(2, result.Points.Count, "inventory flow point count");
+
+    foreach (var point in result.Points)
+    {
+        var receipts = point.FrozenReceiptQuantity + point.SimulatedReceiptQuantity + point.PrebuildReceiptQuantity;
+        AssertEqual(
+            point.OpeningOnHand + receipts - point.TotalFulfilledDemand,
+            point.EndingOnHand,
+            $"on-hand conservation for week {point.Week}");
+        AssertEqual(
+            point.OpeningBacklog + point.Demand - point.TotalFulfilledDemand,
+            point.EndingBacklog,
+            $"backlog conservation for week {point.Week}");
+        AssertTrue(point.EndingOnHand >= 0m, $"ending on hand must be nonnegative for week {point.Week}");
+        AssertTrue(point.EndingBacklog >= 0m, $"ending backlog must be nonnegative for week {point.Week}");
+    }
+
+    AssertEqual(10m, result.Points[0].OpeningOnHand, "qualified demand must not be deducted from physical opening on hand");
+    AssertEqual(result.Points[0].EndingOnHand, result.Points[1].OpeningOnHand, "weekly on-hand continuity");
+    AssertEqual(result.Points[0].EndingBacklog, result.Points[1].OpeningBacklog, "weekly backlog continuity");
+    AssertEqual(20m, result.Points[0].EndingInventoryValue, "weekly inventory value from physical on hand");
+    AssertEqual(0m, result.Points[1].EndingInventoryValue, "ending inventory value from physical on hand");
+    AssertEqual(12m, result.Summary!.TotalFulfilledQuantity, "summary total fulfilled quantity");
+    AssertEqual(10m, result.Summary.AverageInventoryValue, "summary average weekly physical inventory value");
+    AssertEqual(20m, result.Summary.PeakInventoryValue, "summary peak weekly physical inventory value");
+    AssertEqual(0m, result.Summary.EndingInventoryValue, "summary ending physical inventory value");
+    AssertEqual(0m, result.Summary.EndingBacklog, "summary ending backlog");
+    AssertEqual(1, result.Summary.BacklogRecoveryWeek!.Value, "summary backlog recovery week");
+    AssertEqual(2m, result.Summary.FrozenReceiptQuantity, "summary frozen receipt quantity");
+}
+
+static void TestInventoryFlowFulfillsOldestDemandFirst()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 4m },
+        openingOnHand: 4m,
+        openingBacklog: 3m);
+
+    var result = ProjectInventoryFlow(data, sku);
+    var point = result.Points.Single();
+
+    AssertEqual(3m, point.FulfilledOpeningBacklog, "old backlog fulfilled before new demand");
+    AssertEqual(1m, point.FulfilledNewDemandOnTime, "new demand fulfilled after old backlog");
+    AssertEqual(4m, point.TotalFulfilledDemand, "total fulfilled demand");
+    AssertEqual(3m, point.EndingBacklog, "unfulfilled current demand becomes ending backlog");
+    AssertEqual(25m, point.WeeklyServicePercent!.Value, "weekly on-time service percent");
+    AssertEqual(25m, result.Summary!.OnTimeServicePercent!.Value, "summary on-time service percent");
+}
+
+static void TestSimulatedReceiptRespectsDltArrival()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 8);
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 7m, 70m, "TopOfGreen");
+    var outsideOrder = new ProjectedReplenishmentOrder(sku.Sku, 4, 5m, 50m, "TopOfGreen");
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "dlt-arrival",
+        new[] { sku },
+        data.Demand,
+        new[] { outsideOrder, order },
+        Array.Empty<PrebuildCampaign>(),
+        Array.Empty<SupplierCapacityLimit>());
+
+    var log = result.ReceiptLog.Single(item => item.SourceKind == "SimulatedReplenishment" && item.RecommendationWeek == 1);
+    var outsideLog = result.ReceiptLog.Single(item => item.SourceKind == "SimulatedReplenishment" && item.RecommendationWeek == 4);
+    AssertEqual(1, log.RecommendationWeek!.Value, "simulated receipt recommendation week");
+    AssertEqual(3, log.ArrivalWeek, "simulated receipt arrival after ceil DLT weeks");
+    AssertEqual("SimulationAssumption", log.EvidenceSource, "simulated receipt evidence source");
+    AssertTrue(result.Points.Where(item => item.Week < 3).All(item => item.SimulatedReceiptQuantity == 0m),
+        "simulated receipt must not arrive before DLT");
+    AssertEqual(7m, result.Points.Single(item => item.Week == 3).SimulatedReceiptQuantity,
+        "simulated receipt quantity in DLT arrival week");
+    AssertEqual(6, outsideLog.ArrivalWeek, "outside-horizon simulated receipt retains calculated arrival week");
+    AssertEqual(0m, outsideLog.AcceptedQuantity, "outside-horizon receipt is not fabricated inside the projection");
+    AssertEqual(5m, outsideLog.OutsideHorizonQuantity, "outside-horizon receipt log quantity");
+    AssertEqual(5m, result.Summary!.OutsideHorizonQuantity, "outside-horizon summary quantity");
+}
+
+static void TestInventoryFlowSeparatesReceiptSources()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7,
+        frozenReceipts: new[] { ("REC-FROZEN", 1, 2m, "ConfirmedInTransit") });
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 3m, 30m, "TopOfGreen");
+    var campaign = new PrebuildCampaign("PREBUILD-1", sku.Sku, 3, 3, 3, 4m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "receipt-sources",
+        new[] { sku },
+        data.Demand,
+        new[] { order },
+        new[] { campaign },
+        Array.Empty<SupplierCapacityLimit>());
+
+    AssertEqual(2m, result.Points.Single(item => item.Week == 1).FrozenReceiptQuantity, "frozen receipt bucket");
+    AssertEqual(3m, result.Points.Single(item => item.Week == 2).SimulatedReceiptQuantity, "simulated receipt bucket");
+    AssertEqual(4m, result.Points.Single(item => item.Week == 3).PrebuildReceiptQuantity, "prebuild receipt bucket");
+    AssertTrue(result.ReceiptLog.Any(item => item.SourceKind == "ConfirmedInTransit" && item.EvidenceStatus == "Complete"),
+        "receipt log should retain frozen receipt type and evidence");
+    AssertTrue(result.ReceiptLog.Any(item => item.SourceKind == "SimulatedReplenishment" && item.EvidenceSource == "SimulationAssumption"),
+        "receipt log should distinguish simulated assumptions");
+    AssertTrue(result.ReceiptLog.Any(item => item.SourceKind == "PrebuildResponse" && item.EvidenceSource == "ResponseAssumption"),
+        "receipt log should distinguish response assumptions");
+    AssertEqual(2m, result.Summary!.FrozenReceiptQuantity, "summary frozen source total");
+    AssertEqual(3m, result.Summary.SimulatedReceiptQuantity, "summary simulated source total");
+    AssertEqual(4m, result.Summary.PrebuildReceiptQuantity, "summary prebuild source total");
+}
+
+static void TestPrebuildReceiptIsCountedOnce()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7);
+    var generatedSignal = new ProjectedReplenishmentOrder(sku.Sku, 1, 5m, 50m, "PrebuildCampaign");
+    var campaign = new PrebuildCampaign("PREBUILD-DEDUPE", sku.Sku, 2, 2, 3, 5m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "prebuild-once",
+        new[] { sku },
+        data.Demand,
+        new[] { generatedSignal },
+        new[] { campaign, campaign },
+        Array.Empty<SupplierCapacityLimit>());
+
+    AssertEqual(5m, result.Points.Sum(item => item.PrebuildReceiptQuantity), "prebuild quantity counted once");
+    AssertEqual(0m, result.Points.Sum(item => item.SimulatedReceiptQuantity), "prebuild signal excluded from simulated receipts");
+    AssertEqual(5m, result.Summary!.PrebuildReceiptQuantity, "prebuild summary counts one response quantity");
+    AssertEqual(1, result.ReceiptLog.Count(item => item.SourceKind == "PrebuildResponse"), "one prebuild receipt log entry");
+    AssertEqual(0, result.ReceiptLog.Count(item => item.SourceKind == "SimulatedReplenishment"), "no simulated log for prebuild signal");
+}
+
+static void TestConflictingPrebuildIdsAreEvidenceMissing()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m);
+    var first = new PrebuildCampaign("PREBUILD-CONFLICT", sku.Sku, 1, 1, 2, 2m);
+    var conflicting = first with { BuildWeek = 2, Quantity = 3m };
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "prebuild-conflict",
+        new[] { sku },
+        data.Demand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        new[] { first, conflicting },
+        Array.Empty<SupplierCapacityLimit>());
+
+    AssertEqual("EvidenceMissing", result.Status, "conflicting campaign ID status");
+    AssertEqual(0, result.Points.Count, "conflicting campaign ID must not fabricate points");
+    AssertTrue(result.Issues.Any(item =>
+            item.Scope == "PrebuildResponse" &&
+            item.SourceId == first.CampaignId &&
+            item.Reason == "ConflictingCampaignId" &&
+            item.BlocksProjection),
+        "conflicting campaign ID should be a blocking projection issue");
+}
+
+static void TestInventoryFlowScopesDemandBeforeLedger()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 1m, 1m },
+        openingOnHand: 2m,
+        openingBacklog: 0m);
+    var outside = new WeeklyDemand(sku.Sku, 53, 99m);
+    var suppliedDemand = data.Demand.Append(outside).Append(outside).ToList();
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "scoped-demand",
+        new[] { sku },
+        suppliedDemand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        Array.Empty<PrebuildCampaign>(),
+        Array.Empty<SupplierCapacityLimit>());
+
+    AssertEqual("Complete", result.Status, "out-of-horizon demand rows should not invalidate active projection");
+    AssertEqual(2, result.Points.Count, "projection should contain only active-horizon demand buckets");
+    AssertEqual(2m, result.Summary!.TotalNewDemandQuantity, "summary should exclude demand outside active horizon");
+}
+
+static void TestZeroDemandServiceIsNotApplicable()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 1m,
+        openingBacklog: 0m);
+
+    var result = ProjectInventoryFlow(data, sku);
+
+    AssertTrue(result.Summary!.OnTimeServicePercent is null, "zero-demand summary service percent should be null");
+    AssertEqual("NotApplicable", result.Summary.ServiceStatus, "zero-demand summary service status");
+    AssertTrue(result.SkuSummaries.Single().OnTimeServicePercent is null, "zero-demand SKU service percent should be null");
+    AssertEqual("NotApplicable", result.SkuSummaries.Single().ServiceStatus, "zero-demand SKU service status");
+    AssertTrue(result.Points.All(item => item.WeeklyServicePercent is null && item.WeeklyServiceStatus == "NotApplicable"),
+        "zero-demand weekly service should be not applicable");
+}
+
+static void TestProjectionBeyondCoverageIsEvidenceMissing()
+{
+    var (complete, sku) = BuildInventoryFlowFixture(
+        new[] { 1m, 1m, 1m },
+        openingOnHand: 3m,
+        openingBacklog: 0m);
+    var incomplete = complete with
+    {
+        PlanningEvidenceCoverage = complete.PlanningEvidenceCoverage! with { CoverageThroughWeek = 2 }
+    };
+
+    var result = ProjectInventoryFlow(incomplete, sku);
+
+    AssertEqual("EvidenceMissing", result.Status, "coverage failure projection status");
+    AssertEqual(0, result.Points.Count, "coverage failure must not fabricate points");
+    AssertTrue(result.Summary is null, "coverage failure must not fabricate summary");
+    AssertTrue(result.Issues.Any(item => item.Reason == "IncompleteCoverage" && item.BlocksProjection),
+        "coverage failure should expose the blocking planning evidence issue");
+}
+
+static void TestInventoryFlowFieldsPreserveLegacyScenarioJson()
+{
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(2));
+    var legacyJson = JsonNode.Parse(JsonSerializer.Serialize(preview))!.AsObject();
+    foreach (var caseName in new[] { nameof(ScenarioRunPreviewResult.Baseline), nameof(ScenarioRunPreviewResult.Scenario) })
+    {
+        var previewCase = legacyJson[caseName]!.AsObject();
+        previewCase.Remove(nameof(ScenarioRunPreviewCase.InventoryFlow));
+        previewCase.Remove(nameof(ScenarioRunPreviewCase.ScenarioMetricEvidence));
+    }
+
+    var roundTrip = JsonSerializer.Deserialize<ScenarioRunPreviewResult>(legacyJson.ToJsonString())
+        ?? throw new InvalidOperationException("legacy scenario preview JSON should deserialize");
+
+    AssertTrue(roundTrip.Baseline.InventoryFlow is null, "legacy baseline inventory flow should default to null");
+    AssertTrue(roundTrip.Baseline.ScenarioMetricEvidence is null, "legacy baseline metric evidence should default to null");
+    AssertTrue(roundTrip.Scenario.InventoryFlow is null, "legacy scenario inventory flow should default to null");
+    AssertTrue(roundTrip.Scenario.ScenarioMetricEvidence is null, "legacy scenario metric evidence should default to null");
+}
+
+static InventoryFlowProjectionResult ProjectInventoryFlow(ScenarioWorkspaceDataSet data, SkuBufferSetting sku) =>
+    InventoryFlowProjectionService.Project(
+        data,
+        "inventory-flow-test",
+        new[] { sku },
+        data.Demand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        Array.Empty<PrebuildCampaign>(),
+        Array.Empty<SupplierCapacityLimit>());
+
+static (ScenarioWorkspaceDataSet Data, SkuBufferSetting Sku) BuildInventoryFlowFixture(
+    IReadOnlyList<decimal> weeklyDemand,
+    decimal openingOnHand,
+    decimal openingBacklog,
+    int dltDays = 7,
+    decimal unitCost = 10m,
+    decimal qualifiedDemand = 0m,
+    IReadOnlyList<(string Id, int Week, decimal Quantity, string ReceiptType)>? frozenReceipts = null)
+{
+    var source = BuildCompletePlanningEvidenceData();
+    var anchor = source.Request.AnchorDate;
+    var sku = source.Skus.Single() with
+    {
+        DecoupledLeadTimeDays = dltDays,
+        UnitCost = unitCost
+    };
+    var sizing = DdmrpCalculator.CalculateSizing(sku);
+    var receipts = (frozenReceipts ?? Array.Empty<(string Id, int Week, decimal Quantity, string ReceiptType)>())
+        .Select(item => new ConfirmedReceiptEvidence(
+            item.Id,
+            sku.Sku,
+            item.Quantity,
+            item.Week,
+            anchor.AddDays(7 * (item.Week - 1) + 1),
+            item.ReceiptType,
+            $"PO-{item.Id}",
+            "PurchaseOrder",
+            source.SupplierItemSources.Single().Supplier,
+            source.SupplierItemSources.Single().MaterialFamily,
+            "Confirmed",
+            "Complete",
+            "2026-06-01T00:00:00Z",
+            "test frozen receipt"))
+        .ToList();
+    var demand = weeklyDemand
+        .Select((quantity, index) => new WeeklyDemand(sku.Sku, index + 1, quantity))
+        .ToList();
+
+    return (source with
+    {
+        Request = new ScenarioWorkspaceDataRequest(weeklyDemand.Count, anchor, SkuFilter: new[] { sku.Sku }),
+        Skus = new[] { sku },
+        Inventory = new[] { new InventoryPosition(sku.Sku, openingOnHand, receipts.Sum(item => item.Quantity), qualifiedDemand) },
+        Demand = demand,
+        DdmrpParameters = source.DdmrpParameters
+            .Select(item => item with
+            {
+                DecoupledLeadTimeDays = dltDays,
+                UnitCost = unitCost,
+                TopOfRed = sizing.Zones.TopOfRed,
+                TopOfYellow = sizing.Zones.TopOfYellow,
+                TopOfGreen = sizing.Zones.TopOfGreen,
+                Sizing = sizing,
+                SizingLines = DdmrpSizingExplanation.Build(sizing)
+            })
+            .ToList(),
+        ConfirmedReceipts = receipts,
+        OpeningBacklog = new[]
+        {
+            new OpeningBacklogEvidence(
+                "BACKLOG-FLOW",
+                sku.Sku,
+                openingBacklog,
+                "ORDER-FLOW",
+                "Complete",
+                "2026-06-01T00:00:00Z",
+                "test opening backlog")
+        }
+    }, sku);
 }
 
 static void TestScenarioPreviewReturnsComparableResults()

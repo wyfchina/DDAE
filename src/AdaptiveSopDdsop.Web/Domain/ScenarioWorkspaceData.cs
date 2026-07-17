@@ -671,7 +671,9 @@ public sealed record ScenarioRunPreviewCase(
     ConstraintWorkspaceResult Constraints,
     SupplierCollaborationWorkspaceResult SupplierCollaboration,
     IReadOnlyList<SupplierCapacityComparison> SupplierCapacity,
-    IReadOnlyList<BudgetComparison> Budget);
+    IReadOnlyList<BudgetComparison> Budget,
+    InventoryFlowProjectionResult? InventoryFlow = null,
+    IReadOnlyList<ScenarioMetricEvidence>? ScenarioMetricEvidence = null);
 
 public sealed record ScenarioComparisonMetrics(
     decimal ServiceLevelDelta,
