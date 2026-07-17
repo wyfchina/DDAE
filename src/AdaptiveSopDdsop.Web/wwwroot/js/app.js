@@ -1917,17 +1917,57 @@ function normalizeFutureInventorySelection(trend, scopedTrend = null) {
   };
 }
 
-function scopeFutureBufferDetail(detail, selection) {
+function scopeFutureBufferDetail(detail, selection, trend) {
   if (!detail) return null;
   const inRange = item => Number(item.week) >= selection.weekFrom && Number(item.week) <= selection.weekThrough;
+  const series = valueOr(detail.series, []).filter(inRange);
+  const itemByWeek = new Map(series.map(item => [Number(item.week), item]));
+  const dateByWeek = new Map(valueOr(trend?.series, [])
+    .filter(inRange)
+    .map(item => [Number(item.week), item.periodStartDate]));
+  const chartDomain = Array.from(
+    { length: Math.max(0, selection.weekThrough - selection.weekFrom + 1) },
+    (_, index) => {
+      const week = selection.weekFrom + index;
+      return {
+        index,
+        week,
+        periodStartDate: valueOr(itemByWeek.get(week)?.periodStartDate, valueOr(dateByWeek.get(week), "")),
+        item: valueOr(itemByWeek.get(week), null),
+      };
+    });
   return {
     ...detail,
-    series: valueOr(detail.series, []).filter(inRange),
+    series,
+    chartDomain,
     replenishmentOrders: valueOr(detail.replenishmentOrders, []).filter(inRange),
     traces: valueOr(detail.traces, []).filter(inRange),
     activities: valueOr(detail.activities, []).filter(inRange),
     orderDetails: valueOr(detail.orderDetails, []).filter(inRange),
   };
+}
+
+function futureInventoryChartX(index, domainLength) {
+  const width = 940;
+  const left = 62;
+  const right = 26;
+  return left + index * (width - left - right) / Math.max(1, domainLength - 1);
+}
+
+function futureInventoryDateLabel(domainPoint) {
+  return domainPoint.periodStartDate || `第 ${domainPoint.week} 周`;
+}
+
+function scopedFutureBufferDetailForCharts(detail) {
+  if (!detail || Array.isArray(detail.chartDomain)) return detail;
+  const weeks = valueOr(detail.series, [])
+    .map(item => Number(item.week))
+    .filter(Number.isFinite);
+  if (weeks.length === 0) return { ...detail, chartDomain: [] };
+  return scopeFutureBufferDetail(detail, {
+    weekFrom: Math.min(...weeks),
+    weekThrough: Math.max(...weeks),
+  }, state.bufferTrend);
 }
 
 function renderFutureInventorySelectionControls(selection) {
@@ -2042,7 +2082,7 @@ function renderBufferTrendWorkspace(trend) {
 
   state.bufferTrend = selection.trend;
   const fullDetail = valueOr(filteredTrend.skuDetails.find(item => item.sku === filteredTrend.selectedSku), filteredTrend.skuDetails[0]);
-  const detail = scopeFutureBufferDetail(fullDetail, selection);
+  const detail = scopeFutureBufferDetail(fullDetail, selection, filteredTrend);
   renderFutureInventorySelectionControls(selection);
   byId("buffer-trend-case-chip").textContent = caseLabel(filteredTrend.name);
   byId("buffer-trend-kpis").innerHTML = [
@@ -2211,7 +2251,9 @@ function hasValidBufferZoneEvidence(item) {
 }
 
 function renderBufferTrendChart(detail) {
-  if (!detail || detail.series.length === 0) {
+  detail = scopedFutureBufferDetailForCharts(detail);
+  const chartDomain = valueOr(detail?.chartDomain, []);
+  if (!detail || chartDomain.length === 0) {
     byId("buffer-selected-title").textContent = "选中 SKU 水位趋势";
     byId("buffer-trend-chart").innerHTML = `<div class="table-empty"><strong>没有选中 SKU 趋势数据</strong></div>`;
     return;
@@ -2227,17 +2269,23 @@ function renderBufferTrendChart(detail) {
   const top = 24;
   const mainHeight = 250;
   const plotWidth = width - left - right;
-  const chartSeries = detail.series;
   const caseId = valueOr(state.futureInventorySelection.caseId, valueOr(state.bufferTrend?.caseId, "baseline"));
-  const weekFrom = valueOr(chartSeries[0]?.week, state.futureInventorySelection.weekFrom);
-  const weekThrough = valueOr(chartSeries[chartSeries.length - 1]?.week, state.futureInventorySelection.weekThrough);
-  const baselineSeries = valueOr(baselineDetail?.series, []).filter(item =>
-    Number(item.week) >= state.futureInventorySelection.weekFrom &&
-    Number(item.week) <= state.futureInventorySelection.weekThrough);
+  const weekFrom = chartDomain[0].week;
+  const weekThrough = chartDomain[chartDomain.length - 1].week;
+  const baselineByWeek = new Map(valueOr(baselineDetail?.series, [])
+    .filter(item => Number(item.week) >= weekFrom && Number(item.week) <= weekThrough)
+    .map(item => [Number(item.week), item]));
+  const baselineItem = point => valueOr(baselineByWeek.get(point.week), null);
   const allNetFlowValues = [
-    ...chartSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
-    ...baselineSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
-    ...chartSeries.flatMap(item => [item.topOfRed, item.topOfYellow, item.topOfGreen, item.targetInventory]),
+    ...chartDomain.flatMap(point => point.item
+      ? [point.item.endNetFlowBeforeReplenishment, point.item.endNetFlowAfterReplenishment]
+      : []),
+    ...chartDomain.flatMap(point => baselineItem(point)
+      ? [baselineItem(point).endNetFlowBeforeReplenishment, baselineItem(point).endNetFlowAfterReplenishment]
+      : []),
+    ...chartDomain.flatMap(point => point.item
+      ? [point.item.topOfRed, point.item.topOfYellow, point.item.topOfGreen, point.item.targetInventory]
+      : []),
     0,
   ].filter(isFiniteChartValue).map(Number);
   const valueMinimum = Math.min(0, ...allNetFlowValues);
@@ -2246,10 +2294,10 @@ function renderBufferTrendChart(detail) {
   const yMinimum = valueMinimum < 0 ? valueMinimum - valueSpan * 0.08 : 0;
   const yMaximum = valueMaximum + valueSpan * 0.08;
   const y = value => top + (yMaximum - Number(value)) * mainHeight / Math.max(1, yMaximum - yMinimum);
-  const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
+  const x = index => futureInventoryChartX(index, chartDomain.length);
   const zoneSegments = contiguousEvidenceSegments(
-    chartSeries.map((item, index) => ({ item, index })),
-    point => hasValidBufferZoneEvidence(point.item));
+    chartDomain,
+    point => point.item && hasValidBufferZoneEvidence(point.item));
   const zoneAreas = zoneSegments.map(segment => {
     if (segment.length < 2) return "";
     const zeroPoints = segment.map(point => ({ x: x(point.index), y: y(0) }));
@@ -2262,42 +2310,79 @@ function renderBufferTrendChart(detail) {
       ...monotoneCrossingSegments(yellowPoints, greenPoints),
     ]);
     return `
-      <path class="buffer-zone-red" d="${buildMonotoneAreaPath(zeroPoints, redPoints, linearSegments)}"></path>
-      <path class="buffer-zone-yellow" d="${buildMonotoneAreaPath(redPoints, yellowPoints, linearSegments)}"></path>
-      <path class="buffer-zone-green" d="${buildMonotoneAreaPath(yellowPoints, greenPoints, linearSegments)}"></path>`;
+      <path class="buffer-zone-red" d="${buildMonotoneAreaPath(zeroPoints, redPoints, linearSegments)}" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}"></path>
+      <path class="buffer-zone-yellow" d="${buildMonotoneAreaPath(redPoints, yellowPoints, linearSegments)}" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}"></path>
+      <path class="buffer-zone-green" d="${buildMonotoneAreaPath(yellowPoints, greenPoints, linearSegments)}" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}"></path>`;
   }).join("");
   const zoneEvidenceMarkers = zoneSegments.filter(segment => segment.length === 1).map(segment => {
     const point = segment[0];
     return `
-      <circle class="buffer-zone-evidence-marker is-red" cx="${x(point.index)}" cy="${y(point.item.topOfRed)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 红区上沿：${point.item.topOfRed}</title></circle>
-      <circle class="buffer-zone-evidence-marker is-yellow" cx="${x(point.index)}" cy="${y(point.item.topOfYellow)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 黄区上沿：${point.item.topOfYellow}</title></circle>
-      <circle class="buffer-zone-evidence-marker is-green" cx="${x(point.index)}" cy="${y(point.item.topOfGreen)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 绿区上沿：${point.item.topOfGreen}</title></circle>`;
+      <circle class="buffer-zone-evidence-marker is-red" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.topOfRed)}" r="4"><title>${escapeHtml(futureInventoryDateLabel(point))} 红区上沿：${point.item.topOfRed}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-yellow" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.topOfYellow)}" r="4"><title>${escapeHtml(futureInventoryDateLabel(point))} 黄区上沿：${point.item.topOfYellow}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-green" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.topOfGreen)}" r="4"><title>${escapeHtml(futureInventoryDateLabel(point))} 绿区上沿：${point.item.topOfGreen}</title></circle>`;
   }).join("");
-  const zoneEvidenceMissing = chartSeries.some(item => !hasValidBufferZoneEvidence(item));
-  const redTop = chartSeries.map(item => item.topOfRed).filter(isFiniteChartValue).map(Number);
-  const yellowTop = chartSeries.map(item => item.topOfYellow).filter(isFiniteChartValue).map(Number);
-  const greenTop = chartSeries.map(item => item.topOfGreen).filter(isFiniteChartValue).map(Number);
-  const linePoints = (series, valueSelector) => series.map((item, index) => `${x(index)},${y(valueSelector(item))}`).join(" ");
-  const baselineLine = showPreview && baselineSeries.length
-    ? `<polyline class="buffer-baseline-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准补货后净流位置</title></polyline>`
+  const zoneEvidenceMissing = chartDomain.some(point => !point.item || !hasValidBufferZoneEvidence(point.item));
+  const redTop = chartDomain.map(point => point.item?.topOfRed).filter(isFiniteChartValue).map(Number);
+  const yellowTop = chartDomain.map(point => point.item?.topOfYellow).filter(isFiniteChartValue).map(Number);
+  const greenTop = chartDomain.map(point => point.item?.topOfGreen).filter(isFiniteChartValue).map(Number);
+  const netFlowBeforeField = 'data-field="endNetFlowBeforeReplenishment"';
+  const netFlowAfterField = 'data-field="endNetFlowAfterReplenishment"';
+  const renderEvidenceLine = (cssClass, markerClass, fieldAttribute, valueSelector, title) => {
+    const segments = contiguousEvidenceSegments(chartDomain, point => isFiniteChartValue(valueSelector(point)));
+    const lines = segments.map(segment => segment.length < 2
+      ? ""
+      : `<polyline class="${cssClass}" ${fieldAttribute} data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}" points="${segment.map(point => `${x(point.index)},${y(valueSelector(point))}`).join(" ")}"><title>${title}</title></polyline>`).join("");
+    const markers = segments.filter(segment => segment.length === 1).map(segment => {
+      const point = segment[0];
+      return `<circle class="${markerClass}" ${fieldAttribute} data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(valueSelector(point))}" r="3"><title>${title}</title></circle>`;
+    }).join("");
+    return lines + markers;
+  };
+  const baselineLine = showPreview
+    ? renderEvidenceLine(
+      "buffer-baseline-line",
+      "buffer-baseline-marker",
+      netFlowAfterField,
+      point => baselineItem(point)?.endNetFlowAfterReplenishment,
+      "基准补货后净流位置")
     : "";
   const previewLine = showPreview
-    ? `<polyline class="buffer-preview-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>所选方案补货后净流位置</title></polyline>`
+    ? renderEvidenceLine(
+      "buffer-preview-line",
+      "buffer-preview-marker",
+      netFlowAfterField,
+      point => point.item?.endNetFlowAfterReplenishment,
+      "所选方案补货后净流位置")
     : "";
   const currentLine = showPreview
     ? ""
-    : `<polyline class="buffer-inventory-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>补货后净流位置</title></polyline>`;
-  const netFlowLine = `<polyline class="buffer-net-flow-line" data-field="endNetFlowBeforeReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowBeforeReplenishment)}"><title>补货前净流位置</title></polyline>`;
-  const targetDots = chartSeries.map((item, index) => isFiniteChartValue(item.targetInventory)
-    ? `<circle class="target-inventory-dot" data-field="targetInventory" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${escapeHtml(item.periodStartDate)} 目标库存：${number(item.targetInventory)}</title></circle>`
+    : renderEvidenceLine(
+      "buffer-inventory-line",
+      "buffer-inventory-marker",
+      netFlowAfterField,
+      point => point.item?.endNetFlowAfterReplenishment,
+      "补货后净流位置");
+  const netFlowLine = renderEvidenceLine(
+    "buffer-net-flow-line",
+    "buffer-net-flow-marker",
+    netFlowBeforeField,
+    point => point.item?.endNetFlowBeforeReplenishment,
+    "补货前净流位置");
+  const targetDots = chartDomain.map(point => point.item && isFiniteChartValue(point.item.targetInventory)
+    ? `<circle class="target-inventory-dot" data-field="targetInventory" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.targetInventory)}" r="4"><title>${escapeHtml(futureInventoryDateLabel(point))} 目标库存：${number(point.item.targetInventory)}</title></circle>`
     : "").join("");
-  const reviewMarkers = chartSeries
-    .map((item, index) => item.isReplenishment
-      ? `<line class="${item.isPrebuild ? "review-marker prebuild" : "review-marker"}" x1="${x(index)}" y1="${top}" x2="${x(index)}" y2="${top + mainHeight}"><title>${item.isPrebuild ? "提前建库订单" : "订货周期补货订单"}：${number(item.replenishmentQuantity)}</title></line>`
+  const reviewMarkers = chartDomain
+    .map(point => point.item?.isReplenishment
+      ? `<line class="${point.item.isPrebuild ? "review-marker prebuild" : "review-marker"}" x1="${x(point.index)}" y1="${top}" x2="${x(point.index)}" y2="${top + mainHeight}"><title>${point.item.isPrebuild ? "提前建库订单" : "订货周期补货订单"}：${number(point.item.replenishmentQuantity)}</title></line>`
       : "")
     .join("");
-  const timeGrid = chartSeries.map((item, index) => `<line class="time-grid-line" x1="${x(index)}" y1="${top}" x2="${x(index)}" y2="${top + mainHeight}"></line>`).join("");
-  const monthLabels = chartSeries.map((item, index) => `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
+  const timeGrid = chartDomain.map(point => `<line class="time-grid-line" x1="${x(point.index)}" y1="${top}" x2="${x(point.index)}" y2="${top + mainHeight}"></line>`).join("");
+  const gaps = chartDomain.filter(point => !point.item).map(point => `
+    <g class="nfp-evidence-gap" data-week="${point.week}" data-x="${x(point.index)}">
+      <line x1="${x(point.index)}" y1="${top}" x2="${x(point.index)}" y2="${top + mainHeight}"></line>
+      <text x="${x(point.index)}" y="${top + 12}">第 ${point.week} 周证据缺口</text>
+    </g>`).join("");
+  const monthLabels = chartDomain.map(point => `<text class="buffer-week-label" x="${x(point.index)}" y="${height - 10}">${escapeHtml(futureInventoryDateLabel(point))}</text>`).join("");
 
   byId("buffer-trend-chart").innerHTML = `
     <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 动态红黄绿缓冲带与净流位置" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
@@ -2310,6 +2395,7 @@ function renderBufferTrendChart(detail) {
       ${timeGrid}
       ${zoneAreas}
       ${zoneEvidenceMarkers}
+      ${gaps}
       ${reviewMarkers}
       ${targetDots}
       ${netFlowLine}
@@ -2332,6 +2418,7 @@ function renderBufferTrendChart(detail) {
 }
 
 function renderInventoryFlowChart(previewCase, detail) {
+  detail = scopedFutureBufferDetailForCharts(detail);
   const flow = previewCase?.inventoryFlow;
   const metricEvidence = valueOr(previewCase?.scenarioMetricEvidence, []);
   const isLegacyReference = valueOr(flow?.trace, []).some(item => item.stage === "LegacyResult");
@@ -2359,7 +2446,8 @@ function renderInventoryFlowChart(previewCase, detail) {
         <span class="physical-summary-metric">期末积压：${number(summary.endingBacklog)}</span>
         <span class="physical-summary-metric">准时满足率：${summary.onTimeServicePercent === null ? "不适用" : percent(summary.onTimeServicePercent)}</span>` : ""}`;
 
-  if (!detail || valueOr(detail.series, []).length === 0) {
+  const chartDomain = valueOr(detail?.chartDomain, []);
+  if (!detail || chartDomain.length === 0) {
     byId("inventory-flow-chart").innerHTML = `<div class="table-empty"><strong>没有选中 SKU 的物理库存范围</strong></div>`;
     return;
   }
@@ -2381,33 +2469,20 @@ function renderInventoryFlowChart(previewCase, detail) {
   const width = 940;
   const height = 270;
   const left = 62;
-  const right = 62;
+  const right = 26;
   const top = 24;
   const plotHeight = 190;
   const plotBottom = top + plotHeight;
   const plotWidth = width - left - right;
-  const weekFrom = Number(state.futureInventorySelection.weekFrom);
-  const weekThrough = Number(state.futureInventorySelection.weekThrough);
-  const detailByWeek = new Map(detail.series.map(item => [Number(item.week), item]));
-  const dateByWeek = new Map(valueOr(state.bufferTrend?.series, [])
-    .filter(item => Number(item.week) >= weekFrom && Number(item.week) <= weekThrough)
-    .map(item => [Number(item.week), item.periodStartDate]));
-  const domain = Array.from({ length: Math.max(0, weekThrough - weekFrom + 1) }, (_, index) => {
-    const week = weekFrom + index;
-    const detailItem = detailByWeek.get(week);
-    return {
-      index,
-      week,
-      detailItem,
-      periodStartDate: valueOr(detailItem?.periodStartDate, valueOr(dateByWeek.get(week), `第 ${week} 周`)),
-      point: detailItem
-        ? valueOr(flow.points, []).find(point => point.sku === detail.sku && Number(point.week) === week)
-        : null,
-    };
-  });
-  const x = index => left + index * plotWidth / Math.max(1, domain.length - 1);
-  const onHandValues = domain
-    .map(item => item.point?.endingOnHand)
+  const weekFrom = chartDomain[0].week;
+  const weekThrough = chartDomain[chartDomain.length - 1].week;
+  const pointByWeek = new Map(valueOr(flow.points, [])
+    .filter(point => point.sku === detail.sku)
+    .map(point => [Number(point.week), point]));
+  const physicalPoint = domainPoint => domainPoint.item ? valueOr(pointByWeek.get(domainPoint.week), null) : null;
+  const x = index => futureInventoryChartX(index, chartDomain.length);
+  const onHandValues = chartDomain
+    .map(item => physicalPoint(item)?.endingOnHand)
     .filter(isFiniteChartValue)
     .map(Number);
   const eventFields = [
@@ -2416,41 +2491,41 @@ function renderInventoryFlowChart(previewCase, detail) {
     { field: "prebuildReceiptQuantity", cssClass: "physical-prebuild-receipt", label: "提前建库" },
     { field: "endingBacklog", cssClass: "physical-ending-backlog", label: "期末积压" },
   ];
-  const eventValues = domain.flatMap(item => eventFields
-    .map(config => item.point?.[config.field])
+  const eventValues = chartDomain.flatMap(item => eventFields
+    .map(config => physicalPoint(item)?.[config.field])
     .filter(isFiniteChartValue)
     .map(Number));
   const onHandMaximum = Math.max(1, ...onHandValues) * 1.08;
   const eventMaximum = Math.max(1, ...eventValues) * 1.12;
   const yOnHand = value => top + (onHandMaximum - Number(value)) * plotHeight / onHandMaximum;
   const yEvent = value => top + (eventMaximum - Number(value)) * plotHeight / eventMaximum;
-  const validPhysicalPoint = item => item.point && isFiniteChartValue(item.point.endingOnHand);
-  const physicalSegments = contiguousEvidenceSegments(domain, validPhysicalPoint);
+  const validPhysicalPoint = item => physicalPoint(item) && isFiniteChartValue(physicalPoint(item).endingOnHand);
+  const physicalSegments = contiguousEvidenceSegments(chartDomain, validPhysicalPoint);
   const onHandPaths = physicalSegments.map(segment => {
     if (segment.length < 2) return "";
-    const upperPoints = segment.map(item => ({ x: x(item.index), y: yOnHand(item.point.endingOnHand) }));
+    const upperPoints = segment.map(item => ({ x: x(item.index), y: yOnHand(physicalPoint(item).endingOnHand) }));
     const lowerPoints = segment.map(item => ({ x: x(item.index), y: plotBottom }));
     return `
-      <path class="physical-on-hand-area" data-field="endingOnHand" d="${buildLinearAreaPath(lowerPoints, upperPoints)}"></path>
+      <path class="physical-on-hand-area" data-field="endingOnHand" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}" d="${buildLinearAreaPath(lowerPoints, upperPoints)}"></path>
       <path class="physical-on-hand-line" data-field="endingOnHand" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}" d="${buildMonotonePath(upperPoints)}"></path>`;
   }).join("");
-  const onHandMarkers = domain.filter(validPhysicalPoint).map(item =>
-    `<circle class="physical-on-hand-marker" data-field="endingOnHand" cx="${x(item.index)}" cy="${yOnHand(item.point.endingOnHand)}" r="3"><title>第 ${item.week} 周期末现有量：${number(item.point.endingOnHand)}</title></circle>`).join("");
-  const barWidth = Math.max(3, Math.min(11, plotWidth / Math.max(1, domain.length) / 6));
-  const eventBars = domain.flatMap(item => eventFields.map((config, fieldIndex) => {
-    const value = item.point?.[config.field];
+  const onHandMarkers = chartDomain.filter(validPhysicalPoint).map(item =>
+    `<circle class="physical-on-hand-marker" data-field="endingOnHand" data-week="${item.week}" data-x="${x(item.index)}" cx="${x(item.index)}" cy="${yOnHand(physicalPoint(item).endingOnHand)}" r="3"><title>第 ${item.week} 周期末现有量：${number(physicalPoint(item).endingOnHand)}</title></circle>`).join("");
+  const barWidth = Math.max(3, Math.min(11, plotWidth / Math.max(1, chartDomain.length) / 6));
+  const eventBars = chartDomain.flatMap(item => eventFields.map((config, fieldIndex) => {
+    const value = physicalPoint(item)?.[config.field];
     if (!isFiniteChartValue(value)) return "";
     const barX = x(item.index) + (fieldIndex - 1.5) * (barWidth + 1);
     const barY = yEvent(value);
     return `<rect class="${config.cssClass}" data-field="${config.field}" x="${barX}" y="${barY}" width="${barWidth}" height="${Math.max(0, plotBottom - barY)}"><title>第 ${item.week} 周${config.label}：${number(value)}</title></rect>`;
   })).join("");
-  const gaps = domain.filter(item => !validPhysicalPoint(item)).map(item => `
-    <g class="physical-evidence-gap" data-week="${item.week}">
+  const gaps = chartDomain.filter(item => !validPhysicalPoint(item)).map(item => `
+    <g class="physical-evidence-gap" data-week="${item.week}" data-x="${x(item.index)}">
       <line x1="${x(item.index)}" y1="${top}" x2="${x(item.index)}" y2="${plotBottom}"></line>
       <text x="${x(item.index)}" y="${top + 12}">第 ${item.week} 周证据缺口</text>
     </g>`).join("");
-  const dateLabels = domain.map(item =>
-    `<text class="buffer-week-label" x="${x(item.index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
+  const dateLabels = chartDomain.map(item =>
+    `<text class="buffer-week-label" x="${x(item.index)}" y="${height - 10}">${escapeHtml(futureInventoryDateLabel(item))}</text>`).join("");
 
   byId("inventory-flow-chart").innerHTML = `
     <svg class="inventory-flow-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 物理库存投影" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
@@ -2474,7 +2549,9 @@ function renderInventoryFlowChart(previewCase, detail) {
 }
 
 function renderBufferVolatilityChart(detail) {
-  if (!detail || detail.series.length === 0) {
+  detail = scopedFutureBufferDetailForCharts(detail);
+  const chartDomain = valueOr(detail?.chartDomain, []);
+  if (!detail || chartDomain.length === 0) {
     byId("buffer-volatility-chart").innerHTML = `<div class="table-empty"><strong>没有需求波动证据</strong></div>`;
     return;
   }
@@ -2487,18 +2564,16 @@ function renderBufferVolatilityChart(detail) {
   const plotHeight = 108;
   const plotBottom = top + plotHeight;
   const plotWidth = width - left - right;
-  const chartSeries = detail.series;
   const caseId = valueOr(state.futureInventorySelection.caseId, valueOr(state.bufferTrend?.caseId, "baseline"));
-  const weekFrom = valueOr(chartSeries[0]?.week, state.futureInventorySelection.weekFrom);
-  const weekThrough = valueOr(chartSeries[chartSeries.length - 1]?.week, state.futureInventorySelection.weekThrough);
-  const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
-  const chartPoints = chartSeries.map((item, index) => ({ item, index }));
+  const weekFrom = chartDomain[0].week;
+  const weekThrough = chartDomain[chartDomain.length - 1].week;
+  const x = index => futureInventoryChartX(index, chartDomain.length);
   const demandSegments = contiguousEvidenceSegments(
-    chartPoints,
-    point => isFiniteChartValue(point.item.demand) && Number(point.item.demand) >= 0);
+    chartDomain,
+    point => point.item && isFiniteChartValue(point.item.demand) && Number(point.item.demand) >= 0);
   const thresholdSegments = contiguousEvidenceSegments(
-    chartPoints,
-    point => isFiniteChartValue(point.item.demandSpikeThreshold) && Number(point.item.demandSpikeThreshold) >= 0);
+    chartDomain,
+    point => point.item && isFiniteChartValue(point.item.demandSpikeThreshold) && Number(point.item.demandSpikeThreshold) >= 0);
   const scaleValues = [
     ...demandSegments.flatMap(segment => segment.map(point => Number(point.item.demand))),
     ...thresholdSegments.flatMap(segment => segment.map(point => Number(point.item.demandSpikeThreshold))),
@@ -2510,21 +2585,26 @@ function renderBufferVolatilityChart(detail) {
     if (segment.length < 2) return "";
     const lowerPoints = segment.map(point => ({ x: x(point.index), y: y(0) }));
     const upperPoints = segment.map(point => ({ x: x(point.index), y: y(point.item.demand) }));
-    return `<path class="buffer-demand-area" d="${buildMonotoneAreaPath(lowerPoints, upperPoints)}"></path>`;
+    return `<path class="buffer-demand-area" d="${buildMonotoneAreaPath(lowerPoints, upperPoints)}" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}"></path>`;
   }).join("");
   const thresholdLines = thresholdSegments.map(segment => {
     if (segment.length < 2) return "";
     const points = segment.map(point => ({ x: x(point.index), y: y(point.item.demandSpikeThreshold) }));
-    return `<path class="buffer-demand-threshold" d="${buildMonotonePath(points)}"></path>`;
+    return `<path class="buffer-demand-threshold" d="${buildMonotonePath(points)}" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}"></path>`;
   }).join("");
-  const demandMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demand)).map(point =>
-    `<circle class="buffer-demand-marker" cx="${x(point.index)}" cy="${y(point.item.demand)}" r="2.5"><title>${escapeHtml(point.item.periodStartDate)} 计划需求：${number(point.item.demand)}</title></circle>`).join("");
-  const thresholdMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demandSpikeThreshold)).map(point =>
-    `<circle class="buffer-demand-threshold-marker" cx="${x(point.index)}" cy="${y(point.item.demandSpikeThreshold)}" r="2.5"><title>${escapeHtml(point.item.periodStartDate)} 后端尖峰阈值：${number(point.item.demandSpikeThreshold)}</title></circle>`).join("");
-  const thresholdMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demandSpikeThreshold));
-  const demandMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demand));
-  const dateLabels = chartSeries.map((item, index) =>
-    `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
+  const demandMarkers = chartDomain.filter(point => point.item && isFiniteChartValue(point.item.demand)).map(point =>
+    `<circle class="buffer-demand-marker" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.demand)}" r="2.5"><title>${escapeHtml(futureInventoryDateLabel(point))} 计划需求：${number(point.item.demand)}</title></circle>`).join("");
+  const thresholdMarkers = chartDomain.filter(point => point.item && isFiniteChartValue(point.item.demandSpikeThreshold)).map(point =>
+    `<circle class="buffer-demand-threshold-marker" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.demandSpikeThreshold)}" r="2.5"><title>${escapeHtml(futureInventoryDateLabel(point))} 后端尖峰阈值：${number(point.item.demandSpikeThreshold)}</title></circle>`).join("");
+  const thresholdMissing = chartDomain.some(point => !point.item || !isFiniteChartValue(point.item.demandSpikeThreshold));
+  const demandMissing = chartDomain.some(point => !point.item || !isFiniteChartValue(point.item.demand));
+  const gaps = chartDomain.filter(point => !point.item).map(point => `
+    <g class="volatility-evidence-gap" data-week="${point.week}" data-x="${x(point.index)}">
+      <line x1="${x(point.index)}" y1="${top}" x2="${x(point.index)}" y2="${plotBottom}"></line>
+      <text x="${x(point.index)}" y="${top + 12}">第 ${point.week} 周证据缺口</text>
+    </g>`).join("");
+  const dateLabels = chartDomain.map(point =>
+    `<text class="buffer-week-label" x="${x(point.index)}" y="${height - 10}">${escapeHtml(futureInventoryDateLabel(point))}</text>`).join("");
 
   byId("buffer-volatility-chart").innerHTML = `
     <svg class="buffer-volatility-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 需求波动图" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
@@ -2535,6 +2615,7 @@ function renderBufferVolatilityChart(detail) {
       ${demandMarkers}
       ${thresholdLines}
       ${thresholdMarkers}
+      ${gaps}
       ${thresholdMissing ? `<text class="buffer-demand-evidence-note" x="${left + 8}" y="${top + 14}">尖峰阈值证据缺失</text>` : ""}
       ${demandMissing ? `<text class="buffer-demand-evidence-note" x="${left + 8}" y="${top + 28}">计划需求证据缺失</text>` : ""}
       ${dateLabels}
@@ -5819,7 +5900,7 @@ async function loadWorkspace() {
   if (!bufferTrendResponse.ok) {
     throw new Error(`缓冲趋势工作台接口失败：${bufferTrendResponse.status}`);
   }
-  acceptCurrentBufferTrend(await bufferTrendResponse.json());
+  const refreshedBufferTrend = await bufferTrendResponse.json();
   const exceptionResponse = await fetch("/api/exception-workspace?horizonWeeks=12", {
     headers: { Accept: "application/json" },
   });
@@ -5840,6 +5921,7 @@ async function loadWorkspace() {
   configureFilters(state.data);
   configurePreviewControls(state.data);
   await loadSavedScenarioRuns();
+  acceptCurrentBufferTrend(refreshedBufferTrend);
   applyFilters();
   fiveStageDataPromise.then(fiveStageResults => {
     const fiveStageChips = ["history-evidence-chip", "current-baseline-chip", "coordination-status-chip", "future-compare-status"];

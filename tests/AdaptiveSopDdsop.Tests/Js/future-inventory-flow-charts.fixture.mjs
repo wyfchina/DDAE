@@ -344,6 +344,101 @@ function polylinePoints(markup, cssClass) {
   return match[1].trim().split(/\s+/).map(pair => pair.split(",").map(Number));
 }
 
+async function verifyAtomicWorkspaceRefresh(runtime, preview) {
+  const previousPreview = structuredClone(preview);
+  const previousTrend = structuredClone(preview.scenario.bufferTrend);
+  const refreshedTrend = structuredClone(preview.scenario.bufferTrend);
+  refreshedTrend.caseId = "current-refresh";
+  refreshedTrend.name = "当前刷新";
+  refreshedTrend.selectedSku = refreshedTrend.skuDetails.at(-1).sku;
+  const previousSelection = {
+    caseId: preview.scenario.caseId,
+    sku: previousTrend.selectedSku,
+    weekFrom: 2,
+    weekThrough: 3,
+  };
+  runtime.context.__previousPreview = previousPreview;
+  runtime.context.__previousTrend = previousTrend;
+  runtime.context.__previousSelection = previousSelection;
+  runtime.context.__refreshedTrend = refreshedTrend;
+  runtime.context.__lateRefreshFailure = true;
+  runtime.context.__loadEvents = [];
+  vm.runInContext(`
+    state.preview = __previousPreview;
+    state.bufferTrend = __previousTrend;
+    state.baselineBufferTrend = __previousPreview.baseline.bufferTrend;
+    state.selectedBufferSku = __previousSelection.sku;
+    state.futureInventorySelection = { ...__previousSelection };
+    configureFiveStageScenarioControls = () => {};
+    loadHistoryReview = async () => null;
+    loadCurrentBaselineWorkspace = async () => null;
+    loadCoordinationItems = async () => null;
+    loadScenarioAssumptionTemplates = async () => null;
+    configureFilters = () => { __loadEvents.push("configure-filters"); };
+    configurePreviewControls = () => { __loadEvents.push("configure-preview"); };
+    loadPublicDemoGoldenLoop = async () => { __loadEvents.push("public-demo"); };
+    loadAdventureWorksProductDemo = async () => { __loadEvents.push("adventure-works"); };
+    loadSavedScenarioRuns = async () => {
+      __loadEvents.push("saved-runs");
+      if (__lateRefreshFailure) throw new Error("late required loader failed");
+    };
+    applyFilters = () => { __loadEvents.push("apply-filters"); };
+  `, runtime.context);
+  runtime.context.fetch = async url => {
+    const path = String(url);
+    const payload = path.startsWith("/api/scenario-workspace-data")
+      ? {}
+      : path.startsWith("/api/product-family-dashboard")
+        ? { selectedFamily: null }
+        : path.startsWith("/api/rccp-workspace")
+          ? { resourceSummaries: [] }
+          : path.startsWith("/api/constraint-workspace")
+            ? {}
+            : path.startsWith("/api/supplier-collaboration-workspace")
+              ? { selectedSupplier: null }
+              : path.startsWith("/api/buffer-trend-workspace")
+                ? refreshedTrend
+                : path.startsWith("/api/exception-workspace")
+                  ? { exceptions: [] }
+                  : path.startsWith("/api/master-settings-workspace")
+                    ? {}
+                    : {};
+    return {
+      ok: true,
+      status: 200,
+      json: async () => structuredClone(payload),
+    };
+  };
+
+  await assert.rejects(vm.runInContext("loadWorkspace()", runtime.context), /late required loader failed/,
+    "late required refresh failure should reject loadWorkspace");
+  assert.deepEqual(readVm(runtime,
+    "({ preview: state.preview, bufferTrend: state.bufferTrend, selection: state.futureInventorySelection })"),
+  { preview: previousPreview, bufferTrend: previousTrend, selection: previousSelection },
+  "failed refresh must not commit the new buffer trend or clear the old preview selection");
+  assert.ok(!readVm(runtime, "__loadEvents").includes("apply-filters"),
+    "failed refresh must not render partially refreshed state");
+
+  runtime.context.__lateRefreshFailure = false;
+  await vm.runInContext("loadWorkspace()", runtime.context);
+  assert.deepEqual(readVm(runtime,
+    "({ preview: state.preview, caseId: state.bufferTrend.caseId, selectedBufferSku: state.selectedBufferSku, "
+      + "selection: state.futureInventorySelection })"), {
+    preview: null,
+    caseId: refreshedTrend.caseId,
+    selectedBufferSku: refreshedTrend.selectedSku,
+    selection: {
+      caseId: refreshedTrend.caseId,
+      sku: refreshedTrend.selectedSku,
+      weekFrom: 1,
+      weekThrough: null,
+    },
+  }, "successful refresh should atomically accept current buffer evidence before rendering");
+  const successEvents = readVm(runtime, "__loadEvents");
+  assert.ok(successEvents.lastIndexOf("saved-runs") < successEvents.lastIndexOf("apply-filters"),
+    "successful refresh should render only after the last required loader completes");
+}
+
 export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = defaultScriptPath) {
   assert.ok(preview?.baseline?.bufferTrend && preview?.scenario?.bufferTrend,
     "fixture should contain backend NFP cases");
@@ -358,6 +453,7 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "renderTrace body must remain protected");
 
   const runtime = createRuntime(source);
+  await verifyAtomicWorkspaceRefresh(runtime, preview);
   runPreview(runtime, preview);
   const nfpMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
   const physicalHost = runtime.elements.get("inventory-flow-chart");
@@ -568,28 +664,54 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     .sort((left, right) => left - right);
   const sharedWeekFrom = sharedDomainWeeks[0];
   const sharedWeekThrough = sharedDomainWeeks.at(-1);
-  const retainedWeek = sharedDomainWeeks.length > 1 ? sharedDomainWeeks[1] : sharedWeekFrom;
+  const missingDomainWeeks = new Set([sharedWeekFrom, sharedWeekThrough]);
+  if (sharedDomainWeeks.length >= 6) {
+    missingDomainWeeks.add(sharedDomainWeeks[2]);
+    missingDomainWeeks.add(sharedDomainWeeks[3]);
+  }
   const sharedDates = new Map(detailDomainGap.scenario.bufferTrend.series.map(item =>
     [Number(item.week), item.periodStartDate]));
-  domainDetail.series = domainDetail.series.filter(item => Number(item.week) === retainedWeek);
+  domainDetail.series = domainDetail.series.filter(item => !missingDomainWeeks.has(Number(item.week)));
   detailDomainGap.scenario.bufferTrend.series = detailDomainGap.scenario.bufferTrend.skuDetails.flatMap(item => item.series);
   runPreview(runtime, detailDomainGap);
-  const detailDomainMarkup = runtime.elements.get("inventory-flow-chart").innerHTML;
-  assert.ok(detailDomainMarkup.includes(`data-week-from="${sharedWeekFrom}"`)
-    && detailDomainMarkup.includes(`data-week-through="${sharedWeekThrough}"`),
-    "physical projection must use the shared filtered week domain when selected detail omits edge weeks");
-  for (const missingWeek of sharedDomainWeeks.filter(week => week !== retainedWeek)) {
-    assert.ok(detailDomainMarkup.includes(`data-week="${missingWeek}"`)
-      && detailDomainMarkup.includes(`第 ${missingWeek} 周证据缺口`),
-    `physical projection should label selected-detail gap week ${missingWeek}`);
+  const domainPanels = [
+    { id: "buffer-trend-chart", gapClass: "nfp-evidence-gap" },
+    { id: "inventory-flow-chart", gapClass: "physical-evidence-gap" },
+    { id: "buffer-volatility-chart", gapClass: "volatility-evidence-gap" },
+  ].map(panel => ({ ...panel, markup: runtime.elements.get(panel.id).innerHTML }));
+  for (const panel of domainPanels) {
+    assert.ok(panel.markup.includes(`data-week-from="${sharedWeekFrom}"`)
+      && panel.markup.includes(`data-week-through="${sharedWeekThrough}"`),
+    `${panel.id} must retain the common explicit week domain when selected SKU evidence has gaps`);
   }
-  for (const week of sharedDomainWeeks) {
-    assert.ok(detailDomainMarkup.includes(sharedDates.get(week)),
-      `shared physical domain should retain the backend date label for week ${week}`);
+  for (const missingWeek of missingDomainWeeks) {
+    const positions = domainPanels.map(panel => {
+      const match = panel.markup.match(new RegExp(
+        `<g class="${panel.gapClass}" data-week="${missingWeek}" data-x="([^"]+)"`));
+      assert.ok(match, `${panel.id} should label gap week ${missingWeek} with its shared x coordinate`);
+      assert.ok(panel.markup.includes(`第 ${missingWeek} 周证据缺口`),
+        `${panel.id} should expose the Chinese gap label for week ${missingWeek}`);
+      return Number(match[1]);
+    });
+    assert.ok(positions.every(position => Number.isFinite(position) && position === positions[0]),
+      `gap week ${missingWeek} must use the same x coordinate in all three panels`);
   }
-  const detailDomainSegments = [...detailDomainMarkup.matchAll(/<path class="physical-on-hand-line"[^>]*data-week-from="(\d+)"[^>]*data-week-through="(\d+)"/g)];
-  assert.ok(detailDomainSegments.every(match => Number(match[1]) === Number(match[2])),
-    "physical paths must not bridge leading, trailing, or continuous selected-detail evidence gaps");
+  for (const panel of domainPanels) {
+    for (const week of sharedDomainWeeks) {
+      assert.ok(panel.markup.includes(sharedDates.get(week)),
+        `${panel.id} should retain the same-case backend date label for week ${week}`);
+    }
+    const segments = [...panel.markup.matchAll(/<(?:path|polyline)[^>]*data-week-from="(\d+)"[^>]*data-week-through="(\d+)"[^>]*>/g)]
+      .filter(match => !match[0].includes('class="buffer-baseline-line"'));
+    for (const missingWeek of missingDomainWeeks) {
+      assert.ok(segments.every(match => !(Number(match[1]) < missingWeek && Number(match[2]) > missingWeek)),
+        `${panel.id} must not draw a continuous line or area across gap week ${missingWeek}`);
+    }
+  }
+  const nfpDomainMarkup = domainPanels.find(panel => panel.id === "buffer-trend-chart").markup;
+  assert.ok(nfpDomainMarkup.includes(
+    `class="buffer-baseline-line" data-field="endNetFlowAfterReplenishment" data-week-from="${sharedWeekFrom}" data-week-through="${sharedWeekThrough}"`),
+  "complete baseline NFP evidence must remain continuous across gaps in the independently selected scenario");
 
   const legacy = structuredClone(preview);
   legacy.scenario.inventoryFlow.status = "EvidenceMissing";
