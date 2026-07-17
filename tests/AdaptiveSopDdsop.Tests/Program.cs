@@ -41,6 +41,7 @@ var tests = new (string Name, Action Run)[]
     ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
     ("Current baseline UI shows typed planning evidence without zero backfill", TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill),
+    ("Current baseline executable fixture preserves blockers and explicit zero evidence", TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
     ("Seed time-buffer progress covers every requested horizon week", TestSeedTimeBufferProgressCoversRequestedHorizon),
     ("Time-buffer baseline freeze rejects partial horizon evidence", TestTimeBufferBaselineFreezeRejectsPartialHorizonEvidence),
@@ -1682,8 +1683,8 @@ static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
 
     var renderRule = SourceFunctionBody(script, "renderCurrentBaselineWorkspace");
     AssertTrue(
-        renderRule.Contains("baselineFreezeBlockingIssues(candidate.sections)", StringComparison.Ordinal),
-        "baseline renderer should derive chip and button state from item-level blockers");
+        renderRule.Contains("baselineCandidateFreezeBlockingIssues(candidate)", StringComparison.Ordinal),
+        "baseline renderer should combine item-level blockers with required typed planning input presence");
     AssertTrue(
         !renderRule.Contains("item.isRequired &&", StringComparison.Ordinal),
         "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
@@ -1776,6 +1777,44 @@ static void TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill()
         "frozen evidence should render only the selected immutable snapshot DTO");
     AssertTrue(script.Contains("DemoFixture: \"演示数据\"", StringComparison.Ordinal),
         "ordinary demo source codes should be localized without changing stored values");
+}
+
+static void TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "baseline-planning-evidence.fixture.mjs");
+
+    using var process = new Process
+    {
+        StartInfo = new ProcessStartInfo
+        {
+            FileName = FindNodeExecutable(),
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        },
+    };
+    process.StartInfo.ArgumentList.Add(fixturePath);
+    process.Start();
+    var standardOutput = process.StandardOutput.ReadToEndAsync();
+    var standardError = process.StandardError.ReadToEndAsync();
+    if (!process.WaitForExit(30_000))
+    {
+        process.Kill(entireProcessTree: true);
+        throw new InvalidOperationException("Node baseline planning evidence fixture timed out after 30 seconds");
+    }
+    Task.WaitAll(standardOutput, standardError);
+    var output = standardOutput.Result;
+    var error = standardError.Result;
+    if (process.ExitCode != 0)
+    {
+        throw new InvalidOperationException(
+            $"Node baseline planning evidence fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+    }
+    AssertTrue(output.Contains("baseline planning evidence fixture groups passed", StringComparison.Ordinal),
+        $"Node baseline planning evidence fixture did not report completion: {output}");
 }
 
 static void TestTimeBufferEvidenceRulesControlBaselineFreeze()

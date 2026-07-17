@@ -4594,6 +4594,19 @@ function baselineFreezeBlockingIssues(sections) {
   return issues;
 }
 
+function baselineCandidateFreezeBlockingIssues(candidate) {
+  const issues = baselineFreezeBlockingIssues(candidate?.sections);
+  const planningInputs = candidate?.payload?.planningInputs;
+  if (planningInputs === null || planningInputs === undefined) {
+    issues.push({
+      section: null,
+      item: null,
+      missingReason: "后端未提供类型化计划输入",
+    });
+  }
+  return issues;
+}
+
 function baselineEvidenceMissing(reason, label = "证据缺失") {
   const detail = reason === null || reason === undefined || reason === ""
     ? "后端未提供缺失原因"
@@ -4669,12 +4682,26 @@ function baselineEvidenceSectionSummary(section, blockers) {
   ].join("");
 }
 
+function baselineEmptyEvidenceCollection(section, blockers, emptyMessage, fallbackReason) {
+  const blocked = blockers.some(issue => issue.section === section);
+  const complete = section?.completenessStatus === "Complete";
+  if (complete && !blocked) {
+    return { isMissing: false, message: emptyMessage };
+  }
+  const reason = section?.missingReason || (blocked
+    ? baselineEvidenceBlockerText(section, blockers)
+    : fallbackReason);
+  return { isMissing: true, message: baselineEvidenceMissing(reason) };
+}
+
 function renderBaselinePlanningEvidence(baseline, viewKind = "Candidate", updatePage = true) {
   const planningInputs = baseline?.payload?.planningInputs;
   const coverage = planningInputs ? planningInputs.planningEvidenceCoverage : undefined;
   const receipts = planningInputs ? planningInputs.confirmedReceipts : undefined;
   const openingBacklog = planningInputs ? planningInputs.openingBacklog : undefined;
-  const blockers = baselineFreezeBlockingIssues(baseline?.sections);
+  const blockers = viewKind === "Candidate"
+    ? baselineCandidateFreezeBlockingIssues(baseline)
+    : baselineFreezeBlockingIssues(baseline?.sections);
   const coverageSection = baselinePlanningEvidenceSection(baseline, "PLANNING_EVIDENCE_COVERAGE");
   const receiptSection = baselinePlanningEvidenceSection(baseline, "CONFIRMED_RECEIPTS");
   const backlogSection = baselinePlanningEvidenceSection(baseline, "OPENING_BACKLOG");
@@ -4713,8 +4740,16 @@ function renderBaselinePlanningEvidence(baseline, viewKind = "Candidate", update
     receiptRows = `<tr><td class="empty-cell" colspan="8">${missing}</td></tr>`;
     receiptDrawerItems = [["确认到货", missing]];
   } else if (receipts.length === 0) {
-    receiptRows = emptyRow("无确认到货记录", 8);
-    receiptDrawerItems = [["确认到货", "无确认到货记录"]];
+    const emptyState = baselineEmptyEvidenceCollection(
+      receiptSection,
+      blockers,
+      "无确认到货记录",
+      "后端未提供完整的确认到货证据",
+    );
+    receiptRows = emptyState.isMissing
+      ? `<tr><td class="empty-cell" colspan="8">${emptyState.message}</td></tr>`
+      : emptyRow(emptyState.message, 8);
+    receiptDrawerItems = [["确认到货", emptyState.message]];
   } else {
     receiptRows = receipts.map(item => {
       const source = `${baselineEvidenceValue(item.sourceReference, "后端未提供来源引用")}<small>${baselineEvidenceValue(item.supplySourceType, "后端未提供来源类型", supplySourceTypeLabel)} · ${baselineEvidenceValue(item.evidenceLabel, "后端未提供证据来源", baselineSourceLabel)}</small>`;
@@ -4743,8 +4778,16 @@ function renderBaselinePlanningEvidence(baseline, viewKind = "Candidate", update
     backlogRows = `<tr><td class="empty-cell" colspan="6">${missing}</td></tr>`;
     backlogDrawerItems = [["期初积压", missing]];
   } else if (openingBacklog.length === 0) {
-    backlogRows = emptyRow("无期初积压记录", 6);
-    backlogDrawerItems = [["期初积压", "无期初积压记录"]];
+    const emptyState = baselineEmptyEvidenceCollection(
+      backlogSection,
+      blockers,
+      "无期初积压记录",
+      "后端未提供完整的期初积压证据",
+    );
+    backlogRows = emptyState.isMissing
+      ? `<tr><td class="empty-cell" colspan="6">${emptyState.message}</td></tr>`
+      : emptyRow(emptyState.message, 6);
+    backlogDrawerItems = [["期初积压", emptyState.message]];
   } else {
     backlogRows = openingBacklog.map(item => row([
       baselineEvidenceValue(item.backlogId, "后端未提供积压行号"),
@@ -4782,7 +4825,7 @@ function renderBaselinePlanningEvidence(baseline, viewKind = "Candidate", update
 function renderCurrentBaselineWorkspace() {
   const candidate = state.currentBaselineCandidate;
   if (!candidate) return;
-  const missing = baselineFreezeBlockingIssues(candidate.sections);
+  const missing = baselineCandidateFreezeBlockingIssues(candidate);
   byId("current-baseline-chip").className = `status-chip ${missing.length ? "is-invalid" : "is-valid"}`;
   byId("current-baseline-chip").textContent = missing.length ? `阻断 ${missing.length} 项关键证据` : `${baselineSourceLabel(candidate.evidenceLabel)} · 可冻结`;
   byId("freeze-current-baseline").disabled = missing.length > 0;
