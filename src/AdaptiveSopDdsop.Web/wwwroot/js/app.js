@@ -52,6 +52,12 @@ const state = {
   selectedMasterChangeId: null,
   selectedProductFamily: null,
   selectedProductFamilyLink: null,
+  futureInventorySelection: {
+    caseId: null,
+    sku: null,
+    weekFrom: 1,
+    weekThrough: null,
+  },
   focusedPanel: null,
   focusedPanelParent: null,
   focusedPanelNextSibling: null,
@@ -1850,6 +1856,105 @@ function renderMultiScenarioComparison(result) {
     : emptyRow("候选动作影响矩阵将在候选组合选择后显示。", 10);
 }
 
+function futureInventoryCases(fallbackTrend = null) {
+  const previewCases = [state.preview?.baseline, state.preview?.scenario]
+    .filter(item => item?.bufferTrend);
+  if (previewCases.length) return previewCases;
+  if (!fallbackTrend) return [];
+  return [{
+    caseId: valueOr(fallbackTrend.caseId, "baseline"),
+    name: valueOr(fallbackTrend.name, "基准方案"),
+    bufferTrend: fallbackTrend,
+    inventoryFlow: null,
+    scenarioMetricEvidence: [],
+  }];
+}
+
+function normalizeFutureInventorySelection(trend) {
+  const cases = futureInventoryCases(trend);
+  const requestedCaseId = state.futureInventorySelection.caseId;
+  let previewCase = cases.find(item => item.caseId === requestedCaseId);
+  if (!previewCase) previewCase = cases.find(item => item.caseId === trend?.caseId);
+  if (!previewCase) previewCase = cases.find(item => item.caseId === "scenario");
+  if (!previewCase) previewCase = valueOr(cases[0], null);
+  const selectedTrend = valueOr(previewCase?.bufferTrend, trend);
+  const skuDetails = valueOr(selectedTrend?.skuDetails, []);
+  const requestedSku = valueOr(state.futureInventorySelection.sku, state.selectedBufferSku);
+  const sku = skuDetails.some(item => item.sku === requestedSku)
+    ? requestedSku
+    : (skuDetails.some(item => item.sku === selectedTrend?.selectedSku)
+      ? selectedTrend.selectedSku
+      : valueOr(skuDetails[0]?.sku, ""));
+  const selectedDetail = skuDetails.find(item => item.sku === sku);
+  const weeks = [...new Set(valueOr(selectedDetail?.series, [])
+    .map(item => Number(item.week))
+    .filter(Number.isFinite))].sort((left, right) => left - right);
+  const minimumWeek = valueOr(weeks[0], 1);
+  const maximumWeek = valueOr(weeks[weeks.length - 1], minimumWeek);
+  let weekFrom = Number(state.futureInventorySelection.weekFrom);
+  let weekThrough = Number(state.futureInventorySelection.weekThrough);
+  if (!Number.isFinite(weekFrom) || weekFrom < minimumWeek || weekFrom > maximumWeek) weekFrom = minimumWeek;
+  if (!Number.isFinite(weekThrough) || weekThrough < weekFrom || weekThrough > maximumWeek) weekThrough = maximumWeek;
+
+  state.futureInventorySelection.caseId = valueOr(previewCase?.caseId, valueOr(selectedTrend?.caseId, "baseline"));
+  state.futureInventorySelection.sku = sku;
+  state.futureInventorySelection.weekFrom = weekFrom;
+  state.futureInventorySelection.weekThrough = weekThrough;
+  state.selectedBufferSku = sku;
+  return {
+    cases,
+    previewCase,
+    trend: selectedTrend,
+    caseId: state.futureInventorySelection.caseId,
+    sku,
+    weekFrom,
+    weekThrough,
+    minimumWeek,
+    maximumWeek,
+  };
+}
+
+function scopeFutureBufferDetail(detail, selection) {
+  if (!detail) return null;
+  const inRange = item => Number(item.week) >= selection.weekFrom && Number(item.week) <= selection.weekThrough;
+  return {
+    ...detail,
+    series: valueOr(detail.series, []).filter(inRange),
+    replenishmentOrders: valueOr(detail.replenishmentOrders, []).filter(inRange),
+    traces: valueOr(detail.traces, []).filter(inRange),
+    activities: valueOr(detail.activities, []).filter(inRange),
+    orderDetails: valueOr(detail.orderDetails, []).filter(inRange),
+  };
+}
+
+function renderFutureInventorySelectionControls(selection) {
+  const caseSelect = byId("buffer-case-select");
+  const weekSelect = byId("buffer-week-range-select");
+  caseSelect.innerHTML = selection.cases.map(item =>
+    `<option value="${escapeHtml(item.caseId)}">${escapeHtml(caseLabel(item.name))}</option>`).join("");
+  caseSelect.value = selection.caseId;
+
+  const ranges = [{ from: selection.minimumWeek, through: selection.maximumWeek }];
+  for (let from = selection.minimumWeek; from <= selection.maximumWeek; from += 4) {
+    ranges.push({ from, through: Math.min(from + 3, selection.maximumWeek) });
+  }
+  const uniqueRanges = [...new Map(ranges.map(item => [`${item.from}-${item.through}`, item])).values()];
+  weekSelect.innerHTML = uniqueRanges.map(item =>
+    `<option value="${item.from}-${item.through}">第 ${item.from} 至 ${item.through} 周</option>`).join("");
+  weekSelect.value = `${selection.weekFrom}-${selection.weekThrough}`;
+  if (!uniqueRanges.some(item => item.from === selection.weekFrom && item.through === selection.weekThrough)) {
+    weekSelect.innerHTML += `<option value="${selection.weekFrom}-${selection.weekThrough}">第 ${selection.weekFrom} 至 ${selection.weekThrough} 周</option>`;
+    weekSelect.value = `${selection.weekFrom}-${selection.weekThrough}`;
+  }
+}
+
+function renderSelectedFutureInventoryWorkspace() {
+  const selectedCase = futureInventoryCases(state.bufferTrend)
+    .find(item => item.caseId === state.futureInventorySelection.caseId);
+  if (selectedCase?.bufferTrend) state.bufferTrend = selectedCase.bufferTrend;
+  renderBufferTrendWorkspace(valueOr(selectedCase?.bufferTrend, state.bufferTrend));
+}
+
 function filterBufferTrendWorkspace(trend) {
   if (!trend) return null;
 
@@ -1902,10 +2007,13 @@ function filterBufferTrendWorkspace(trend) {
 }
 
 function renderBufferTrendWorkspace(trend) {
-  const filteredTrend = filterBufferTrendWorkspace(trend);
+  const selection = normalizeFutureInventorySelection(trend);
+  const filteredTrend = filterBufferTrendWorkspace(selection.trend);
   if (!filteredTrend) {
     byId("buffer-trend-kpis").innerHTML = "";
     byId("buffer-trend-chart").innerHTML = `<div class="table-empty"><strong>没有缓冲趋势图数据</strong></div>`;
+    byId("inventory-flow-evidence").innerHTML = `<div class="table-empty"><strong>没有物理库存投影证据</strong></div>`;
+    byId("inventory-flow-chart").innerHTML = `<div class="table-empty"><strong>没有物理库存投影数据</strong></div>`;
     byId("buffer-volatility-chart").innerHTML = `<div class="table-empty"><strong>没有需求波动证据</strong></div>`;
     byId("buffer-trend-heatmap").innerHTML = `<div class="table-empty"><strong>没有缓冲热力格数据</strong></div>`;
     byId("buffer-family-summary-body").innerHTML = emptyRow("没有产品族汇总数据", 6);
@@ -1916,7 +2024,10 @@ function renderBufferTrendWorkspace(trend) {
     return;
   }
 
-  const detail = valueOr(filteredTrend.skuDetails.find(item => item.sku === filteredTrend.selectedSku), filteredTrend.skuDetails[0]);
+  state.bufferTrend = selection.trend;
+  const fullDetail = valueOr(filteredTrend.skuDetails.find(item => item.sku === filteredTrend.selectedSku), filteredTrend.skuDetails[0]);
+  const detail = scopeFutureBufferDetail(fullDetail, selection);
+  renderFutureInventorySelectionControls(selection);
   byId("buffer-trend-case-chip").textContent = caseLabel(filteredTrend.name);
   byId("buffer-trend-kpis").innerHTML = [
     ["红区 SKU", number(filteredTrend.kpis.redSkuCount), "预计穿透红区"],
@@ -1928,12 +2039,13 @@ function renderBufferTrendWorkspace(trend) {
   ].map(([label, value, note]) => `<div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join("");
 
   renderBufferTrendChart(detail);
+  renderInventoryFlowChart(selection.previewCase, detail);
   renderBufferVolatilityChart(detail);
   renderBufferInventoryOptions(filteredTrend, detail);
   renderBufferComparison(filteredTrend);
   renderBufferHeatmap(filteredTrend);
   renderBufferFamilySummary(filteredTrend);
-  renderBufferSkuDetail(detail);
+  renderBufferSkuDetail(detail, selection.previewCase);
 }
 
 function renderBufferInventoryOptions(trend, detail) {
@@ -2091,7 +2203,7 @@ function renderBufferTrendChart(detail) {
 
   const baselineDetail = state.baselineBufferTrend?.skuDetails?.find(item => item.sku === detail.sku);
   const showPreview = state.bufferTrend?.caseId && state.baselineBufferTrend?.caseId && state.bufferTrend.caseId !== state.baselineBufferTrend.caseId;
-  byId("buffer-selected-title").textContent = `${detail.sku} 库存与净流动量趋势`;
+  byId("buffer-selected-title").textContent = `${detail.sku} 三项同步证据`;
   const width = 940;
   const height = 310;
   const left = 62;
@@ -2100,7 +2212,12 @@ function renderBufferTrendChart(detail) {
   const mainHeight = 250;
   const plotWidth = width - left - right;
   const chartSeries = detail.series;
-  const baselineSeries = valueOr(baselineDetail?.series, []);
+  const caseId = valueOr(state.futureInventorySelection.caseId, valueOr(state.bufferTrend?.caseId, "baseline"));
+  const weekFrom = valueOr(chartSeries[0]?.week, state.futureInventorySelection.weekFrom);
+  const weekThrough = valueOr(chartSeries[chartSeries.length - 1]?.week, state.futureInventorySelection.weekThrough);
+  const baselineSeries = valueOr(baselineDetail?.series, []).filter(item =>
+    Number(item.week) >= state.futureInventorySelection.weekFrom &&
+    Number(item.week) <= state.futureInventorySelection.weekThrough);
   const allNetFlowValues = [
     ...chartSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
     ...baselineSeries.flatMap(item => [item.endNetFlowBeforeReplenishment, item.endNetFlowAfterReplenishment]),
@@ -2142,14 +2259,14 @@ function renderBufferTrendChart(detail) {
   const greenTop = chartSeries.map(item => item.topOfGreen).filter(isFiniteChartValue).map(Number);
   const linePoints = (series, valueSelector) => series.map((item, index) => `${x(index)},${y(valueSelector(item))}`).join(" ");
   const baselineLine = showPreview && baselineSeries.length
-    ? `<polyline class="buffer-baseline-line" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准库存水位</title></polyline>`
+    ? `<polyline class="buffer-baseline-line" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准补货后净流位置</title></polyline>`
     : "";
   const previewLine = showPreview
-    ? `<polyline class="buffer-preview-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>预览库存水位</title></polyline>`
+    ? `<polyline class="buffer-preview-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>预览补货后净流位置</title></polyline>`
     : "";
   const currentLine = showPreview
     ? ""
-    : `<polyline class="buffer-inventory-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>预计库存水位</title></polyline>`;
+    : `<polyline class="buffer-inventory-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>补货后净流位置</title></polyline>`;
   const netFlowLine = `<polyline class="buffer-net-flow-line" points="${linePoints(chartSeries, item => item.endNetFlowBeforeReplenishment)}"><title>净流动量位置</title></polyline>`;
   const targetDots = chartSeries.map((item, index) => isFiniteChartValue(item.targetInventory)
     ? `<circle class="target-inventory-dot" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${item.periodStartDate} 目标库存：${number(item.targetInventory)}</title></circle>`
@@ -2163,7 +2280,7 @@ function renderBufferTrendChart(detail) {
   const monthLabels = chartSeries.map((item, index) => `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
 
   byId("buffer-trend-chart").innerHTML = `
-    <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${detail.sku} 动态红黄绿缓冲带与库存趋势">
+    <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 动态红黄绿缓冲带与净流位置" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
       <rect class="buffer-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${mainHeight}"></rect>
       <text class="axis-title vertical" transform="translate(16 ${top + mainHeight / 2}) rotate(-90)">缓冲区 / 净流动量</text>
       ${greenTop.length ? `<text class="axis-label" x="${left - 8}" y="${y(Math.max(...greenTop))}">${number(Math.max(...greenTop))}</text>` : ""}
@@ -2188,9 +2305,140 @@ function renderBufferTrendChart(detail) {
       <span><i class="zone green"></i>绿区</span>
       <span><i class="line net-flow"></i>净流动量位置</span>
       ${showPreview
-        ? `<span><i class="line baseline"></i>基准库存水位</span><span><i class="line preview"></i>预览库存水位</span>`
-        : `<span><i class="line inventory"></i>预计库存水位</span>`}
+        ? `<span><i class="line baseline"></i>基准补货后净流</span><span><i class="line preview"></i>预览补货后净流</span>`
+        : `<span><i class="line inventory"></i>补货后净流位置</span>`}
       <span><i class="dot target"></i>目标库存</span>
+    </div>`;
+}
+
+function renderInventoryFlowChart(previewCase, detail) {
+  const flow = previewCase?.inventoryFlow;
+  const metricEvidence = valueOr(previewCase?.scenarioMetricEvidence, []);
+  const isLegacyReference = metricEvidence.some(item => item.source === "LegacyReference");
+  const caseId = valueOr(previewCase?.caseId, valueOr(state.futureInventorySelection.caseId, "baseline"));
+  const baselineSnapshotId = valueOr(
+    flow?.baselineSnapshotId,
+    valueOr(metricEvidence.find(item => item.baselineSnapshotId)?.baselineSnapshotId, "未关联冻结版本"));
+  const traceSource = valueOr(
+    metricEvidence.find(item => item.source)?.source,
+    valueOr(flow?.trace?.[0]?.stage, "等待后端投影"));
+  const statusText = flow?.status === "Complete" ? "证据完整" : "证据缺失";
+  const statusClassName = flow?.status === "Complete" ? "is-valid" : "is-invalid";
+  const summary = flow?.summary;
+  byId("inventory-flow-evidence").innerHTML = isLegacyReference
+    ? `
+      <span class="status-chip is-warning">历史兼容记录</span>
+      <span>旧记录没有物理库存投影，物理指标不展示</span>
+      <span>净流位置证据仍可查看</span>`
+    : `
+      <span class="status-chip ${statusClassName}">${statusText}</span>
+      <span>冻结版本：${escapeHtml(baselineSnapshotId)}</span>
+      <span>追踪来源：${escapeHtml(traceSource)}</span>
+      ${flow?.status === "Complete" && summary ? `
+        <span class="physical-summary-metric">期末现有金额：${money(summary.endingInventoryValue)}</span>
+        <span class="physical-summary-metric">期末积压：${number(summary.endingBacklog)}</span>
+        <span class="physical-summary-metric">准时满足率：${summary.onTimeServicePercent === null ? "不适用" : percent(summary.onTimeServicePercent)}</span>` : ""}`;
+
+  if (!detail || valueOr(detail.series, []).length === 0) {
+    byId("inventory-flow-chart").innerHTML = `<div class="table-empty"><strong>没有选中 SKU 的物理库存范围</strong></div>`;
+    return;
+  }
+
+  if (!flow || flow.status !== "Complete" || isLegacyReference) {
+    const issueText = isLegacyReference
+      ? "历史兼容记录未保存物理库存投影"
+      : valueOr(flow?.issues, []).length
+        ? flow.issues.map(item => escapeHtml(item.reason)).join("；")
+        : "后端物理库存证据缺失";
+    byId("inventory-flow-chart").innerHTML = `
+      <div class="inventory-flow-empty" data-case-id="${escapeHtml(caseId)}">
+        <strong>${isLegacyReference ? "历史兼容记录" : "物理库存不作图"}</strong>
+        <span>${issueText}</span>
+      </div>`;
+    return;
+  }
+
+  const width = 940;
+  const height = 270;
+  const left = 62;
+  const right = 62;
+  const top = 24;
+  const plotHeight = 190;
+  const plotBottom = top + plotHeight;
+  const plotWidth = width - left - right;
+  const domain = detail.series.map((item, index) => ({
+    index,
+    week: Number(item.week),
+    periodStartDate: item.periodStartDate,
+    point: valueOr(flow.points, []).find(point => point.sku === detail.sku && Number(point.week) === Number(item.week)),
+  }));
+  const weekFrom = valueOr(domain[0]?.week, state.futureInventorySelection.weekFrom);
+  const weekThrough = valueOr(domain[domain.length - 1]?.week, state.futureInventorySelection.weekThrough);
+  const x = index => left + index * plotWidth / Math.max(1, domain.length - 1);
+  const onHandValues = domain
+    .map(item => item.point?.endingOnHand)
+    .filter(isFiniteChartValue)
+    .map(Number);
+  const eventFields = [
+    { field: "frozenReceiptQuantity", cssClass: "physical-frozen-receipt", label: "冻结确认到货" },
+    { field: "simulatedReceiptQuantity", cssClass: "physical-simulated-receipt", label: "模拟到货" },
+    { field: "prebuildReceiptQuantity", cssClass: "physical-prebuild-receipt", label: "提前建库" },
+    { field: "endingBacklog", cssClass: "physical-ending-backlog", label: "期末积压" },
+  ];
+  const eventValues = domain.flatMap(item => eventFields
+    .map(config => item.point?.[config.field])
+    .filter(isFiniteChartValue)
+    .map(Number));
+  const onHandMaximum = Math.max(1, ...onHandValues) * 1.08;
+  const eventMaximum = Math.max(1, ...eventValues) * 1.12;
+  const yOnHand = value => top + (onHandMaximum - Number(value)) * plotHeight / onHandMaximum;
+  const yEvent = value => top + (eventMaximum - Number(value)) * plotHeight / eventMaximum;
+  const validPhysicalPoint = item => item.point && isFiniteChartValue(item.point.endingOnHand);
+  const physicalSegments = contiguousEvidenceSegments(domain, validPhysicalPoint);
+  const onHandPaths = physicalSegments.map(segment => {
+    if (segment.length < 2) return "";
+    const upperPoints = segment.map(item => ({ x: x(item.index), y: yOnHand(item.point.endingOnHand) }));
+    const lowerPoints = segment.map(item => ({ x: x(item.index), y: plotBottom }));
+    return `
+      <path class="physical-on-hand-area" data-field="endingOnHand" d="${buildLinearAreaPath(lowerPoints, upperPoints)}"></path>
+      <path class="physical-on-hand-line" data-field="endingOnHand" data-week-from="${segment[0].week}" data-week-through="${segment[segment.length - 1].week}" d="${buildMonotonePath(upperPoints)}"></path>`;
+  }).join("");
+  const onHandMarkers = domain.filter(validPhysicalPoint).map(item =>
+    `<circle class="physical-on-hand-marker" data-field="endingOnHand" cx="${x(item.index)}" cy="${yOnHand(item.point.endingOnHand)}" r="3"><title>第 ${item.week} 周期末现有量：${number(item.point.endingOnHand)}</title></circle>`).join("");
+  const barWidth = Math.max(3, Math.min(11, plotWidth / Math.max(1, domain.length) / 6));
+  const eventBars = domain.flatMap(item => eventFields.map((config, fieldIndex) => {
+    const value = item.point?.[config.field];
+    if (!isFiniteChartValue(value)) return "";
+    const barX = x(item.index) + (fieldIndex - 1.5) * (barWidth + 1);
+    const barY = yEvent(value);
+    return `<rect class="${config.cssClass}" data-field="${config.field}" x="${barX}" y="${barY}" width="${barWidth}" height="${Math.max(0, plotBottom - barY)}"><title>第 ${item.week} 周${config.label}：${number(value)}</title></rect>`;
+  })).join("");
+  const gaps = domain.filter(item => !validPhysicalPoint(item)).map(item => `
+    <g class="physical-evidence-gap" data-week="${item.week}">
+      <line x1="${x(item.index)}" y1="${top}" x2="${x(item.index)}" y2="${plotBottom}"></line>
+      <text x="${x(item.index)}" y="${top + 12}">第 ${item.week} 周证据缺口</text>
+    </g>`).join("");
+  const dateLabels = domain.map(item =>
+    `<text class="buffer-week-label" x="${x(item.index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
+
+  byId("inventory-flow-chart").innerHTML = `
+    <svg class="inventory-flow-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 物理库存投影" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
+      <rect class="inventory-flow-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"></rect>
+      <text class="axis-title vertical" data-axis="physical-on-hand" transform="translate(16 ${top + plotHeight / 2}) rotate(-90)">期末现有量</text>
+      <text class="axis-title vertical right" data-axis="physical-events" transform="translate(${width - 12} ${top + plotHeight / 2}) rotate(90)">到货 / 积压</text>
+      <line class="axis-line" x1="${left}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}"></line>
+      ${eventBars}
+      ${onHandPaths}
+      ${onHandMarkers}
+      ${gaps}
+      ${dateLabels}
+    </svg>
+    <div class="buffer-chart-legend">
+      <span><i class="area physical-on-hand"></i>期末现有量</span>
+      <span><i class="bar frozen-receipt"></i>冻结确认到货</span>
+      <span><i class="bar simulated-receipt"></i>模拟到货</span>
+      <span><i class="bar prebuild-receipt"></i>提前建库</span>
+      <span><i class="bar ending-backlog"></i>期末积压</span>
     </div>`;
 }
 
@@ -2209,6 +2457,9 @@ function renderBufferVolatilityChart(detail) {
   const plotBottom = top + plotHeight;
   const plotWidth = width - left - right;
   const chartSeries = detail.series;
+  const caseId = valueOr(state.futureInventorySelection.caseId, valueOr(state.bufferTrend?.caseId, "baseline"));
+  const weekFrom = valueOr(chartSeries[0]?.week, state.futureInventorySelection.weekFrom);
+  const weekThrough = valueOr(chartSeries[chartSeries.length - 1]?.week, state.futureInventorySelection.weekThrough);
   const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
   const chartPoints = chartSeries.map((item, index) => ({ item, index }));
   const demandSegments = contiguousEvidenceSegments(
@@ -2245,7 +2496,7 @@ function renderBufferVolatilityChart(detail) {
     `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
 
   byId("buffer-volatility-chart").innerHTML = `
-    <svg class="buffer-volatility-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${detail.sku} 需求波动图">
+    <svg class="buffer-volatility-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 需求波动图" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
       <rect class="buffer-volatility-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"></rect>
       <text class="axis-title vertical" transform="translate(16 ${top + plotHeight / 2}) rotate(-90)">计划需求</text>
       <line class="axis-line" x1="${left}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}"></line>
@@ -2324,7 +2575,7 @@ function renderBufferFamilySummary(trend) {
     : emptyRow("没有产品族汇总数据", 6);
 }
 
-function renderBufferSkuDetail(detail) {
+function renderBufferSkuDetail(detail, previewCase = null) {
   if (!detail) {
     byId("buffer-sku-metadata").innerHTML = "";
     byId("buffer-trend-body").innerHTML = emptyRow("没有缓冲趋势数据", 10);
@@ -2375,14 +2626,22 @@ function renderBufferSkuDetail(detail) {
     ])).join("")
     : emptyRow("没有补货订单", 4);
 
-  byId("buffer-trace-list").innerHTML = detail.traces.length
+  const whiteBoxCaseId = valueOr(previewCase?.caseId, valueOr(state.futureInventorySelection.caseId, "baseline"));
+  const whiteBoxRecordId = `${whiteBoxCaseId}:${detail.sku}`;
+  const whiteBoxLink = `
+    <div class="diagnostic-item white-box-record-link">
+      <strong>白盒记录</strong>
+      <span><a href="#trace-panel" data-white-box-record="${escapeHtml(whiteBoxRecordId)}">查看对应计算记录</a></span>
+      <small>${escapeHtml(whiteBoxRecordId)}</small>
+    </div>`;
+  byId("buffer-trace-list").innerHTML = whiteBoxLink + (detail.traces.length
     ? detail.traces.slice(0, 8).map(item => `
       <div class="diagnostic-item">
         <strong>第 ${item.week} 周</strong>
         <span>${escapeHtml(businessEvidenceLabel(item.explanation))}</span>
       </div>
     `).join("")
-    : `<div class="table-empty"><strong>没有计算追踪</strong></div>`;
+    : `<div class="table-empty"><strong>没有计算追踪</strong></div>`);
 }
 
 function renderSingleSkuSimulation(detail) {
@@ -2457,6 +2716,16 @@ function renderPreviewBufferTrend(result) {
   state.baselineBufferTrend = result.baseline.bufferTrend;
   state.bufferTrend = result.scenario.bufferTrend;
   state.selectedBufferSku = valueOr(state.bufferTrend?.selectedSku, state.selectedBufferSku);
+  const selectedDetail = valueOr(
+    state.bufferTrend?.skuDetails?.find(item => item.sku === state.selectedBufferSku),
+    state.bufferTrend?.skuDetails?.[0]);
+  const selectedWeeks = valueOr(selectedDetail?.series, []).map(item => Number(item.week)).filter(Number.isFinite);
+  state.futureInventorySelection = {
+    caseId: valueOr(result.scenario.caseId, "scenario"),
+    sku: state.selectedBufferSku,
+    weekFrom: selectedWeeks.length ? Math.min(...selectedWeeks) : 1,
+    weekThrough: selectedWeeks.length ? Math.max(...selectedWeeks) : null,
+  };
   renderBufferTrendWorkspace(state.bufferTrend);
 }
 
@@ -5727,6 +5996,7 @@ document.addEventListener("click", event => {
   const button = event.target.closest("[data-buffer-sku]");
   if (!button || !state.bufferTrend) return;
   state.selectedBufferSku = button.dataset.bufferSku;
+  state.futureInventorySelection.sku = button.dataset.bufferSku;
   renderBufferTrendWorkspace(state.bufferTrend);
 });
 
@@ -5738,8 +6008,24 @@ document.addEventListener("click", event => {
   const firstSku = trend?.skuDetails.find(item => item.family === family)?.sku;
   if (firstSku) {
     state.selectedBufferSku = firstSku;
+    state.futureInventorySelection.sku = firstSku;
     renderBufferTrendWorkspace(state.bufferTrend);
   }
+});
+
+byId("buffer-case-select").addEventListener("change", event => {
+  state.futureInventorySelection.caseId = event.target.value;
+  state.futureInventorySelection.weekFrom = 1;
+  state.futureInventorySelection.weekThrough = null;
+  renderSelectedFutureInventoryWorkspace();
+});
+
+byId("buffer-week-range-select").addEventListener("change", event => {
+  const [weekFrom, weekThrough] = event.target.value.split("-").map(Number);
+  if (!Number.isFinite(weekFrom) || !Number.isFinite(weekThrough)) return;
+  state.futureInventorySelection.weekFrom = weekFrom;
+  state.futureInventorySelection.weekThrough = weekThrough;
+  renderSelectedFutureInventoryWorkspace();
 });
 
 document.addEventListener("click", event => {

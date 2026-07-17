@@ -779,11 +779,29 @@
                             <div class="buffer-planning-layout">
                                 <aside id="buffer-inventory-options" class="buffer-inventory-options" aria-label="库存选项"></aside>
                                 <div class="buffer-chart-area">
-                                    <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
-                                    <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="需求波动图"></div>
+                                    <div class="buffer-evidence-selection" aria-label="库存证据选择">
+                                        <label><span>方案</span><select id="buffer-case-select"><option value="scenario">响应方案</option><option value="baseline">基准方案</option></select></label>
+                                        <label><span>周段</span><select id="buffer-week-range-select"><option value="1-12">第 1 至 12 周</option></select></label>
+                                        <small>同一选择同步更新三项证据</small>
+                                    </div>
+                                    <section class="buffer-evidence-panel" aria-labelledby="buffer-nfp-heading">
+                                        <div class="buffer-evidence-heading"><div><span>缓冲信号</span><h3 id="buffer-nfp-heading">净流位置</h3></div><small>后端 DDMRP 趋势</small></div>
+                                        <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
+                                    </section>
+                                    <section class="buffer-evidence-panel" aria-labelledby="inventory-flow-heading">
+                                        <div class="buffer-evidence-heading"><div><span>库存守恒</span><h3 id="inventory-flow-heading">物理库存</h3></div><small>仅绘制后端投影</small></div>
+                                        <div id="inventory-flow-evidence" class="inventory-flow-evidence" aria-live="polite"></div>
+                                        <div id="inventory-flow-chart" class="inventory-flow-chart" aria-label="物理库存投影图"></div>
+                                    </section>
+                                    <section class="buffer-evidence-panel" aria-labelledby="buffer-volatility-heading">
+                                        <div class="buffer-evidence-heading"><div><span>需求事实</span><h3 id="buffer-volatility-heading">需求波动</h3></div><small>独立于缓冲区域</small></div>
+                                        <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="需求波动图"></div>
+                                    </section>
                                     <div class="buffer-static-legend">
-                                        <div class="buffer-static-legend-group"><strong>动态红黄绿缓冲带</strong><span>净流动量位置</span><span>预计库存水位</span><span>目标库存</span></div>
+                                        <div class="buffer-static-legend-group"><strong>动态红黄绿缓冲带</strong><span>补货前净流动量位置</span><span>补货后净流位置</span><span>目标库存</span></div>
+                                        <div class="buffer-static-legend-group"><strong>物理库存</strong><span>期末现有量</span><span>冻结确认到货</span><span>模拟到货</span><span>提前建库</span><span>期末积压</span></div>
                                         <div class="buffer-static-legend-group"><strong>需求波动</strong><span>计划需求</span><span>后端尖峰阈值</span></div>
+                                        <small class="buffer-terminology-note">“预计库存水位”是旧称；本页已更正为“补货后净流位置”，物理库存另图展示。</small>
                                     </div>
                                 </div>
                             </div>

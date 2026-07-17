@@ -90,6 +90,7 @@ var tests = new (string Name, Action Run)[]
     ("History review request race fixture runs in the standard harness", TestHistoryReviewRequestRaceFixtureRunsInStandardHarness),
     ("History visual renderers use backend evidence without frontend formulas", TestHistoryVisualRenderersUseBackendEvidence),
     ("Future buffer charts use backend sizing and separate volatility", TestFutureBufferChartsUseBackendSizingAndSeparateVolatility),
+    ("Future inventory flow charts separate NFP physical stock and volatility", TestFutureInventoryFlowChartsSeparatePhysicalEvidence),
     ("Five-stage business views translate internal codes without mojibake", TestBusinessViewsTranslateInternalCodesWithoutMojibake),
     ("Five-stage business views localize ordinary unit tokens", TestBusinessViewsLocalizeOrdinaryUnitTokens),
     ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
@@ -4872,6 +4873,80 @@ static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
         "static page should not retain the old demand-pulse label");
 }
 
+static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var styles = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "css", "site.css"));
+
+    foreach (var id in new[]
+    {
+        "buffer-trend-chart",
+        "inventory-flow-evidence",
+        "inventory-flow-chart",
+        "buffer-volatility-chart",
+    })
+    {
+        AssertEqual(1, page.Split($"id=\"{id}\"", StringSplitOptions.None).Length - 1,
+            $"future inventory evidence host {id}");
+    }
+
+    AssertTrue(page.Contains(">净流位置<", StringComparison.Ordinal),
+        "the NFP panel should have a concise Chinese heading");
+    AssertTrue(page.Contains(">物理库存<", StringComparison.Ordinal),
+        "the physical projection should have a concise Chinese heading");
+    AssertTrue(page.Contains(">需求波动<", StringComparison.Ordinal),
+        "volatility should remain a separate panel");
+    AssertTrue(page.Contains("id=\"buffer-case-select\"", StringComparison.Ordinal)
+        && page.Contains("id=\"buffer-week-range-select\"", StringComparison.Ordinal),
+        "one compact selection strip should expose case and week range controls");
+
+    var workspaceBody = SourceFunctionBody(script, "renderBufferTrendWorkspace");
+    AssertTrue(workspaceBody.Contains("renderBufferTrendChart", StringComparison.Ordinal)
+        && workspaceBody.Contains("renderInventoryFlowChart", StringComparison.Ordinal)
+        && workspaceBody.Contains("renderBufferVolatilityChart", StringComparison.Ordinal),
+        "one workspace render should synchronize NFP physical stock and volatility");
+
+    var physicalBody = SourceFunctionBody(script, "renderInventoryFlowChart");
+    foreach (var backendField in new[]
+    {
+        "endingOnHand",
+        "frozenReceiptQuantity",
+        "simulatedReceiptQuantity",
+        "prebuildReceiptQuantity",
+        "endingBacklog",
+    })
+    {
+        AssertTrue(physicalBody.Contains(backendField, StringComparison.Ordinal),
+            $"physical renderer should map backend field {backendField}");
+    }
+    foreach (var forbidden in new[]
+    {
+        "openingOnHand +",
+        "openingOnHand -",
+        "endingOnHand =",
+        "demand -",
+        "totalFulfilledDemand",
+    })
+    {
+        AssertTrue(!physicalBody.Contains(forbidden, StringComparison.Ordinal),
+            $"JavaScript must not reconstruct physical conservation with {forbidden}");
+    }
+
+    AssertTrue(styles.Contains(".inventory-flow-chart", StringComparison.Ordinal)
+        && styles.Contains(".physical-on-hand-line", StringComparison.Ordinal)
+        && styles.Contains(".physical-frozen-receipt", StringComparison.Ordinal)
+        && styles.Contains(".physical-simulated-receipt", StringComparison.Ordinal)
+        && styles.Contains(".physical-prebuild-receipt", StringComparison.Ordinal)
+        && styles.Contains(".physical-ending-backlog", StringComparison.Ordinal),
+        "physical evidence should have fixed field-to-color styles");
+
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(12));
+    RunFutureInventoryFlowChartFixture(root, preview);
+}
+
 static void RunHistoryBufferRendererFixture(
     string root,
     HistoryReviewWorkspace history,
@@ -4972,6 +5047,54 @@ static void RunFutureBufferChartFixture(string root, BufferTrendWorkspaceResult 
         }
         AssertTrue(output.Contains("future buffer chart fixture groups passed", StringComparison.Ordinal),
             $"Node future-buffer chart fixture did not report completion: {output}");
+    }
+    finally
+    {
+        File.Delete(dtoPath);
+    }
+}
+
+static void RunFutureInventoryFlowChartFixture(string root, ScenarioRunPreviewResult preview)
+{
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "future-inventory-flow-charts.fixture.mjs");
+    var dtoPath = Path.Combine(Path.GetTempPath(), $"future-inventory-flow-{Guid.NewGuid():N}.json");
+    File.WriteAllText(
+        dtoPath,
+        JsonSerializer.Serialize(preview, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+    try
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = FindNodeExecutable(),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add(fixturePath);
+        process.StartInfo.ArgumentList.Add(dtoPath);
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Node future inventory-flow chart fixture timed out after 30 seconds");
+        }
+        Task.WaitAll(standardOutput, standardError);
+        var output = standardOutput.Result;
+        var error = standardError.Result;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Node future inventory-flow chart fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+        }
+        AssertTrue(output.Contains("future inventory flow chart fixture groups passed", StringComparison.Ordinal),
+            $"Node future inventory-flow chart fixture did not report completion: {output}");
     }
     finally
     {
