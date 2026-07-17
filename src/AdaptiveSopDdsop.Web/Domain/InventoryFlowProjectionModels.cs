@@ -30,7 +30,11 @@ public sealed record InventoryReceiptLogEntry(
     decimal OutsideHorizonQuantity,
     string EvidenceStatus,
     string EvidenceSource,
-    string Explanation);
+    string Explanation,
+    string? Supplier = null,
+    string? MaterialFamily = null,
+    decimal? CapacityLimit = null,
+    decimal RoundingResidual = 0m);
 
 public sealed record InventoryFlowSkuSummary(
     string Sku,

@@ -138,6 +138,16 @@ var tests = new (string Name, Action Run)[]
     ("Inventory flow scopes demand before ledger", TestInventoryFlowScopesDemandBeforeLedger),
     ("Zero new demand service is not applicable", TestZeroDemandServiceIsNotApplicable),
     ("Projection beyond coverage is evidence missing", TestProjectionBeyondCoverageIsEvidenceMissing),
+    ("Supplier capacity constrains simulated receipts only", TestSupplierCapacityConstrainsSimulatedOnly),
+    ("Supplier capacity allocates proportionally", TestSupplierCapacityAllocatesProportionally),
+    ("Supplier capacity assigns rounding residual deterministically", TestSupplierCapacityAssignsRoundingResidualDeterministically),
+    ("Supplier capacity rounding never overallocates a source", TestSupplierCapacityRoundingNeverOverallocatesSource),
+    ("Deferred simulated receipt carries forward", TestDeferredSimulatedReceiptCarriesForward),
+    ("Frozen receipts remain fixed under capacity loss", TestFrozenReceiptsRemainFixed),
+    ("Prebuild remains unchanged under supplier limit", TestPrebuildRemainsUnchanged),
+    ("Missing constrained supply mapping is not unlimited", TestMissingConstrainedSupplyMappingIsEvidenceMissing),
+    ("Missing constrained capacity week is not unlimited", TestMissingConstrainedCapacityWeekIsEvidenceMissing),
+    ("Explicit not-applicable supplier capacity is unbounded", TestExplicitNotApplicableSupplierCapacityIsUnbounded),
     ("Inventory flow fields preserve legacy scenario JSON", TestInventoryFlowFieldsPreserveLegacyScenarioJson),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
@@ -6420,6 +6430,367 @@ static void TestProjectionBeyondCoverageIsEvidenceMissing()
         "coverage failure should expose the blocking planning evidence issue");
 }
 
+static void TestSupplierCapacityConstrainsSimulatedOnly()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7,
+        frozenReceipts: new[] { ("REC-CAPACITY-FROZEN", 2, 7m, "ConfirmedInTransit") });
+    var source = data.SupplierItemSources.Single();
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 5m, 50m, "TopOfGreen");
+    var prebuild = new PrebuildCampaign("PREBUILD-CAPACITY", sku.Sku, 2, 2, 2, 4m);
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 3m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-simulated-only",
+        new[] { sku },
+        data.Demand,
+        new[] { order },
+        new[] { prebuild },
+        new[] { limit });
+
+    AssertEqual("Complete", result.Status, "supplier-capacity projection status");
+    AssertEqual(7m, result.Points.Single(item => item.Week == 2).FrozenReceiptQuantity,
+        "supplier limit must not reduce a frozen receipt");
+    AssertEqual(4m, result.Points.Single(item => item.Week == 2).PrebuildReceiptQuantity,
+        "supplier limit must not reduce prebuild");
+    AssertEqual(3m, result.Points.Single(item => item.Week == 2).SimulatedReceiptQuantity,
+        "supplier limit constrains only the simulated receipt in the capped week");
+    AssertEqual(2m, result.Points.Single(item => item.Week == 3).SimulatedReceiptQuantity,
+        "deferred simulated receipt arrives in the next available week");
+
+    var frozenLog = result.ReceiptLog.Single(item => item.SourceKind == "ConfirmedInTransit");
+    var prebuildLog = result.ReceiptLog.Single(item => item.SourceKind == "PrebuildResponse");
+    var simulatedLog = result.ReceiptLog.Single(item =>
+        item.SourceKind == "SimulatedReplenishment" && item.ArrivalWeek == 2);
+    AssertEqual(7m, frozenLog.AcceptedQuantity, "frozen source-log accepted quantity");
+    AssertEqual(0m, frozenLog.DeferredQuantity, "frozen source-log deferred quantity");
+    AssertEqual(4m, prebuildLog.AcceptedQuantity, "prebuild source-log accepted quantity");
+    AssertEqual(0m, prebuildLog.DeferredQuantity, "prebuild source-log deferred quantity");
+    AssertEqual(3m, simulatedLog.AcceptedQuantity, "simulated source-log capped quantity");
+    AssertEqual(2m, simulatedLog.DeferredQuantity, "simulated source-log deferred quantity");
+}
+
+static void TestSupplierCapacityAllocatesProportionally()
+{
+    var (data, skus) = BuildSharedSupplierInventoryFlowFixture(2, 3, 100m);
+    var source = data.SupplierItemSources.First();
+    var orders = new[]
+    {
+        new ProjectedReplenishmentOrder(skus[0].Sku, 1, 80m, 800m, "TopOfGreen"),
+        new ProjectedReplenishmentOrder(skus[1].Sku, 1, 20m, 200m, "TopOfGreen")
+    };
+    var limits = new[]
+    {
+        new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 50m),
+        new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 3, 3, 100m)
+    };
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-proportional",
+        skus,
+        data.Demand,
+        orders,
+        Array.Empty<PrebuildCampaign>(),
+        limits);
+
+    var first = result.ReceiptLog.Single(item =>
+        item.SourceKind == "SimulatedReplenishment" && item.Sku == skus[0].Sku && item.ArrivalWeek == 2);
+    var second = result.ReceiptLog.Single(item =>
+        item.SourceKind == "SimulatedReplenishment" && item.Sku == skus[1].Sku && item.ArrivalWeek == 2);
+    AssertEqual(40m, first.AcceptedQuantity, "80-share accepted quantity under capacity 50");
+    AssertEqual(10m, second.AcceptedQuantity, "20-share accepted quantity under capacity 50");
+    AssertEqual(40m, first.DeferredQuantity, "80-share deferred quantity under capacity 50");
+    AssertEqual(10m, second.DeferredQuantity, "20-share deferred quantity under capacity 50");
+    AssertEqual(50m, result.Points.Where(item => item.Week == 2).Sum(item => item.SimulatedReceiptQuantity),
+        "same supplier/material/arrival group must conserve weekly capacity");
+    AssertTrue(result.Trace.Any(item =>
+            item.Stage == "SupplierCapacityAllocation" &&
+            item.Week == 2 &&
+            item.Explanation.Contains(source.Supplier, StringComparison.Ordinal) &&
+            item.Explanation.Contains(source.MaterialFamily, StringComparison.Ordinal) &&
+            item.Explanation.Contains("capacity=50", StringComparison.Ordinal)),
+        "proportional allocation should retain supplier, material family and capacity trace");
+}
+
+static void TestSupplierCapacityAssignsRoundingResidualDeterministically()
+{
+    var (data, skus) = BuildSharedSupplierInventoryFlowFixture(2, 2, 10m);
+    var source = data.SupplierItemSources.First();
+    var orders = new[]
+    {
+        new ProjectedReplenishmentOrder(skus[1].Sku, 1, 1m, 10m, "TopOfGreen"),
+        new ProjectedReplenishmentOrder(skus[0].Sku, 1, 1m, 10m, "TopOfGreen")
+    };
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 1m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-rounding",
+        skus,
+        data.Demand,
+        orders,
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    var allocated = result.ReceiptLog
+        .Where(item => item.SourceKind == "SimulatedReplenishment" && item.ArrivalWeek == 2)
+        .OrderBy(item => item.SourceId, StringComparer.Ordinal)
+        .ToList();
+    AssertEqual(0m, allocated[0].AcceptedQuantity, "first stable source receives rounded proportional share");
+    AssertEqual(1m, allocated[1].AcceptedQuantity, "last stable source receives the final residual");
+    AssertEqual(1m, allocated.Sum(item => item.AcceptedQuantity), "rounded allocation must equal available capacity");
+    AssertTrue(result.Trace.Any(item =>
+            item.Stage == "SupplierCapacityRounding" &&
+            item.SourceId == allocated[1].SourceId &&
+            item.Explanation.Contains("residual=1", StringComparison.Ordinal)),
+        "rounding residual assignment must be stable and traceable");
+}
+
+static void TestSupplierCapacityRoundingNeverOverallocatesSource()
+{
+    var (data, skus) = BuildSharedSupplierInventoryFlowFixture(7, 2, 250m);
+    var source = data.SupplierItemSources.First();
+    var requested = new[] { 35m, 20m, 23m, 2m, 93m, 23m, 1m };
+    var stableSkus = skus
+        .OrderBy(item => $"SIM-{item.Sku}-W", StringComparer.Ordinal)
+        .ToList();
+    var orders = stableSkus
+        .Select((sku, index) => new ProjectedReplenishmentOrder(
+            sku.Sku,
+            1,
+            requested[index],
+            requested[index] * 10m,
+            "TopOfGreen"))
+        .ToList();
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 191m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-rounding-bounds",
+        skus,
+        data.Demand,
+        orders,
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    var allocated = result.ReceiptLog
+        .Where(item => item.SourceKind == "SimulatedReplenishment" && item.ArrivalWeek == 2)
+        .OrderBy(item => item.SourceId, StringComparer.Ordinal)
+        .ToList();
+    AssertTrue(allocated.Select((item, index) => item.AcceptedQuantity <= requested[index]).All(item => item),
+        "rounding residual must never accept more than a source requested");
+    AssertTrue(allocated.All(item => item.AcceptedQuantity >= 0m && item.DeferredQuantity >= 0m),
+        "rounding residual must keep accepted and deferred quantities nonnegative");
+    AssertEqual(191m, allocated.Sum(item => item.AcceptedQuantity),
+        "bounded rounded allocations must still conserve available capacity");
+}
+
+static void TestDeferredSimulatedReceiptCarriesForward()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7);
+    var source = data.SupplierItemSources.Single();
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 10m, 100m, "TopOfGreen");
+    var limits = new[]
+    {
+        new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 4m),
+        new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 3, 3, 4m)
+    };
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-carry",
+        new[] { sku },
+        data.Demand,
+        new[] { order },
+        Array.Empty<PrebuildCampaign>(),
+        limits);
+
+    var simulated = result.ReceiptLog
+        .Where(item => item.SourceKind == "SimulatedReplenishment")
+        .OrderBy(item => item.ArrivalWeek)
+        .ToList();
+    AssertEqual(3, simulated.Count, "deferred source-log row count including horizon exit");
+    AssertEqual(4m, simulated[0].AcceptedQuantity, "initial constrained arrival accepted quantity");
+    AssertEqual(6m, simulated[0].DeferredQuantity, "initial constrained arrival deferred quantity");
+    AssertEqual(4m, simulated[1].AcceptedQuantity, "next-week carried arrival accepted quantity");
+    AssertEqual(2m, simulated[1].DeferredQuantity, "next-week carried arrival deferred quantity");
+    AssertEqual(4, simulated[2].ArrivalWeek, "unaccepted carry retains next authoritative attempt week");
+    AssertEqual(0m, simulated[2].AcceptedQuantity, "outside-horizon carry is not accepted inside projection");
+    AssertEqual(2m, simulated[2].OutsideHorizonQuantity, "outside-horizon carry quantity");
+    AssertEqual("OutsideHorizon", simulated[2].EvidenceStatus, "outside-horizon carry evidence status");
+    AssertEqual(4m, result.Points.Single(item => item.Week == 2).SimulatedReceiptQuantity,
+        "week two simulated receipt from accepted allocation");
+    AssertEqual(4m, result.Points.Single(item => item.Week == 3).SimulatedReceiptQuantity,
+        "week three simulated receipt from carry allocation");
+    AssertEqual(2m, result.Summary!.OutsideHorizonQuantity, "outside-horizon carry summary quantity");
+}
+
+static void TestFrozenReceiptsRemainFixed()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        frozenReceipts: new[] { ("REC-FIXED-CAPACITY", 2, 9m, "ConfirmedOpenSupply") });
+    var source = data.SupplierItemSources.Single();
+    var zeroLimit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 0m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "frozen-receipt-fixed",
+        new[] { sku },
+        data.Demand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        Array.Empty<PrebuildCampaign>(),
+        new[] { zeroLimit });
+
+    var receipt = result.ReceiptLog.Single(item => item.SourceKind == "ConfirmedOpenSupply");
+    AssertEqual(2, receipt.ArrivalWeek, "frozen receipt authoritative week");
+    AssertEqual(9m, receipt.AcceptedQuantity, "frozen receipt must not be reduced by zero capacity");
+    AssertEqual(0m, receipt.DeferredQuantity, "frozen receipt must not be deferred by zero capacity");
+    AssertEqual(9m, result.Points.Single(item => item.Week == 2).FrozenReceiptQuantity,
+        "frozen receipt remains in its fixed physical bucket");
+}
+
+static void TestPrebuildRemainsUnchanged()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m);
+    var source = data.SupplierItemSources.Single();
+    var zeroLimit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 0m);
+    var prebuild = new PrebuildCampaign("PREBUILD-FIXED-CAPACITY", sku.Sku, 2, 2, 2, 9m);
+    var outsidePrebuild = new PrebuildCampaign("PREBUILD-OUTSIDE-CAPACITY", sku.Sku, 3, 3, 3, 5m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "prebuild-fixed",
+        new[] { sku },
+        data.Demand,
+        Array.Empty<ProjectedReplenishmentOrder>(),
+        new[] { outsidePrebuild, prebuild },
+        new[] { zeroLimit });
+
+    var receipt = result.ReceiptLog.Single(item => item.SourceId == prebuild.CampaignId);
+    var outsideReceipt = result.ReceiptLog.Single(item => item.SourceId == outsidePrebuild.CampaignId);
+    AssertEqual(2, receipt.ArrivalWeek, "prebuild configured completion week");
+    AssertEqual(9m, receipt.AcceptedQuantity, "prebuild must not be reduced by zero supplier capacity");
+    AssertEqual(0m, receipt.DeferredQuantity, "prebuild must not be deferred by zero supplier capacity");
+    AssertEqual(9m, result.Points.Single(item => item.Week == 2).PrebuildReceiptQuantity,
+        "prebuild remains in its configured physical bucket");
+    AssertEqual(3, outsideReceipt.ArrivalWeek, "outside prebuild retains its configured completion week");
+    AssertEqual(5m, outsideReceipt.OutsideHorizonQuantity, "outside prebuild retains its configured quantity");
+    AssertEqual("Complete", outsideReceipt.EvidenceStatus,
+        "supplier allocation must not relabel prebuild response evidence");
+}
+
+static void TestMissingConstrainedSupplyMappingIsEvidenceMissing()
+{
+    var (complete, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m);
+    var source = complete.SupplierItemSources.Single();
+    var missingMapping = complete with { SupplierItemSources = Array.Empty<SupplierItemSource>() };
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 5m, 50m, "TopOfGreen");
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 3m);
+
+    var result = InventoryFlowProjectionService.Project(
+        missingMapping,
+        "missing-simulated-supply-mapping",
+        new[] { sku },
+        missingMapping.Demand,
+        new[] { order },
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    AssertEqual("EvidenceMissing", result.Status, "missing constrained supply mapping status");
+    AssertEqual(0, result.Points.Count, "missing constrained supply mapping must not fabricate a projection");
+    AssertTrue(result.Issues.Any(item =>
+            item.Scope == "SupplierCapacity" &&
+            item.Sku == sku.Sku &&
+            item.Week == 2 &&
+            item.Reason == "MissingConstrainedSupplyMapping" &&
+            item.BlocksProjection),
+        "missing constrained supply mapping should be a blocking issue");
+}
+
+static void TestMissingConstrainedCapacityWeekIsEvidenceMissing()
+{
+    var (complete, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m);
+    var source = complete.SupplierItemSources.Single();
+    var missingWeek = complete with
+    {
+        SupplierCapacityWindows = complete.SupplierCapacityWindows.Where(item => item.Week != 2).ToList()
+    };
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 5m, 50m, "TopOfGreen");
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 3m);
+
+    var result = InventoryFlowProjectionService.Project(
+        missingWeek,
+        "missing-simulated-capacity-week",
+        new[] { sku },
+        missingWeek.Demand,
+        new[] { order },
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    AssertEqual("EvidenceMissing", result.Status, "missing constrained capacity week status");
+    AssertEqual(0, result.Points.Count, "missing constrained capacity week must not fabricate a projection");
+    AssertTrue(result.Issues.Any(item =>
+            item.Scope == "SupplierCapacity" &&
+            item.Sku == sku.Sku &&
+            item.Week == 2 &&
+            item.Reason == "MissingConstrainedCapacityWeek" &&
+            item.BlocksProjection),
+        "missing constrained capacity week should be a blocking issue");
+}
+
+static void TestExplicitNotApplicableSupplierCapacityIsUnbounded()
+{
+    var (complete, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m);
+    var explicitlyUnbounded = complete with
+    {
+        SupplierCapacityWindows = complete.SupplierCapacityWindows
+            .Select(item => item.Week == 2
+                ? item with { CommittedCapacity = 0m, RiskStatus = "NotApplicable" }
+                : item)
+            .ToList()
+    };
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 25m, 250m, "TopOfGreen");
+
+    var result = InventoryFlowProjectionService.Project(
+        explicitlyUnbounded,
+        "not-applicable-supplier-capacity",
+        new[] { sku },
+        explicitlyUnbounded.Demand,
+        new[] { order },
+        Array.Empty<PrebuildCampaign>(),
+        Array.Empty<SupplierCapacityLimit>());
+
+    var receipt = result.ReceiptLog.Single(item => item.SourceKind == "SimulatedReplenishment");
+    AssertEqual("Complete", result.Status, "explicit not-applicable capacity projection status");
+    AssertEqual(25m, receipt.AcceptedQuantity, "explicit not-applicable source is unbounded");
+    AssertEqual(0m, receipt.DeferredQuantity, "explicit not-applicable source has no capacity deferral");
+    AssertEqual("NotApplicable", receipt.EvidenceStatus, "explicit unbounded source-log evidence status");
+}
+
 static void TestInventoryFlowFieldsPreserveLegacyScenarioJson()
 {
     var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
@@ -6520,6 +6891,69 @@ static (ScenarioWorkspaceDataSet Data, SkuBufferSetting Sku) BuildInventoryFlowF
                 "test opening backlog")
         }
     }, sku);
+}
+
+static (ScenarioWorkspaceDataSet Data, IReadOnlyList<SkuBufferSetting> Skus) BuildSharedSupplierInventoryFlowFixture(
+    int skuCount,
+    int horizonWeeks,
+    decimal weeklyCapacity,
+    string riskStatus = "Green")
+{
+    var (template, firstSku) = BuildInventoryFlowFixture(
+        Enumerable.Repeat(0m, horizonWeeks).ToList(),
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7);
+    var skus = Enumerable.Range(0, skuCount)
+        .Select(index => index == 0
+            ? firstSku
+            : firstSku with
+            {
+                Sku = $"{firstSku.Sku}-{(char)('A' + index)}",
+                Name = $"{firstSku.Name} {index + 1}"
+            })
+        .ToList();
+    var source = template.SupplierItemSources.Single();
+    var parameter = template.DdmrpParameters.Single();
+    var backlog = template.OpeningBacklog!.Single();
+
+    return (template with
+    {
+        Request = template.Request with { SkuFilter = skus.Select(item => item.Sku).ToList() },
+        Skus = skus,
+        Inventory = skus
+            .Select(item => new InventoryPosition(item.Sku, 0m, 0m, 0m))
+            .ToList(),
+        Demand = skus
+            .SelectMany(item => Enumerable.Range(1, horizonWeeks)
+                .Select(week => new WeeklyDemand(item.Sku, week, 0m)))
+            .ToList(),
+        SupplierItemSources = skus
+            .Select(item => new SupplierItemSource(source.Supplier, item.Sku, source.MaterialFamily, source.UnitCost))
+            .ToList(),
+        SupplierCapacityWindows = Enumerable.Range(1, horizonWeeks)
+            .Select(week => new SupplierCapacityWindow(
+                source.Supplier,
+                source.MaterialFamily,
+                week,
+                weeklyCapacity,
+                7,
+                riskStatus))
+            .ToList(),
+        DdmrpParameters = skus
+            .Select(item => parameter with { Sku = item.Sku, Name = item.Name })
+            .ToList(),
+        ConfirmedReceipts = Array.Empty<ConfirmedReceiptEvidence>(),
+        OpeningBacklog = skus
+            .Select(item => backlog with
+            {
+                BacklogId = $"BACKLOG-{item.Sku}",
+                Sku = item.Sku,
+                Quantity = 0m,
+                SourceReference = $"ORDER-{item.Sku}"
+            })
+            .ToList()
+    }, skus);
 }
 
 static void TestScenarioPreviewReturnsComparableResults()
