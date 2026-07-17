@@ -4942,6 +4942,27 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
         && styles.Contains(".physical-ending-backlog", StringComparison.Ordinal),
         "physical evidence should have fixed field-to-color styles");
 
+    var nfpBody = SourceFunctionBody(script, "renderBufferTrendChart");
+    AssertTrue(nfpBody.Contains("data-field=\"endNetFlowBeforeReplenishment\"", StringComparison.Ordinal)
+        && nfpBody.Contains("data-field=\"endNetFlowAfterReplenishment\"", StringComparison.Ordinal)
+        && nfpBody.Contains("data-field=\"targetInventory\"", StringComparison.Ordinal),
+        "NFP lines and target markers should expose explicit backend-field mappings");
+    AssertTrue(styles.Contains(".buffer-net-flow-line { stroke: #111827;", StringComparison.Ordinal),
+        "pre-replenishment NFP should use the fixed black line");
+    AssertTrue(styles.Contains(".buffer-preview-line { stroke: #4f8bd6;", StringComparison.Ordinal)
+        && styles.Contains(".buffer-inventory-line { stroke: #4f8bd6;", StringComparison.Ordinal),
+        "selected post-replenishment NFP should use the fixed blue line");
+    AssertTrue(styles.Contains(".buffer-baseline-line { stroke: #8a939f;", StringComparison.Ordinal),
+        "baseline post-replenishment comparison should use the fixed gray line");
+    AssertTrue(styles.Contains(".target-inventory-dot { fill: #fff;", StringComparison.Ordinal),
+        "target inventory markers should use a white fill");
+    AssertTrue(script.Contains("function whiteBoxTraceRecords(previewCase)", StringComparison.Ordinal)
+        && script.Contains("function focusWhiteBoxTraceRecord(recordKey)", StringComparison.Ordinal)
+        && script.Contains("event.target.closest(\"[data-white-box-record]\")", StringComparison.Ordinal),
+        "white-box links should resolve and focus actual plan trace records through the registered click handler");
+    AssertTrue(!script.Contains("`${whiteBoxCaseId}:${detail.sku}`", StringComparison.Ordinal),
+        "future inventory detail must not invent case:SKU white-box identifiers");
+
     var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
         .Preview(new ScenarioRunPreviewRequest(12));
     RunFutureInventoryFlowChartFixture(root, preview);

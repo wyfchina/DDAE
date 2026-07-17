@@ -24,6 +24,10 @@ function createRuntime(source) {
     if (id && elements.has(id)) return elements.get(id);
     const classes = new Set();
     const attributes = new Map();
+    const listeners = new Map();
+    const dataKey = name => name
+      .replace(/^data-/, "")
+      .replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     const element = {
       id,
       innerHTML: "",
@@ -47,44 +51,88 @@ function createRuntime(source) {
           return selected;
         },
       },
-      setAttribute: (name, value) => attributes.set(name, String(value)),
+      focused: false,
+      scrolledIntoView: false,
+      setAttribute: (name, value) => {
+        attributes.set(name, String(value));
+        if (name.startsWith("data-")) element.dataset[dataKey(name)] = String(value);
+      },
       getAttribute: name => attributes.get(name) ?? null,
       removeAttribute: name => attributes.delete(name),
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(type, handler) {
+        const handlers = listeners.get(type) ?? [];
+        handlers.push(handler);
+        listeners.set(type, handlers);
+      },
+      removeEventListener(type, handler) {
+        listeners.set(type, (listeners.get(type) ?? []).filter(item => item !== handler));
+      },
+      dispatchEvent(event) {
+        event.target ??= element;
+        event.currentTarget = element;
+        event.preventDefault ??= () => { event.defaultPrevented = true; };
+        for (const handler of listeners.get(event.type) ?? []) handler(event);
+        return !event.defaultPrevented;
+      },
       appendChild(child) {
         element.children.push(child);
         child.parentElement = element;
         return child;
       },
       remove() {},
-      focus() {},
-      click() {},
-      scrollIntoView() {},
+      focus() { element.focused = true; },
+      click() { element.dispatchEvent({ type: "click", target: element }); },
+      scrollIntoView() { element.scrolledIntoView = true; },
       querySelector: () => null,
       querySelectorAll: () => [],
-      closest: () => null,
+      closest(selector) {
+        if (selector.startsWith("#")) return element.id === selector.slice(1) ? element : null;
+        const dataMatch = selector.match(/^\[data-([a-z0-9-]+)\]$/i);
+        if (dataMatch) return element.dataset[dataKey(`data-${dataMatch[1]}`)] === undefined ? null : element;
+        return null;
+      },
       contains: () => false,
       getBoundingClientRect: () => ({ top: 0, left: 0, width: 100, height: 20, bottom: 20, right: 100 }),
     };
     if (id) elements.set(id, element);
     return element;
   };
+  const documentListeners = new Map();
   const document = {
     readyState: "complete",
     getElementById: id => createElement(id),
     querySelector: selector => createElement(`selector:${selector}`),
     querySelectorAll: () => [],
     createElement: () => createElement(),
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, handler) {
+      const handlers = documentListeners.get(type) ?? [];
+      handlers.push(handler);
+      documentListeners.set(type, handlers);
+    },
+    removeEventListener(type, handler) {
+      documentListeners.set(type, (documentListeners.get(type) ?? []).filter(item => item !== handler));
+    },
+    dispatchEvent(event) {
+      event.target ??= document;
+      event.currentTarget = document;
+      event.preventDefault ??= () => { event.defaultPrevented = true; };
+      for (const handler of documentListeners.get(event.type) ?? []) handler(event);
+      return !event.defaultPrevented;
+    },
     body: createElement("fixture-body"),
     documentElement: createElement("fixture-html"),
   };
   const window = {
     document,
     location: { hash: "", pathname: "/", search: "" },
-    history: { replaceState() {}, pushState() {} },
+    history: {
+      replaceState(_state, _title, url) {
+        if (typeof url === "string" && url.includes("#")) window.location.hash = url.slice(url.indexOf("#"));
+      },
+      pushState(_state, _title, url) {
+        if (typeof url === "string" && url.includes("#")) window.location.hash = url.slice(url.indexOf("#"));
+      },
+    },
     addEventListener() {},
     removeEventListener() {},
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
@@ -122,7 +170,7 @@ function createRuntime(source) {
   });
   context.globalThis = context;
   new vm.Script(source, { filename: defaultScriptPath }).runInContext(context);
-  return { context, elements };
+  return { context, elements, createElement, document };
 }
 
 function makeDetail(sku, name, family, caseOffset = 0) {
@@ -247,8 +295,16 @@ function makePreview() {
       projectionCaseId: caseId,
       baselineSnapshotId: "BASE-20260717-001",
     }],
+    plan: {
+      traces: ["SKU-A", "SKU-B"].flatMap(sku => [1, 2, 3, 4].map(week => ({
+        sku,
+        week,
+        explanation: `${caseId} ${sku} 第 ${week} 周后端计算记录`,
+      }))),
+    },
   });
   return {
+    trace: [],
     baseline: makeCase("baseline", "基准方案", 0),
     scenario: makeCase("scenario", "响应方案", 8),
   };
@@ -267,12 +323,25 @@ function sourceFunctionBody(source, functionName) {
 }
 
 function hashBody(source, functionName) {
-  return createHash("sha256").update(sourceFunctionBody(source, functionName)).digest("hex");
+  const normalizedBody = sourceFunctionBody(source, functionName)
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n");
+  return createHash("sha256").update(normalizedBody).digest("hex");
 }
 
 function runPreview(runtime, preview) {
   runtime.context.__previewFixture = structuredClone(preview);
   vm.runInContext("state.preview = __previewFixture; renderPreviewBufferTrend(__previewFixture);", runtime.context);
+}
+
+function readVm(runtime, expression) {
+  return JSON.parse(vm.runInContext(`JSON.stringify(${expression})`, runtime.context));
+}
+
+function polylinePoints(markup, cssClass) {
+  const match = markup.match(new RegExp(`<polyline[^>]*class="${cssClass}"[^>]*points="([^"]+)"`));
+  assert.ok(match, `expected ${cssClass} polyline`);
+  return match[1].trim().split(/\s+/).map(pair => pair.split(",").map(Number));
 }
 
 export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = defaultScriptPath) {
@@ -282,10 +351,10 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   const source = await readFile(scriptPath, "utf8");
   new vm.Script(source, { filename: scriptPath });
   assert.equal(hashBody(source, "renderPreviewTrace"),
-    "6883419526949ff4088a757ac695b2ca13866564d42b960fe31dd103973e3849",
+    "5d717644be89f0bd29351b73d0621aa4413c39ba4b98f319e4a9fd664c54da35",
     "renderPreviewTrace body must remain protected");
   assert.equal(hashBody(source, "renderTrace"),
-    "b8701faf165b61269769cf4156941df521685468888a6c0d24f41367e5418adf",
+    "86418e85eb2880a6f776f69f5796a35d98097892b8a3575972eff89ccb7ab3ff",
     "renderTrace body must remain protected");
 
   const runtime = createRuntime(source);
@@ -297,6 +366,14 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   const volatilityMarkup = runtime.elements.get("buffer-volatility-chart").innerHTML;
   assert.ok(nfpMarkup.includes("buffer-net-flow-line") && nfpMarkup.includes('data-case-id="scenario"'),
     "first panel should retain scenario NFP evidence");
+  assert.ok(nfpMarkup.includes('class="buffer-net-flow-line" data-field="endNetFlowBeforeReplenishment"'),
+    "pre-replenishment NFP must retain its explicit black-line field mapping");
+  assert.ok(nfpMarkup.includes('class="buffer-preview-line" data-field="endNetFlowAfterReplenishment"'),
+    "selected scenario post-replenishment NFP must retain its explicit blue-line field mapping");
+  assert.ok(nfpMarkup.includes('class="buffer-baseline-line" data-field="endNetFlowAfterReplenishment"'),
+    "baseline comparison must retain its explicit gray-line field mapping");
+  assert.ok(nfpMarkup.includes('class="target-inventory-dot" data-field="targetInventory"'),
+    "target markers must retain their explicit white-marker field mapping");
   assert.ok(physicalMarkup.includes("physical-on-hand-line") && physicalMarkup.includes('data-case-id="scenario"'),
     "second panel should render backend scenario physical on-hand");
   assert.ok(volatilityMarkup.includes("buffer-demand-area") && volatilityMarkup.includes('data-case-id="scenario"'),
@@ -314,37 +391,124 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(physicalMarkup.includes('data-axis="physical-on-hand"')
     && physicalMarkup.includes('data-axis="physical-events"'),
   "physical stock and event quantities should use labeled independent axes");
+  const initialScenarioSku = preview.scenario.bufferTrend.selectedSku
+    ?? preview.scenario.bufferTrend.skuDetails[0].sku;
+  const initialScenarioRecordKey = runtime.elements.get("buffer-trace-list").innerHTML
+    .match(/data-white-box-record="([^"]+)"/)?.[1];
+  assert.ok(initialScenarioRecordKey?.startsWith("scenario|")
+    && initialScenarioRecordKey.includes(`|${initialScenarioSku}|`),
+  "scenario detail should expose a compound key from its actual plan trace");
+
+  const negative = structuredClone(preview);
+  negative.scenario.bufferTrend.skuDetails[0].series[1].endNetFlowBeforeReplenishment = -12;
+  const negativeSeriesItem = negative.scenario.bufferTrend.series.find(item =>
+    item.sku === negative.scenario.bufferTrend.skuDetails[0].sku && item.week === 2);
+  negativeSeriesItem.endNetFlowBeforeReplenishment = -12;
+  runPreview(runtime, negative);
+  const negativeMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
+  const zeroAxisY = Number(negativeMarkup.match(/<line class="axis-line"[^>]*y1="([^"]+)"/)?.[1]);
+  const negativeNfpYs = polylinePoints(negativeMarkup, "buffer-net-flow-line").map(point => point[1]);
+  assert.ok(Number.isFinite(zeroAxisY) && Math.max(...negativeNfpYs) > zeroAxisY,
+    "negative pre-replenishment NFP must plot below the zero axis instead of flattening to zero");
+
+  const staleCurrent = makeTrend("current-refresh", "当前刷新", 30);
+  staleCurrent.selectedSku = staleCurrent.skuDetails[1].sku;
+  runtime.context.__staleCurrent = structuredClone(staleCurrent);
+  vm.runInContext("renderBufferTrendWorkspace(__staleCurrent);", runtime.context);
+  assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes('data-case-id="current-refresh"'),
+    "an explicit current trend refresh must not be overridden by stale preview cases");
+  assert.equal(runtime.elements.get("buffer-case-select").innerHTML.includes('value="scenario"'), false,
+    "current trend refresh must not mix stale scenario choices into its selector");
+  vm.runInContext("acceptCurrentBufferTrend(__staleCurrent); renderBufferTrendWorkspace(state.bufferTrend);", runtime.context);
+  assert.equal(readVm(runtime, "state.preview"), null,
+    "a successful current refresh must invalidate the old preview result");
+  assert.deepEqual(readVm(runtime,
+    "({ caseId: state.futureInventorySelection.caseId, sku: state.futureInventorySelection.sku })"),
+  { caseId: staleCurrent.caseId, sku: staleCurrent.selectedSku },
+  "a successful current refresh must reset the case and SKU selection to current evidence");
+
+  const filterMigration = structuredClone(preview);
+  const firstDetail = filterMigration.scenario.bufferTrend.skuDetails[0];
+  const secondDetail = filterMigration.scenario.bufferTrend.skuDetails[1];
+  firstDetail.series = firstDetail.series.filter(item => item.week >= 2 && item.week <= 3);
+  filterMigration.scenario.bufferTrend.series = filterMigration.scenario.bufferTrend.skuDetails.flatMap(item => item.series);
+  filterMigration.scenario.bufferTrend.weeklyCells = filterMigration.scenario.bufferTrend.weeklyCells.filter(item =>
+    item.sku !== firstDetail.sku || (item.week >= 2 && item.week <= 3));
+  runPreview(runtime, filterMigration);
+  runtime.context.__allowedSku = firstDetail.sku;
+  runtime.context.__removedSku = secondDetail.sku;
+  vm.runInContext(
+    "state.futureInventorySelection.sku = __removedSku; state.selectedBufferSku = __removedSku; "
+      + "state.futureInventorySelection.weekFrom = 1; state.futureInventorySelection.weekThrough = 4; "
+      + "state.filtered = { skus: [{ sku: __allowedSku }] }; renderBufferTrendWorkspace(state.bufferTrend);",
+    runtime.context,
+  );
+  let migratedSelection = readVm(runtime,
+    "({ sku: state.futureInventorySelection.sku, selectedBufferSku: state.selectedBufferSku, "
+      + "weekFrom: state.futureInventorySelection.weekFrom, weekThrough: state.futureInventorySelection.weekThrough })");
+  assert.deepEqual(migratedSelection,
+    { sku: firstDetail.sku, selectedBufferSku: firstDetail.sku, weekFrom: 2, weekThrough: 3 },
+    "filtering out the selected SKU must migrate both selections and derive weeks from filtered detail");
+  runtime.context.__allSkus = [{ sku: firstDetail.sku }, { sku: secondDetail.sku }];
+  vm.runInContext("state.filtered = { skus: __allSkus }; renderBufferTrendWorkspace(state.bufferTrend);", runtime.context);
+  migratedSelection = readVm(runtime,
+    "({ sku: state.futureInventorySelection.sku, selectedBufferSku: state.selectedBufferSku })");
+  assert.deepEqual(migratedSelection, { sku: firstDetail.sku, selectedBufferSku: firstDetail.sku },
+    "clearing the filter must keep the migrated SKU instead of jumping back to the stale selection");
+  runPreview(runtime, preview);
   const selectedSku = preview.scenario.bufferTrend.selectedSku
     ?? preview.scenario.bufferTrend.skuDetails[0].sku;
-  assert.ok(runtime.elements.get("buffer-trace-list").innerHTML.includes('href="#trace-panel"')
-    && runtime.elements.get("buffer-trace-list").innerHTML.includes(`scenario:${selectedSku}`),
-  "selected detail should retain its corresponding white-box record link");
-
-  runtime.context.__secondSku = preview.scenario.bufferTrend.skuDetails.find(item => item.sku !== selectedSku)?.sku
+  const secondSku = preview.scenario.bufferTrend.skuDetails.find(item => item.sku !== selectedSku)?.sku
     ?? selectedSku;
-  vm.runInContext(
-    "state.futureInventorySelection.sku = __secondSku; state.selectedBufferSku = __secondSku; "
-      + "renderSelectedFutureInventoryWorkspace();",
-    runtime.context,
-  );
-  assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes(preview.scenario.bufferTrend.skuDetails[1].sku),
-    "SKU selection should redraw NFP");
-  assert.ok(runtime.elements.get("inventory-flow-chart").innerHTML.includes(preview.scenario.bufferTrend.skuDetails[1].sku),
-    "SKU selection should redraw physical stock");
-  assert.ok(runtime.elements.get("buffer-volatility-chart").innerHTML.includes(preview.scenario.bufferTrend.skuDetails[1].sku),
-    "SKU selection should redraw volatility");
+  const skuButton = runtime.createElement();
+  skuButton.dataset.bufferSku = secondSku;
+  runtime.document.dispatchEvent({ type: "click", target: skuButton });
+  assert.equal(readVm(runtime, "state.futureInventorySelection.sku"), secondSku,
+    "the registered SKU click handler should update the shared selection");
+  for (const id of ["buffer-trend-chart", "inventory-flow-chart", "buffer-volatility-chart"]) {
+    assert.ok(runtime.elements.get(id).innerHTML.includes(secondSku),
+      `${id} should redraw from the registered SKU click handler`);
+  }
 
-  vm.runInContext(
-    "state.futureInventorySelection.caseId = 'baseline'; state.futureInventorySelection.weekFrom = 2; "
-      + "state.futureInventorySelection.weekThrough = 3; renderSelectedFutureInventoryWorkspace();",
-    runtime.context,
-  );
+  const firstFamilyDetail = preview.scenario.bufferTrend.skuDetails.find(item => item.sku === selectedSku)
+    ?? preview.scenario.bufferTrend.skuDetails[0];
+  const familyButton = runtime.createElement();
+  familyButton.dataset.bufferFamily = firstFamilyDetail.family;
+  runtime.document.dispatchEvent({ type: "click", target: familyButton });
+  assert.equal(readVm(runtime, "state.futureInventorySelection.sku"), firstFamilyDetail.sku,
+    "the registered family click handler should select the first filtered family SKU");
+
+  const caseSelect = runtime.elements.get("buffer-case-select");
+  caseSelect.value = "baseline";
+  caseSelect.dispatchEvent({ type: "change", target: caseSelect });
+  const weekSelect = runtime.elements.get("buffer-week-range-select");
+  weekSelect.value = "2-3";
+  weekSelect.dispatchEvent({ type: "change", target: weekSelect });
   for (const id of ["buffer-trend-chart", "inventory-flow-chart", "buffer-volatility-chart"]) {
     const markup = runtime.elements.get(id).innerHTML;
     assert.ok(markup.includes('data-case-id="baseline"'), `${id} should redraw the selected case`);
     assert.ok(markup.includes('data-week-from="2"') && markup.includes('data-week-through="3"'),
       `${id} should redraw the shared selected week range`);
   }
+
+  const whiteBoxMarkup = runtime.elements.get("buffer-trace-list").innerHTML;
+  const whiteBoxRecordKey = whiteBoxMarkup.match(/data-white-box-record="([^"]+)"/)?.[1];
+  assert.ok(whiteBoxRecordKey
+    && whiteBoxRecordKey.includes(`|${firstFamilyDetail.sku}|`)
+    && !whiteBoxRecordKey.includes(`baseline:${firstFamilyDetail.sku}`),
+  "selected detail should link to a compound key built from an actual baseline plan trace");
+  const whiteBoxLink = runtime.createElement();
+  whiteBoxLink.dataset.whiteBoxRecord = whiteBoxRecordKey;
+  runtime.document.dispatchEvent({ type: "click", target: whiteBoxLink });
+  assert.equal(runtime.context.window.location.hash, "#trace-panel",
+    "white-box link click should navigate through the registered handler to the trace panel");
+  assert.equal(readVm(runtime, "state.selectedWhiteBoxTraceKey"), whiteBoxRecordKey,
+    "white-box link click should select the corresponding actual trace record");
+  const focusedTrace = runtime.elements.get("trace-list").children.at(-1);
+  assert.equal(focusedTrace?.dataset.whiteBoxTraceKey, whiteBoxRecordKey,
+    "the selected white-box record must be materialized under #trace-list");
+  assert.ok(focusedTrace?.focused && focusedTrace?.scrolledIntoView,
+    "the actual white-box record should receive focus and be scrolled into view");
 
   const missing = structuredClone(preview);
   missing.scenario.inventoryFlow.status = "EvidenceMissing";
@@ -353,17 +517,35 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     scope: "InventoryFlow",
     sku: "SKU-A",
     week: 2,
-    reason: "后端确认到货证据缺失",
+    reason: "后端确认到货证据缺失 <img src=x onerror=alert(1)>",
     sourceId: null,
     blocksFreeze: true,
     blocksProjection: true,
+  }];
+  missing.scenario.scenarioMetricEvidence = missing.scenario.scenarioMetricEvidence.map(item => ({
+    ...item,
+    evidenceStatus: "EvidenceMissing",
+    source: "LegacyReference",
+  }));
+  missing.scenario.inventoryFlow.trace = [{
+    stage: "ValidatedInputs",
+    sku: "SKU-A",
+    week: 2,
+    sourceId: null,
+    explanation: "当前投影输入检查",
   }];
   runPreview(runtime, missing);
   const missingMarkup = runtime.elements.get("inventory-flow-chart").innerHTML;
   assert.ok(!missingMarkup.includes("physical-on-hand-line"),
     "EvidenceMissing must draw no physical on-hand line");
-  assert.ok(missingMarkup.includes("后端确认到货证据缺失"),
+  assert.ok(missingMarkup.includes("后端确认到货证据缺失")
+    && missingMarkup.includes("&lt;img")
+    && !missingMarkup.includes("<img"),
     "EvidenceMissing should expose the backend issue");
+  assert.ok(!runtime.elements.get("inventory-flow-evidence").innerHTML.includes("历史兼容记录"),
+    "current EvidenceMissing must not be mislabeled as a legacy record from metric source alone");
+  assert.ok(!runtime.elements.get("inventory-flow-evidence").innerHTML.includes("LegacyReference"),
+    "current EvidenceMissing trace source must come from current flow validation, not legacy metric fallback");
 
   const gap = structuredClone(preview);
   const gapWeek = gap.scenario.inventoryFlow.points.find(item => item.sku === gap.scenario.bufferTrend.selectedSku)?.week + 1;
@@ -377,6 +559,38 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(physicalSegments.every(match => !(Number(match[1]) < gapWeek && Number(match[2]) > gapWeek)),
     "no physical on-hand path may cross a missing week");
 
+  const detailDomainGap = structuredClone(preview);
+  const domainDetail = detailDomainGap.scenario.bufferTrend.skuDetails.find(item =>
+    item.sku === detailDomainGap.scenario.bufferTrend.selectedSku)
+    ?? detailDomainGap.scenario.bufferTrend.skuDetails[0];
+  const sharedDomainWeeks = [...new Set(detailDomainGap.scenario.bufferTrend.series.map(item => Number(item.week)))]
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const sharedWeekFrom = sharedDomainWeeks[0];
+  const sharedWeekThrough = sharedDomainWeeks.at(-1);
+  const retainedWeek = sharedDomainWeeks.length > 1 ? sharedDomainWeeks[1] : sharedWeekFrom;
+  const sharedDates = new Map(detailDomainGap.scenario.bufferTrend.series.map(item =>
+    [Number(item.week), item.periodStartDate]));
+  domainDetail.series = domainDetail.series.filter(item => Number(item.week) === retainedWeek);
+  detailDomainGap.scenario.bufferTrend.series = detailDomainGap.scenario.bufferTrend.skuDetails.flatMap(item => item.series);
+  runPreview(runtime, detailDomainGap);
+  const detailDomainMarkup = runtime.elements.get("inventory-flow-chart").innerHTML;
+  assert.ok(detailDomainMarkup.includes(`data-week-from="${sharedWeekFrom}"`)
+    && detailDomainMarkup.includes(`data-week-through="${sharedWeekThrough}"`),
+    "physical projection must use the shared filtered week domain when selected detail omits edge weeks");
+  for (const missingWeek of sharedDomainWeeks.filter(week => week !== retainedWeek)) {
+    assert.ok(detailDomainMarkup.includes(`data-week="${missingWeek}"`)
+      && detailDomainMarkup.includes(`第 ${missingWeek} 周证据缺口`),
+    `physical projection should label selected-detail gap week ${missingWeek}`);
+  }
+  for (const week of sharedDomainWeeks) {
+    assert.ok(detailDomainMarkup.includes(sharedDates.get(week)),
+      `shared physical domain should retain the backend date label for week ${week}`);
+  }
+  const detailDomainSegments = [...detailDomainMarkup.matchAll(/<path class="physical-on-hand-line"[^>]*data-week-from="(\d+)"[^>]*data-week-through="(\d+)"/g)];
+  assert.ok(detailDomainSegments.every(match => Number(match[1]) === Number(match[2])),
+    "physical paths must not bridge leading, trailing, or continuous selected-detail evidence gaps");
+
   const legacy = structuredClone(preview);
   legacy.scenario.inventoryFlow.status = "EvidenceMissing";
   legacy.scenario.inventoryFlow.points = [];
@@ -385,6 +599,13 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     evidenceStatus: "EvidenceMissing",
     source: "LegacyReference",
   }));
+  legacy.scenario.inventoryFlow.trace = [{
+    stage: "LegacyResult",
+    sku: null,
+    week: null,
+    sourceId: null,
+    explanation: "历史结果没有物理投影",
+  }];
   runPreview(runtime, legacy);
   assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes("buffer-net-flow-line"),
     "LegacyReference should keep original NFP evidence visible");
@@ -393,7 +614,64 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(runtime.elements.get("inventory-flow-evidence").innerHTML.includes("历史兼容记录"),
     "LegacyReference should be explicitly identified");
 
-  console.log("6/6 future inventory flow chart fixture groups passed");
+  const noTrace = structuredClone(preview);
+  noTrace.scenario.plan.traces = noTrace.scenario.plan.traces.filter(item =>
+    item.sku !== noTrace.scenario.bufferTrend.selectedSku);
+  runPreview(runtime, noTrace);
+  assert.ok(runtime.elements.get("buffer-trace-list").innerHTML.includes("无可定位记录")
+    && !runtime.elements.get("buffer-trace-list").innerHTML.includes("data-white-box-record="),
+  "a selected SKU without a real plan trace must not expose an invented white-box link");
+
+  const hostile = structuredClone(preview);
+  const hostileDetail = hostile.scenario.bufferTrend.skuDetails[0];
+  const originalSku = hostileDetail.sku;
+  const hostileSku = 'SKU-X"><image href=x onerror=alert(1)>';
+  hostileDetail.sku = hostileSku;
+  hostileDetail.name = "名称</text><image href=x onerror=alert(2)>";
+  hostileDetail.family = "产品族</button><img src=x onerror=alert(3)>";
+  hostileDetail.series.forEach(item => {
+    item.sku = hostileSku;
+    item.periodStartDate = "</text><image href=x onerror=alert(4)>";
+  });
+  hostile.scenario.bufferTrend.selectedSku = hostileSku;
+  hostile.scenario.bufferTrend.series.forEach(item => {
+    if (item.sku === originalSku) {
+      item.sku = hostileSku;
+      item.periodStartDate = "</text><image href=x onerror=alert(4)>";
+    }
+  });
+  hostile.scenario.bufferTrend.weeklyCells.forEach(item => {
+    if (item.sku === originalSku) {
+      item.sku = hostileSku;
+      item.family = hostileDetail.family;
+    }
+  });
+  hostile.scenario.inventoryFlow.points.forEach(item => {
+    if (item.sku === originalSku) item.sku = hostileSku;
+  });
+  hostile.scenario.plan.traces.forEach(item => {
+    if (item.sku === originalSku) item.sku = hostileSku;
+  });
+  vm.runInContext("state.filtered = null;", runtime.context);
+  runPreview(runtime, hostile);
+  const hostileHosts = [
+    "buffer-trend-chart",
+    "inventory-flow-chart",
+    "buffer-volatility-chart",
+    "buffer-inventory-options",
+    "buffer-trend-heatmap",
+    "buffer-sku-metadata",
+    "buffer-trend-body",
+    "buffer-family-summary-body",
+    "buffer-trace-list",
+  ];
+  const hostileMarkup = hostileHosts.map(id => runtime.elements.get(id).innerHTML).join("\n");
+  assert.ok(!/<(?:image|img|script)\b/i.test(hostileMarkup) && !hostileMarkup.includes("</text><image"),
+    "future inventory panels, options, heatmap, and details must not emit hostile DTO markup");
+  assert.ok(hostileMarkup.includes("&lt;image") && !hostileMarkup.includes("&amp;lt;image"),
+    "hostile future inventory values should be escaped exactly once");
+
+  console.log("12/12 future inventory flow chart fixture groups passed");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

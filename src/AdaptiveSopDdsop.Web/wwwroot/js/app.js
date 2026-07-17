@@ -58,6 +58,7 @@ const state = {
     weekFrom: 1,
     weekThrough: null,
   },
+  selectedWhiteBoxTraceKey: null,
   focusedPanel: null,
   focusedPanelParent: null,
   focusedPanelNextSibling: null,
@@ -1859,7 +1860,8 @@ function renderMultiScenarioComparison(result) {
 function futureInventoryCases(fallbackTrend = null) {
   const previewCases = [state.preview?.baseline, state.preview?.scenario]
     .filter(item => item?.bufferTrend);
-  if (previewCases.length) return previewCases;
+  const fallbackBelongsToPreview = fallbackTrend && previewCases.some(item => item.bufferTrend === fallbackTrend);
+  if (previewCases.length && (!fallbackTrend || fallbackBelongsToPreview)) return previewCases;
   if (!fallbackTrend) return [];
   return [{
     caseId: valueOr(fallbackTrend.caseId, "baseline"),
@@ -1870,7 +1872,7 @@ function futureInventoryCases(fallbackTrend = null) {
   }];
 }
 
-function normalizeFutureInventorySelection(trend) {
+function normalizeFutureInventorySelection(trend, scopedTrend = null) {
   const cases = futureInventoryCases(trend);
   const requestedCaseId = state.futureInventorySelection.caseId;
   let previewCase = cases.find(item => item.caseId === requestedCaseId);
@@ -1878,15 +1880,16 @@ function normalizeFutureInventorySelection(trend) {
   if (!previewCase) previewCase = cases.find(item => item.caseId === "scenario");
   if (!previewCase) previewCase = valueOr(cases[0], null);
   const selectedTrend = valueOr(previewCase?.bufferTrend, trend);
-  const skuDetails = valueOr(selectedTrend?.skuDetails, []);
+  const selectionTrend = valueOr(scopedTrend, selectedTrend);
+  const skuDetails = valueOr(selectionTrend?.skuDetails, []);
   const requestedSku = valueOr(state.futureInventorySelection.sku, state.selectedBufferSku);
   const sku = skuDetails.some(item => item.sku === requestedSku)
     ? requestedSku
-    : (skuDetails.some(item => item.sku === selectedTrend?.selectedSku)
-      ? selectedTrend.selectedSku
+    : (skuDetails.some(item => item.sku === selectionTrend?.selectedSku)
+      ? selectionTrend.selectedSku
       : valueOr(skuDetails[0]?.sku, ""));
   const selectedDetail = skuDetails.find(item => item.sku === sku);
-  const weeks = [...new Set(valueOr(selectedDetail?.series, [])
+  const weeks = [...new Set(valueOr(selectionTrend?.series, valueOr(selectedDetail?.series, []))
     .map(item => Number(item.week))
     .filter(Number.isFinite))].sort((left, right) => left - right);
   const minimumWeek = valueOr(weeks[0], 1);
@@ -1955,6 +1958,17 @@ function renderSelectedFutureInventoryWorkspace() {
   renderBufferTrendWorkspace(valueOr(selectedCase?.bufferTrend, state.bufferTrend));
 }
 
+function acceptCurrentBufferTrend(trend) {
+  state.preview = null;
+  state.bufferTrend = trend;
+  state.baselineBufferTrend = trend;
+  state.selectedBufferSku = valueOr(trend?.selectedSku, null);
+  state.futureInventorySelection.caseId = valueOr(trend?.caseId, "baseline");
+  state.futureInventorySelection.sku = state.selectedBufferSku;
+  state.futureInventorySelection.weekFrom = 1;
+  state.futureInventorySelection.weekThrough = null;
+}
+
 function filterBufferTrendWorkspace(trend) {
   if (!trend) return null;
 
@@ -2007,8 +2021,8 @@ function filterBufferTrendWorkspace(trend) {
 }
 
 function renderBufferTrendWorkspace(trend) {
-  const selection = normalizeFutureInventorySelection(trend);
-  const filteredTrend = filterBufferTrendWorkspace(selection.trend);
+  const initialSelection = normalizeFutureInventorySelection(trend);
+  const filteredTrend = filterBufferTrendWorkspace(initialSelection.trend);
   if (!filteredTrend) {
     byId("buffer-trend-kpis").innerHTML = "";
     byId("buffer-trend-chart").innerHTML = `<div class="table-empty"><strong>没有缓冲趋势图数据</strong></div>`;
@@ -2023,6 +2037,8 @@ function renderBufferTrendWorkspace(trend) {
     byId("buffer-trace-list").innerHTML = "";
     return;
   }
+
+  const selection = normalizeFutureInventorySelection(trend, filteredTrend);
 
   state.bufferTrend = selection.trend;
   const fullDetail = valueOr(filteredTrend.skuDetails.find(item => item.sku === filteredTrend.selectedSku), filteredTrend.skuDetails[0]);
@@ -2060,8 +2076,8 @@ function renderBufferInventoryOptions(trend, detail) {
       <div class="inventory-option-title">产品族</div>
       <div class="inventory-option-list">
         ${families.map(family => `
-          <button class="inventory-option ${family === selectedFamily ? "is-selected" : ""}" type="button" data-buffer-family="${family}">
-            <span class="option-radio"></span><span>${family}</span>
+          <button class="inventory-option ${family === selectedFamily ? "is-selected" : ""}" type="button" data-buffer-family="${escapeHtml(family)}">
+            <span class="option-radio"></span><span>${escapeHtml(family)}</span>
           </button>
         `).join("")}
       </div>
@@ -2070,8 +2086,8 @@ function renderBufferInventoryOptions(trend, detail) {
       <div class="inventory-option-title">库存物料</div>
       <div class="inventory-option-list is-scrollable">
         ${skus.map(item => `
-          <button class="inventory-option ${item.sku === detail?.sku ? "is-selected" : ""}" type="button" data-buffer-sku="${item.sku}">
-            <span class="option-radio"></span><span><strong>${item.sku}</strong><small>${item.name}</small></span>
+          <button class="inventory-option ${item.sku === detail?.sku ? "is-selected" : ""}" type="button" data-buffer-sku="${escapeHtml(item.sku)}">
+            <span class="option-radio"></span><span><strong>${escapeHtml(item.sku)}</strong><small>${escapeHtml(item.name)}</small></span>
           </button>
         `).join("")}
       </div>
@@ -2224,8 +2240,12 @@ function renderBufferTrendChart(detail) {
     ...chartSeries.flatMap(item => [item.topOfRed, item.topOfYellow, item.topOfGreen, item.targetInventory]),
     0,
   ].filter(isFiniteChartValue).map(Number);
-  const yMax = Math.max(...allNetFlowValues) * 1.08;
-  const y = value => top + (yMax - Math.max(0, Number(value))) * mainHeight / Math.max(1, yMax);
+  const valueMinimum = Math.min(0, ...allNetFlowValues);
+  const valueMaximum = Math.max(0, ...allNetFlowValues);
+  const valueSpan = Math.max(1, valueMaximum - valueMinimum);
+  const yMinimum = valueMinimum < 0 ? valueMinimum - valueSpan * 0.08 : 0;
+  const yMaximum = valueMaximum + valueSpan * 0.08;
+  const y = value => top + (yMaximum - Number(value)) * mainHeight / Math.max(1, yMaximum - yMinimum);
   const x = index => left + index * plotWidth / Math.max(1, chartSeries.length - 1);
   const zoneSegments = contiguousEvidenceSegments(
     chartSeries.map((item, index) => ({ item, index })),
@@ -2249,9 +2269,9 @@ function renderBufferTrendChart(detail) {
   const zoneEvidenceMarkers = zoneSegments.filter(segment => segment.length === 1).map(segment => {
     const point = segment[0];
     return `
-      <circle class="buffer-zone-evidence-marker is-red" cx="${x(point.index)}" cy="${y(point.item.topOfRed)}" r="4"><title>${point.item.periodStartDate} 红区上沿：${point.item.topOfRed}</title></circle>
-      <circle class="buffer-zone-evidence-marker is-yellow" cx="${x(point.index)}" cy="${y(point.item.topOfYellow)}" r="4"><title>${point.item.periodStartDate} 黄区上沿：${point.item.topOfYellow}</title></circle>
-      <circle class="buffer-zone-evidence-marker is-green" cx="${x(point.index)}" cy="${y(point.item.topOfGreen)}" r="4"><title>${point.item.periodStartDate} 绿区上沿：${point.item.topOfGreen}</title></circle>`;
+      <circle class="buffer-zone-evidence-marker is-red" cx="${x(point.index)}" cy="${y(point.item.topOfRed)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 红区上沿：${point.item.topOfRed}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-yellow" cx="${x(point.index)}" cy="${y(point.item.topOfYellow)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 黄区上沿：${point.item.topOfYellow}</title></circle>
+      <circle class="buffer-zone-evidence-marker is-green" cx="${x(point.index)}" cy="${y(point.item.topOfGreen)}" r="4"><title>${escapeHtml(point.item.periodStartDate)} 绿区上沿：${point.item.topOfGreen}</title></circle>`;
   }).join("");
   const zoneEvidenceMissing = chartSeries.some(item => !hasValidBufferZoneEvidence(item));
   const redTop = chartSeries.map(item => item.topOfRed).filter(isFiniteChartValue).map(Number);
@@ -2259,17 +2279,17 @@ function renderBufferTrendChart(detail) {
   const greenTop = chartSeries.map(item => item.topOfGreen).filter(isFiniteChartValue).map(Number);
   const linePoints = (series, valueSelector) => series.map((item, index) => `${x(index)},${y(valueSelector(item))}`).join(" ");
   const baselineLine = showPreview && baselineSeries.length
-    ? `<polyline class="buffer-baseline-line" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准补货后净流位置</title></polyline>`
+    ? `<polyline class="buffer-baseline-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(baselineSeries, item => item.endNetFlowAfterReplenishment)}"><title>基准补货后净流位置</title></polyline>`
     : "";
   const previewLine = showPreview
-    ? `<polyline class="buffer-preview-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>预览补货后净流位置</title></polyline>`
+    ? `<polyline class="buffer-preview-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>所选方案补货后净流位置</title></polyline>`
     : "";
   const currentLine = showPreview
     ? ""
-    : `<polyline class="buffer-inventory-line" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>补货后净流位置</title></polyline>`;
-  const netFlowLine = `<polyline class="buffer-net-flow-line" points="${linePoints(chartSeries, item => item.endNetFlowBeforeReplenishment)}"><title>净流动量位置</title></polyline>`;
+    : `<polyline class="buffer-inventory-line" data-field="endNetFlowAfterReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowAfterReplenishment)}"><title>补货后净流位置</title></polyline>`;
+  const netFlowLine = `<polyline class="buffer-net-flow-line" data-field="endNetFlowBeforeReplenishment" points="${linePoints(chartSeries, item => item.endNetFlowBeforeReplenishment)}"><title>补货前净流位置</title></polyline>`;
   const targetDots = chartSeries.map((item, index) => isFiniteChartValue(item.targetInventory)
-    ? `<circle class="target-inventory-dot" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${item.periodStartDate} 目标库存：${number(item.targetInventory)}</title></circle>`
+    ? `<circle class="target-inventory-dot" data-field="targetInventory" cx="${x(index)}" cy="${y(item.targetInventory)}" r="4"><title>${escapeHtml(item.periodStartDate)} 目标库存：${number(item.targetInventory)}</title></circle>`
     : "").join("");
   const reviewMarkers = chartSeries
     .map((item, index) => item.isReplenishment
@@ -2277,7 +2297,7 @@ function renderBufferTrendChart(detail) {
       : "")
     .join("");
   const timeGrid = chartSeries.map((item, index) => `<line class="time-grid-line" x1="${x(index)}" y1="${top}" x2="${x(index)}" y2="${top + mainHeight}"></line>`).join("");
-  const monthLabels = chartSeries.map((item, index) => `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
+  const monthLabels = chartSeries.map((item, index) => `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
 
   byId("buffer-trend-chart").innerHTML = `
     <svg class="buffer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 动态红黄绿缓冲带与净流位置" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
@@ -2314,14 +2334,14 @@ function renderBufferTrendChart(detail) {
 function renderInventoryFlowChart(previewCase, detail) {
   const flow = previewCase?.inventoryFlow;
   const metricEvidence = valueOr(previewCase?.scenarioMetricEvidence, []);
-  const isLegacyReference = metricEvidence.some(item => item.source === "LegacyReference");
+  const isLegacyReference = valueOr(flow?.trace, []).some(item => item.stage === "LegacyResult");
   const caseId = valueOr(previewCase?.caseId, valueOr(state.futureInventorySelection.caseId, "baseline"));
   const baselineSnapshotId = valueOr(
     flow?.baselineSnapshotId,
     valueOr(metricEvidence.find(item => item.baselineSnapshotId)?.baselineSnapshotId, "未关联冻结版本"));
   const traceSource = valueOr(
-    metricEvidence.find(item => item.source)?.source,
-    valueOr(flow?.trace?.[0]?.stage, "等待后端投影"));
+    flow?.trace?.[0]?.stage,
+    valueOr(metricEvidence.find(item => item.source)?.source, "等待后端投影"));
   const statusText = flow?.status === "Complete" ? "证据完整" : "证据缺失";
   const statusClassName = flow?.status === "Complete" ? "is-valid" : "is-invalid";
   const summary = flow?.summary;
@@ -2366,14 +2386,25 @@ function renderInventoryFlowChart(previewCase, detail) {
   const plotHeight = 190;
   const plotBottom = top + plotHeight;
   const plotWidth = width - left - right;
-  const domain = detail.series.map((item, index) => ({
-    index,
-    week: Number(item.week),
-    periodStartDate: item.periodStartDate,
-    point: valueOr(flow.points, []).find(point => point.sku === detail.sku && Number(point.week) === Number(item.week)),
-  }));
-  const weekFrom = valueOr(domain[0]?.week, state.futureInventorySelection.weekFrom);
-  const weekThrough = valueOr(domain[domain.length - 1]?.week, state.futureInventorySelection.weekThrough);
+  const weekFrom = Number(state.futureInventorySelection.weekFrom);
+  const weekThrough = Number(state.futureInventorySelection.weekThrough);
+  const detailByWeek = new Map(detail.series.map(item => [Number(item.week), item]));
+  const dateByWeek = new Map(valueOr(state.bufferTrend?.series, [])
+    .filter(item => Number(item.week) >= weekFrom && Number(item.week) <= weekThrough)
+    .map(item => [Number(item.week), item.periodStartDate]));
+  const domain = Array.from({ length: Math.max(0, weekThrough - weekFrom + 1) }, (_, index) => {
+    const week = weekFrom + index;
+    const detailItem = detailByWeek.get(week);
+    return {
+      index,
+      week,
+      detailItem,
+      periodStartDate: valueOr(detailItem?.periodStartDate, valueOr(dateByWeek.get(week), `第 ${week} 周`)),
+      point: detailItem
+        ? valueOr(flow.points, []).find(point => point.sku === detail.sku && Number(point.week) === week)
+        : null,
+    };
+  });
   const x = index => left + index * plotWidth / Math.max(1, domain.length - 1);
   const onHandValues = domain
     .map(item => item.point?.endingOnHand)
@@ -2487,13 +2518,13 @@ function renderBufferVolatilityChart(detail) {
     return `<path class="buffer-demand-threshold" d="${buildMonotonePath(points)}"></path>`;
   }).join("");
   const demandMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demand)).map(point =>
-    `<circle class="buffer-demand-marker" cx="${x(point.index)}" cy="${y(point.item.demand)}" r="2.5"><title>${point.item.periodStartDate} 计划需求：${number(point.item.demand)}</title></circle>`).join("");
+    `<circle class="buffer-demand-marker" cx="${x(point.index)}" cy="${y(point.item.demand)}" r="2.5"><title>${escapeHtml(point.item.periodStartDate)} 计划需求：${number(point.item.demand)}</title></circle>`).join("");
   const thresholdMarkers = chartPoints.filter(point => isFiniteChartValue(point.item.demandSpikeThreshold)).map(point =>
-    `<circle class="buffer-demand-threshold-marker" cx="${x(point.index)}" cy="${y(point.item.demandSpikeThreshold)}" r="2.5"><title>${point.item.periodStartDate} 后端尖峰阈值：${number(point.item.demandSpikeThreshold)}</title></circle>`).join("");
+    `<circle class="buffer-demand-threshold-marker" cx="${x(point.index)}" cy="${y(point.item.demandSpikeThreshold)}" r="2.5"><title>${escapeHtml(point.item.periodStartDate)} 后端尖峰阈值：${number(point.item.demandSpikeThreshold)}</title></circle>`).join("");
   const thresholdMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demandSpikeThreshold));
   const demandMissing = chartPoints.some(point => !isFiniteChartValue(point.item.demand));
   const dateLabels = chartSeries.map((item, index) =>
-    `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${item.periodStartDate}</text>`).join("");
+    `<text class="buffer-week-label" x="${x(index)}" y="${height - 10}">${escapeHtml(item.periodStartDate)}</text>`).join("");
 
   byId("buffer-volatility-chart").innerHTML = `
     <svg class="buffer-volatility-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(detail.sku)} 需求波动图" data-case-id="${escapeHtml(caseId)}" data-week-from="${weekFrom}" data-week-through="${weekThrough}">
@@ -2544,15 +2575,15 @@ function renderBufferHeatmap(trend) {
   byId("buffer-trend-heatmap").innerHTML = rows.length
     ? `
       <table class="buffer-heatmap-table">
-        <thead><tr><th>SKU</th>${weeks.map(week => `<th>第 ${week} 周</th>`).join("")}</tr></thead>
+        <thead><tr><th>SKU</th>${weeks.map(week => `<th>第 ${number(week)} 周</th>`).join("")}</tr></thead>
         <tbody>
           ${rows.map(detail => `
             <tr>
-              <th><button class="link-button" type="button" data-buffer-sku="${detail.sku}"><strong>${detail.sku}</strong><small>${detail.name}</small></button></th>
+              <th><button class="link-button" type="button" data-buffer-sku="${escapeHtml(detail.sku)}"><strong>${escapeHtml(detail.sku)}</strong><small>${escapeHtml(detail.name)}</small></button></th>
               ${weeks.map(week => {
                 const cell = trend.weeklyCells.find(item => item.sku === detail.sku && item.week === week);
                 return cell
-                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-buffer-sku="${cell.sku}"><strong>${statusLabel(cell.status)}</strong><span>${money(cell.inventoryValue)}</span></button></td>`
+                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-buffer-sku="${escapeHtml(cell.sku)}"><strong>${escapeHtml(statusLabel(cell.status))}</strong><span>${money(cell.inventoryValue)}</span></button></td>`
                   : `<td class="empty-cell">-</td>`;
               }).join("")}
             </tr>
@@ -2565,7 +2596,7 @@ function renderBufferHeatmap(trend) {
 function renderBufferFamilySummary(trend) {
   byId("buffer-family-summary-body").innerHTML = trend.familySummaries.length
     ? trend.familySummaries.map(item => row([
-      item.family,
+      escapeHtml(item.family),
       money(item.averageInventoryValue),
       number(item.redWeekCount),
       number(item.yellowWeekCount),
@@ -2573,6 +2604,68 @@ function renderBufferFamilySummary(trend) {
       number(item.replenishmentOrderCount),
     ])).join("")
     : emptyRow("没有产品族汇总数据", 6);
+}
+
+function whiteBoxTraceRecords(previewCase) {
+  if (!previewCase) return [];
+  const caseId = valueOr(previewCase.caseId, "baseline");
+  const occurrences = new Map();
+  return valueOr(previewCase.plan?.traces, []).map(trace => {
+    const sku = valueOr(trace.sku, "未指定 SKU");
+    const week = Number(trace.week);
+    const occurrenceGroup = JSON.stringify([sku, week]);
+    const occurrence = valueOr(occurrences.get(occurrenceGroup), 0) + 1;
+    occurrences.set(occurrenceGroup, occurrence);
+    return {
+      key: `${encodeURIComponent(caseId)}|${encodeURIComponent(sku)}|${week}|${occurrence}`,
+      caseId,
+      caseName: valueOr(previewCase.name, caseId),
+      sku,
+      week,
+      occurrence,
+      explanation: valueOr(trace.explanation, "后端计算记录"),
+      trace,
+    };
+  });
+}
+
+function selectedWhiteBoxTraceRecord(previewCase, detail) {
+  const visibleWeeks = new Set(valueOr(detail?.series, []).map(item => Number(item.week)));
+  return valueOr(whiteBoxTraceRecords(previewCase).find(record =>
+    record.sku === detail?.sku && (visibleWeeks.size === 0 || visibleWeeks.has(record.week))), null);
+}
+
+function findWhiteBoxTraceRecord(result, recordKey) {
+  return [result?.baseline, result?.scenario]
+    .flatMap(whiteBoxTraceRecords)
+    .find(record => record.key === recordKey);
+}
+
+function focusWhiteBoxTraceRecord(recordKey) {
+  const record = findWhiteBoxTraceRecord(state.preview, recordKey);
+  if (!record) return false;
+  state.selectedWhiteBoxTraceKey = record.key;
+  navigateWorkspace("validation", "white-box-trace", false);
+  renderPreviewTrace(state.preview);
+  const host = byId("trace-list");
+  const item = document.createElement("div");
+  item.className = "diagnostic-item white-box-trace-record is-selected";
+  item.dataset.whiteBoxTraceKey = record.key;
+  item.setAttribute("data-white-box-trace-key", record.key);
+  item.setAttribute("tabindex", "-1");
+  const title = document.createElement("strong");
+  title.textContent = `${caseLabel(record.caseName)} · ${record.sku} / 第 ${record.week} 周`;
+  const explanation = document.createElement("span");
+  explanation.textContent = businessEvidenceLabel(record.explanation);
+  const identity = document.createElement("small");
+  identity.textContent = `实际记录：${record.key}`;
+  item.appendChild(title);
+  item.appendChild(explanation);
+  item.appendChild(identity);
+  host.appendChild(item);
+  item.focus();
+  item.scrollIntoView({ block: "center" });
+  return true;
 }
 
 function renderBufferSkuDetail(detail, previewCase = null) {
@@ -2598,14 +2691,14 @@ function renderBufferSkuDetail(detail, previewCase = null) {
     ["订货周期", `${number(detail.orderCycleDays)} 天`],
     ["单位成本", money(detail.unitCost)],
     ["缓冲区", `红 ${number(detail.zone.topOfRed)} / 黄 ${number(detail.zone.topOfYellow)} / 绿 ${number(detail.zone.topOfGreen)}`],
-  ].map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
+  ].map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 
   renderSingleSkuSimulation(detail);
 
   byId("buffer-trend-body").innerHTML = detail.series.length
     ? detail.series.map(item => row([
-      item.periodStartDate,
-      `第 ${item.week} 周`,
+      escapeHtml(item.periodStartDate),
+      `第 ${number(item.week)} 周`,
       number(item.timePhasedAdu),
       number(item.startNetFlow),
       number(item.demand),
@@ -2613,27 +2706,33 @@ function renderBufferSkuDetail(detail, previewCase = null) {
       `${number(item.topOfRed)} / ${number(item.topOfYellow)} / ${number(item.topOfGreen)}`,
       money(item.inventoryValue),
       item.isReplenishment ? (item.isPrebuild ? "提前建库订单" : "订货周期补货订单") : "-",
-      `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`,
+      `<span class="${statusClass(item.status)}">${escapeHtml(statusLabel(item.status))}</span>`,
     ])).join("")
     : emptyRow("没有缓冲趋势数据", 10);
 
   byId("buffer-replenishment-body").innerHTML = detail.replenishmentOrders.length
     ? detail.replenishmentOrders.map(item => row([
-      `第 ${item.week} 周`,
+      `第 ${number(item.week)} 周`,
       number(item.quantity),
       money(item.value),
-      triggerLabel(item.trigger),
+      escapeHtml(triggerLabel(item.trigger)),
     ])).join("")
     : emptyRow("没有补货订单", 4);
 
-  const whiteBoxCaseId = valueOr(previewCase?.caseId, valueOr(state.futureInventorySelection.caseId, "baseline"));
-  const whiteBoxRecordId = `${whiteBoxCaseId}:${detail.sku}`;
-  const whiteBoxLink = `
-    <div class="diagnostic-item white-box-record-link">
-      <strong>白盒记录</strong>
-      <span><a href="#trace-panel" data-white-box-record="${escapeHtml(whiteBoxRecordId)}">查看对应计算记录</a></span>
-      <small>${escapeHtml(whiteBoxRecordId)}</small>
-    </div>`;
+  const whiteBoxRecord = selectedWhiteBoxTraceRecord(previewCase, detail);
+  const whiteBoxLink = whiteBoxRecord
+    ? `
+      <div class="diagnostic-item white-box-record-link">
+        <strong>白盒记录</strong>
+        <span><a href="#trace-panel" data-white-box-record="${escapeHtml(whiteBoxRecord.key)}">查看对应计算记录</a></span>
+        <small>${escapeHtml(whiteBoxRecord.caseId)} · ${escapeHtml(whiteBoxRecord.sku)} · 第 ${whiteBoxRecord.week} 周 · 第 ${whiteBoxRecord.occurrence} 条</small>
+      </div>`
+    : `
+      <div class="diagnostic-item white-box-record-link is-unavailable">
+        <strong>白盒记录</strong>
+        <span>无可定位记录</span>
+        <small>所选方案、物料与周范围没有对应的后端 plan trace</small>
+      </div>`;
   byId("buffer-trace-list").innerHTML = whiteBoxLink + (detail.traces.length
     ? detail.traces.slice(0, 8).map(item => `
       <div class="diagnostic-item">
@@ -2716,10 +2815,9 @@ function renderPreviewBufferTrend(result) {
   state.baselineBufferTrend = result.baseline.bufferTrend;
   state.bufferTrend = result.scenario.bufferTrend;
   state.selectedBufferSku = valueOr(state.bufferTrend?.selectedSku, state.selectedBufferSku);
-  const selectedDetail = valueOr(
-    state.bufferTrend?.skuDetails?.find(item => item.sku === state.selectedBufferSku),
-    state.bufferTrend?.skuDetails?.[0]);
-  const selectedWeeks = valueOr(selectedDetail?.series, []).map(item => Number(item.week)).filter(Number.isFinite);
+  const selectedWeeks = valueOr(state.bufferTrend?.series, [])
+    .map(item => Number(item.week))
+    .filter(Number.isFinite);
   state.futureInventorySelection = {
     caseId: valueOr(result.scenario.caseId, "scenario"),
     sku: state.selectedBufferSku,
@@ -5721,9 +5819,7 @@ async function loadWorkspace() {
   if (!bufferTrendResponse.ok) {
     throw new Error(`缓冲趋势工作台接口失败：${bufferTrendResponse.status}`);
   }
-  state.bufferTrend = await bufferTrendResponse.json();
-  state.baselineBufferTrend = state.bufferTrend;
-  state.selectedBufferSku = valueOr(state.bufferTrend.selectedSku, null);
+  acceptCurrentBufferTrend(await bufferTrendResponse.json());
   const exceptionResponse = await fetch("/api/exception-workspace?horizonWeeks=12", {
     headers: { Accept: "application/json" },
   });
@@ -6011,6 +6107,13 @@ document.addEventListener("click", event => {
     state.futureInventorySelection.sku = firstSku;
     renderBufferTrendWorkspace(state.bufferTrend);
   }
+});
+
+document.addEventListener("click", event => {
+  const link = event.target.closest("[data-white-box-record]");
+  if (!link) return;
+  event.preventDefault();
+  focusWhiteBoxTraceRecord(link.dataset.whiteBoxRecord);
 });
 
 byId("buffer-case-select").addEventListener("change", event => {
