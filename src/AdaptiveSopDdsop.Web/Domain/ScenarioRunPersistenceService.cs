@@ -277,8 +277,10 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         var resultJson = reader.GetString(22);
         var request = JsonSerializer.Deserialize<ScenarioRunPreviewRequest>(requestJson, JsonOptions)
             ?? new ScenarioRunPreviewRequest();
-        var result = JsonSerializer.Deserialize<ScenarioRunPreviewResult>(resultJson, JsonOptions)
-            ?? _previewService.Preview(request);
+        var result = ScenarioRunPreviewService.RestoreLegacyInventoryEvidence(
+            JsonSerializer.Deserialize<ScenarioRunPreviewResult>(resultJson, JsonOptions)
+                ?? _previewService.Preview(request),
+            summary.BaselineSnapshotId);
         return new ScenarioRunDetail(summary, request, result);
     }
 

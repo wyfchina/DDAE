@@ -14,6 +14,14 @@ public sealed class BufferTrendWorkspaceService
         var horizon = Math.Clamp(horizonWeeks <= 0 ? 12 : horizonWeeks, 1, 52);
         var data = _dataSource.Load(new ScenarioWorkspaceDataRequest(horizon, new DateOnly(2026, 6, 1)));
         var bufferRun = DemandDrivenPlanningEngine.ProjectBuffers(data.Skus, data.Inventory, data.Demand, horizon);
+        var inventoryFlow = InventoryFlowProjectionService.Project(
+            data,
+            "baseline",
+            data.Skus,
+            data.Demand,
+            bufferRun.ReplenishmentOrders,
+            Array.Empty<PrebuildCampaign>(),
+            Array.Empty<SupplierCapacityLimit>());
         var plan = new DemandDrivenPlanResult(
             bufferRun.BufferProjections,
             bufferRun.ReplenishmentOrders,
@@ -21,7 +29,7 @@ public sealed class BufferTrendWorkspaceService
             Array.Empty<ProjectedSupplyRequirement>(),
             bufferRun.Traces);
 
-        return Build(data, "baseline", "基准方案", data.Skus, plan);
+        return Build(data, "baseline", "基准方案", data.Skus, plan, inventoryFlow);
     }
 
     public static BufferTrendWorkspaceResult Build(
@@ -29,7 +37,8 @@ public sealed class BufferTrendWorkspaceService
         string caseId,
         string name,
         IReadOnlyList<SkuBufferSetting> skus,
-        DemandDrivenPlanResult plan)
+        DemandDrivenPlanResult plan,
+        InventoryFlowProjectionResult? inventoryFlow = null)
     {
         var skuMap = skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
         var zoneMap = skus.ToDictionary(item => item.Sku, DdmrpCalculator.CalculateZones, StringComparer.Ordinal);
@@ -42,6 +51,9 @@ public sealed class BufferTrendWorkspaceService
                     Quantity = group.Sum(item => item.Quantity),
                     IsPrebuild = group.Any(item => item.Trigger == "PrebuildCampaign")
                 });
+        var physicalValues = inventoryFlow?.Points.ToDictionary(
+            item => (item.Sku, item.Week),
+            item => item.EndingInventoryValue);
 
         var series = plan.BufferProjections
             .Where(point => skuMap.ContainsKey(point.Sku))
@@ -68,7 +80,11 @@ public sealed class BufferTrendWorkspaceService
                     timePhasedZones.TopOfYellow,
                     timePhasedZones.TopOfGreen,
                     decimal.Round(targetInventory, 0),
-                    decimal.Round(point.EndNetFlowAfterReplenishment * sku.UnitCost, 0),
+                    decimal.Round(
+                        IsComplete(inventoryFlow)
+                            ? physicalValues![(point.Sku, point.Week)]
+                            : point.EndNetFlowAfterReplenishment * sku.UnitCost,
+                        0),
                     decimal.Round(order?.Quantity ?? 0m, 0),
                     (order?.Quantity ?? 0m) > 0,
                     order?.IsPrebuild ?? false,
@@ -153,23 +169,36 @@ public sealed class BufferTrendWorkspaceService
             CalculateKpis(series, plan.ReplenishmentOrders, 0m),
             series,
             zoneBands,
-            new BufferTrendComparison(0m, 0m, 0, 0, 0m),
+            InitialComparison(inventoryFlow),
             familySummaries,
             weeklyCells,
             details,
             selectedSku);
     }
 
-    public static BufferTrendComparison Compare(BufferTrendWorkspaceResult baseline, BufferTrendWorkspaceResult scenario)
+    public static BufferTrendComparison Compare(
+        BufferTrendWorkspaceResult baseline,
+        BufferTrendWorkspaceResult scenario,
+        InventoryFlowProjectionResult? baselineInventoryFlow = null,
+        InventoryFlowProjectionResult? scenarioInventoryFlow = null)
     {
+        var physicalComplete = IsComplete(baselineInventoryFlow) && IsComplete(scenarioInventoryFlow);
+        var averageInventoryDelta = decimal.Round(scenario.Kpis.AverageInventoryValue - baseline.Kpis.AverageInventoryValue, 0);
+        var peakInventoryDelta = decimal.Round(scenario.Kpis.PeakInventoryValue - baseline.Kpis.PeakInventoryValue, 0);
         return new BufferTrendComparison(
-            decimal.Round(scenario.Kpis.AverageInventoryValue - baseline.Kpis.AverageInventoryValue, 0),
-            decimal.Round(scenario.Kpis.PeakInventoryValue - baseline.Kpis.PeakInventoryValue, 0),
+            averageInventoryDelta,
+            peakInventoryDelta,
             scenario.Series.Count(item => item.Status == "Red") - baseline.Series.Count(item => item.Status == "Red"),
             scenario.Kpis.ReplenishmentOrderCount - baseline.Kpis.ReplenishmentOrderCount,
             decimal.Round(
                 scenario.Series.Sum(item => item.ReplenishmentQuantity) - baseline.Series.Sum(item => item.ReplenishmentQuantity),
-                0));
+                0),
+            physicalComplete ? averageInventoryDelta : null,
+            physicalComplete ? peakInventoryDelta : null,
+            physicalComplete ? "Complete" : "EvidenceMissing",
+            physicalComplete
+                ? "Both buffer-trend cases use complete physical inventory projections."
+                : "Physical buffer-trend deltas are omitted because at least one case lacks complete inventory-flow evidence.");
     }
 
     public static BufferTrendWorkspaceResult WithComparison(
@@ -179,7 +208,11 @@ public sealed class BufferTrendWorkspaceService
         return trend with
         {
             Comparison = comparison,
-            Kpis = trend.Kpis with { InventoryValueDelta = comparison.AverageInventoryValueDelta }
+            Kpis = trend.Kpis with
+            {
+                InventoryValueDelta = comparison.PhysicalAverageInventoryValueDelta
+                    ?? comparison.AverageInventoryValueDelta
+            }
         };
     }
 
@@ -488,6 +521,26 @@ public sealed class BufferTrendWorkspaceService
             _ => 9
         };
     }
+
+    private static BufferTrendComparison InitialComparison(InventoryFlowProjectionResult? inventoryFlow)
+    {
+        var complete = IsComplete(inventoryFlow);
+        return new BufferTrendComparison(
+            0m,
+            0m,
+            0,
+            0,
+            0m,
+            complete ? 0m : null,
+            complete ? 0m : null,
+            complete ? "Complete" : "EvidenceMissing",
+            complete
+                ? "Reference case uses a complete physical inventory projection; physical deltas are zero."
+                : "Reference case lacks complete inventory-flow evidence; physical deltas are omitted.");
+    }
+
+    private static bool IsComplete(InventoryFlowProjectionResult? inventoryFlow) =>
+        inventoryFlow is { Status: "Complete", Summary: not null };
 
     private static string GovernanceStatusLabel(string status)
     {

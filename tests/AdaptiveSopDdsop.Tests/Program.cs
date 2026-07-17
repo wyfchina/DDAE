@@ -151,6 +151,12 @@ var tests = new (string Name, Action Run)[]
     ("Missing constrained capacity week is not unlimited", TestMissingConstrainedCapacityWeekIsEvidenceMissing),
     ("Explicit not-applicable supplier capacity is unbounded", TestExplicitNotApplicableSupplierCapacityIsUnbounded),
     ("Inventory flow fields preserve legacy scenario JSON", TestInventoryFlowFieldsPreserveLegacyScenarioJson),
+    ("Preview returns complete physical inventory flow", TestPreviewReturnsCompleteInventoryFlow),
+    ("Physical flow drives inventory metrics and budget", TestPhysicalFlowDrivesMetricsAndBudget),
+    ("Legacy preview keeps legacy reference labels", TestLegacyPreviewKeepsLegacyReference),
+    ("Comparison omits physical delta when evidence missing", TestComparisonOmitsIncompletePhysicalDelta),
+    ("Frozen comparison preserves baseline lineage and source evidence", TestFrozenComparisonPreservesBaselineLineageAndEvidence),
+    ("Inventory flow result JSON round trips", TestInventoryFlowResultJsonRoundTrips),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -6879,6 +6885,410 @@ static void TestInventoryFlowFieldsPreserveLegacyScenarioJson()
     AssertTrue(roundTrip.Baseline.ScenarioMetricEvidence is null, "legacy baseline metric evidence should default to null");
     AssertTrue(roundTrip.Scenario.InventoryFlow is null, "legacy scenario inventory flow should default to null");
     AssertTrue(roundTrip.Scenario.ScenarioMetricEvidence is null, "legacy scenario metric evidence should default to null");
+}
+
+static void TestPreviewReturnsCompleteInventoryFlow()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var result = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(data))
+        .Preview(new ScenarioRunPreviewRequest(6));
+
+    foreach (var previewCase in new[] { result.Baseline, result.Scenario })
+    {
+        var flow = previewCase.InventoryFlow;
+        AssertTrue(flow is not null, $"{previewCase.CaseId} should expose an inventory flow result");
+        AssertEqual("Complete", flow!.Status, $"{previewCase.CaseId} inventory flow status");
+        AssertEqual(6, flow.Points.Count, $"{previewCase.CaseId} should expose one physical point per requested week");
+        AssertTrue(flow.Summary is not null, $"{previewCase.CaseId} should expose a physical summary");
+        AssertTrue(flow.Trace.Any(item => item.Stage == "ValidatedInputs"), $"{previewCase.CaseId} should retain projection trace");
+        AssertTrue(
+            previewCase.ScenarioMetricEvidence?.Any(item =>
+                item.JsonPath == "metrics.serviceLevelPercent" &&
+                item.EvidenceStatus == "Complete" &&
+                item.Source == "PhysicalProjection" &&
+                item.ProjectionCaseId == previewCase.CaseId) == true,
+            $"{previewCase.CaseId} service metric should point to the physical projection");
+    }
+}
+
+static void TestPhysicalFlowDrivesMetricsAndBudget()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var result = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(data))
+        .Preview(new ScenarioRunPreviewRequest(6));
+    var previewCase = result.Scenario;
+    var flow = previewCase.InventoryFlow ?? throw new InvalidOperationException("physical flow should be present");
+    var summary = flow.Summary ?? throw new InvalidOperationException("physical summary should be present");
+    var skuMap = data.Skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+
+    AssertEqual(decimal.Round(summary.OnTimeServicePercent ?? 0m, 1), previewCase.Metrics.ServiceLevelPercent,
+        "top-level service should use physical on-time fulfillment");
+    AssertEqual(decimal.Round(summary.AverageInventoryValue, 0), previewCase.Metrics.AverageInventoryValue,
+        "top-level inventory should use weekly physical inventory value");
+
+    AssertTrue(previewCase.Budget.Count > 0, "physical budget comparison should have rows");
+    foreach (var budget in previewCase.Budget)
+    {
+        var expected = flow.Points
+            .Where(item => item.Week == budget.Week && skuMap[item.Sku].Family == budget.Family)
+            .Sum(item => item.EndingInventoryValue);
+        AssertEqual(decimal.Round(expected, 0), budget.ProjectedInventoryValue,
+            $"budget projected inventory {budget.Family} week {budget.Week}");
+        AssertEqual(decimal.Round(expected - budget.BudgetInventoryValue, 0), budget.BudgetInventoryVariance,
+            $"budget inventory variance {budget.Family} week {budget.Week}");
+    }
+
+    foreach (var cell in previewCase.ProductFamilyDashboard.WeeklyCells)
+    {
+        var expected = flow.Points
+            .Where(item => item.Week == cell.Week && skuMap[item.Sku].Family == cell.Family)
+            .Sum(item => item.EndingInventoryValue);
+        AssertEqual(decimal.Round(expected, 0), cell.InventoryValue,
+            $"product-family weekly physical inventory {cell.Family} week {cell.Week}");
+    }
+    AssertTrue(
+        previewCase.ProductFamilyDashboard.Details
+            .SelectMany(item => item.WeeklyCells)
+            .All(detailCell => previewCase.ProductFamilyDashboard.WeeklyCells.Any(cell => cell == detailCell)),
+        "product-family detail cells should reuse the physical weekly cells");
+
+    foreach (var family in previewCase.ProductFamilyDashboard.Summaries)
+    {
+        var familyPoints = flow.Points.Where(item => skuMap[item.Sku].Family == family.Family).ToList();
+        var weeklyInventory = familyPoints.GroupBy(item => item.Week).Select(group => group.Sum(item => item.EndingInventoryValue)).ToList();
+        var demand = familyPoints.Sum(item => item.Demand);
+        var fulfilled = familyPoints.Sum(item => item.FulfilledNewDemandOnTime);
+        var expectedService = demand == 0m ? 0m : decimal.Round(fulfilled * 100m / demand, 1);
+        AssertEqual(expectedService, family.ServiceLevelPercent, $"product-family physical service {family.Family}");
+        AssertEqual(decimal.Round(weeklyInventory.Average(), 0), family.AverageInventoryValue,
+            $"product-family average physical inventory {family.Family}");
+        AssertEqual(decimal.Round(weeklyInventory.Max(), 0), family.PeakInventoryValue,
+            $"product-family peak physical inventory {family.Family}");
+    }
+
+    foreach (var point in previewCase.BufferTrend.Series)
+    {
+        var physical = flow.Points.Single(item => item.Sku == point.Sku && item.Week == point.Week);
+        AssertEqual(decimal.Round(physical.EndingInventoryValue, 0), point.InventoryValue,
+            $"buffer trend physical inventory {point.Sku} week {point.Week}");
+    }
+    AssertEqual(
+        decimal.Round(previewCase.BufferTrend.Series.Average(item => item.InventoryValue), 0),
+        previewCase.BufferTrend.Kpis.AverageInventoryValue,
+        "buffer trend average should aggregate physical inventory values");
+    AssertEqual(
+        decimal.Round(previewCase.BufferTrend.Series.Max(item => item.InventoryValue), 0),
+        previewCase.BufferTrend.Kpis.PeakInventoryValue,
+        "buffer trend peak should aggregate physical inventory values");
+
+    var evidence = previewCase.ScenarioMetricEvidence ?? throw new InvalidOperationException("physical metric evidence should be present");
+    foreach (var path in RequiredPhysicalScenarioMetricPaths())
+    {
+        AssertTrue(evidence.Any(item =>
+                item.JsonPath == path &&
+                item.EvidenceStatus == "Complete" &&
+                item.Source == "PhysicalProjection" &&
+                item.ProjectionCaseId == previewCase.CaseId),
+            $"physical evidence should cover {path}");
+    }
+    AssertTrue(evidence.Count(item => item.JsonPath == "metrics.averageInventoryValue") >= 2,
+        "inventory and cash occupation should have separate path-addressed evidence entries");
+}
+
+static void TestLegacyPreviewKeepsLegacyReference()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-legacy-physical-preview-{Guid.NewGuid():N}.db");
+    try
+    {
+        var previewService = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(BuildCompletePlanningEvidenceData()));
+        var persistence = new ScenarioRunPersistenceService(previewService, databasePath);
+        var saved = persistence.Save(new ScenarioRunSaveRequest(
+            "legacy physical preview",
+            "remove optional physical result fields",
+            "planner",
+            new ScenarioRunPreviewRequest(6)));
+        var before = persistence.GetDetail(saved.RunId) ?? throw new InvalidOperationException("saved preview should be readable");
+        var legacyAverageInventory = before.Result.Scenario.Metrics.AverageInventoryValue;
+        var legacyService = before.Result.Scenario.Metrics.ServiceLevelPercent;
+
+        string resultJson;
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using (var read = connection.CreateCommand())
+            {
+                read.CommandText = "SELECT result_json FROM scenario_runs WHERE run_id = $run_id;";
+                read.Parameters.AddWithValue("$run_id", saved.RunId);
+                resultJson = (string?)read.ExecuteScalar() ?? throw new InvalidOperationException("result_json should exist");
+            }
+
+            var root = JsonNode.Parse(resultJson)?.AsObject()
+                ?? throw new InvalidOperationException("result_json should be valid JSON");
+            foreach (var caseName in new[] { "baseline", "scenario" })
+            {
+                var previewCase = root[caseName]!.AsObject();
+                previewCase.Remove("inventoryFlow");
+                previewCase.Remove("scenarioMetricEvidence");
+                RemovePhysicalComparisonFields(previewCase["productFamilyDashboard"]!["comparison"]!.AsObject());
+                RemovePhysicalComparisonFields(previewCase["bufferTrend"]!["comparison"]!.AsObject());
+            }
+            RemovePhysicalComparisonFields(root["comparison"]!.AsObject());
+
+            using var update = connection.CreateCommand();
+            update.CommandText = "UPDATE scenario_runs SET result_json = $result_json WHERE run_id = $run_id;";
+            update.Parameters.AddWithValue("$result_json", root.ToJsonString());
+            update.Parameters.AddWithValue("$run_id", saved.RunId);
+            update.ExecuteNonQuery();
+        }
+
+        var legacy = persistence.GetDetail(saved.RunId) ?? throw new InvalidOperationException("legacy preview should be readable");
+        AssertEqual(legacyAverageInventory, legacy.Result.Scenario.Metrics.AverageInventoryValue,
+            "legacy compatibility inventory value should be retained");
+        AssertEqual(legacyService, legacy.Result.Scenario.Metrics.ServiceLevelPercent,
+            "legacy compatibility service value should be retained");
+        foreach (var previewCase in new[] { legacy.Result.Baseline, legacy.Result.Scenario })
+        {
+            AssertEqual("EvidenceMissing", previewCase.InventoryFlow?.Status ?? string.Empty,
+                $"{previewCase.CaseId} legacy inventory flow status");
+            var evidence = previewCase.ScenarioMetricEvidence ?? throw new InvalidOperationException("legacy evidence labels should be present");
+            foreach (var path in RequiredPhysicalScenarioMetricPaths())
+            {
+                AssertTrue(evidence.Any(item =>
+                        item.JsonPath == path &&
+                        item.EvidenceStatus == "EvidenceMissing" &&
+                        item.Source == "LegacyReference"),
+                    $"legacy evidence should label {path}");
+            }
+            AssertTrue(!evidence.Any(item => item.Source == "PhysicalProjection"),
+                "legacy compatibility values must not be presented as new physical facts");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestComparisonOmitsIncompletePhysicalDelta()
+{
+    var incomplete = BuildCompletePlanningEvidenceData() with
+    {
+        ConfirmedReceipts = null,
+        OpeningBacklog = null,
+        PlanningEvidenceCoverage = null
+    };
+    var result = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(incomplete))
+        .Preview(new ScenarioRunPreviewRequest(6));
+
+    AssertEqual("EvidenceMissing", result.Baseline.InventoryFlow?.Status ?? string.Empty, "incomplete baseline physical status");
+    AssertEqual("EvidenceMissing", result.Scenario.InventoryFlow?.Status ?? string.Empty, "incomplete scenario physical status");
+    AssertTrue(result.Scenario.Metrics.AverageInventoryValue >= 0m,
+        "legacy non-null compatibility inventory should remain available");
+
+    var json = JsonSerializer.SerializeToNode(result, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+    AssertMissingPhysicalDelta(
+        json["comparison"]!.AsObject(),
+        "physicalServiceLevelDelta",
+        "physicalAverageInventoryValueDelta");
+    var scenario = json["scenario"]!.AsObject();
+    AssertMissingPhysicalDelta(
+        scenario["productFamilyDashboard"]!["comparison"]!.AsObject(),
+        "physicalServiceLevelDelta",
+        "physicalAverageInventoryValueDelta",
+        "physicalBudgetInventoryVarianceDelta");
+    AssertMissingPhysicalDelta(
+        scenario["bufferTrend"]!["comparison"]!.AsObject(),
+        "physicalAverageInventoryValueDelta",
+        "physicalPeakInventoryValueDelta");
+}
+
+static void TestFrozenComparisonPreservesBaselineLineageAndEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-frozen-physical-lineage-{Guid.NewGuid():N}.db");
+    try
+    {
+        var seed = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(seed), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("planner", "physical lineage"));
+        var source = new TrackingScenarioWorkspaceDataSource(seed);
+        var previewService = new ScenarioRunPreviewService(source);
+        var assumptions = new SeedScenarioAssumptionSource();
+        var comparison = new ScenarioComparisonService(baselineService, previewService, assumptions).Compare(
+            new ScenarioComparisonRequest(
+                frozen.SnapshotId,
+                assumptions.GetTemplates().First().ExternalScenario,
+                Array.Empty<ResponseConfiguration>(),
+                6));
+
+        var frozenPlanning = frozen.Payload.PlanningInputs
+            ?? throw new InvalidOperationException("frozen planning inputs should be present");
+        AssertTrue(frozenPlanning.Demand.GroupBy(item => item.Sku).All(group => group.Count() == 52),
+            "immutable frozen payload should retain all 52 demand weeks");
+        AssertTrue(frozenPlanning.PlanningEvidenceCoverage is { CoverageFromWeek: 1, CoverageThroughWeek: 52 },
+            "immutable frozen payload should retain 1..52 coverage");
+        AssertEqual(0, source.LoadCount, "frozen comparison must not reload live planning inputs");
+
+        var frozenBaselineCase = comparison.NoResponse.Preview.Baseline;
+        var legacyCommitmentWindows = frozen.Payload.SupplierCommitments
+            .SelectMany(commitment => Enumerable.Range(1, 6)
+                .Select(week => new SupplierCapacityWindow(
+                    commitment.Supplier,
+                    commitment.MaterialFamily,
+                    week,
+                    commitment.Quantity,
+                    commitment.LeadTimeDays,
+                    commitment.RiskStatus)))
+            .ToList();
+        var expectedLegacySupply = ConstraintWorkspaceService.CompareSupplierCapacity(
+            legacyCommitmentWindows,
+            frozenBaselineCase.Plan.SupplyRequirements,
+            Array.Empty<SupplierCapacityLimit>());
+        AssertEqual(
+            JsonSerializer.Serialize(expectedLegacySupply),
+            JsonSerializer.Serialize(frozenBaselineCase.SupplierCapacity),
+            "physical supplier windows must not change frozen legacy supply calculations");
+
+        foreach (var previewCase in comparison.AllCases.SelectMany(item => new[] { item.Preview.Baseline, item.Preview.Scenario }))
+        {
+            var flow = previewCase.InventoryFlow ?? throw new InvalidOperationException("frozen comparison should expose physical flow");
+            AssertEqual(
+                "Complete",
+                flow.Status,
+                $"{previewCase.CaseId} frozen flow status; issues={string.Join(",", flow.Issues.Select(item => $"{item.Scope}:{item.Sku}:{item.Week}:{item.Reason}"))}");
+            AssertEqual(frozen.SnapshotId, flow.BaselineSnapshotId!, $"{previewCase.CaseId} physical baseline lineage");
+            AssertTrue(flow.Points.All(item => item.Week <= 6), "active comparison points should respect the requested horizon");
+            var frozenReceiptIds = flow.ReceiptLog
+                .Where(item => item.EvidenceSource == "FrozenBaseline")
+                .Select(item => item.SourceId)
+                .ToHashSet(StringComparer.Ordinal);
+            AssertTrue((frozenPlanning.ConfirmedReceipts ?? Array.Empty<ConfirmedReceiptEvidence>())
+                    .All(item => frozenReceiptIds.Contains(item.ReceiptId)),
+                "projection receipt log should retain every frozen confirmed receipt, including outside the active horizon");
+            AssertTrue(previewCase.ScenarioMetricEvidence?.All(item =>
+                    item.BaselineSnapshotId == frozen.SnapshotId &&
+                    item.ProjectionCaseId == previewCase.CaseId &&
+                    item.Source == "PhysicalProjection") == true,
+                "frozen metric evidence should retain baseline and projection lineage");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestInventoryFlowResultJsonRoundTrips()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-physical-result-json-{Guid.NewGuid():N}.db");
+    try
+    {
+        var previewService = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(BuildCompletePlanningEvidenceData()));
+        var persistence = new ScenarioRunPersistenceService(previewService, databasePath);
+        var request = new ScenarioRunPreviewRequest(
+            6,
+            Parameters: new ScenarioRunParameterSet(
+                PrebuildCampaigns: new[] { new PrebuildCampaign("PB-ROUNDTRIP", "SAT-BUS-001", 1, 2, 3, 2m) }));
+        var expected = previewService.Preview(request);
+        var saved = persistence.Save(new ScenarioRunSaveRequest("physical JSON", "round trip", "planner", request));
+        var detail = persistence.GetDetail(saved.RunId) ?? throw new InvalidOperationException("saved physical preview should be readable");
+
+        AssertEqual(
+            JsonSerializer.Serialize(expected.Baseline.InventoryFlow),
+            JsonSerializer.Serialize(detail.Result.Baseline.InventoryFlow),
+            "baseline inventory flow result_json round trip");
+        AssertEqual(
+            JsonSerializer.Serialize(expected.Scenario.InventoryFlow),
+            JsonSerializer.Serialize(detail.Result.Scenario.InventoryFlow),
+            "scenario inventory flow result_json round trip");
+        AssertEqual(
+            JsonSerializer.Serialize(expected.Scenario.ScenarioMetricEvidence),
+            JsonSerializer.Serialize(detail.Result.Scenario.ScenarioMetricEvidence),
+            "scenario metric evidence result_json round trip");
+
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT result_json FROM scenario_runs WHERE run_id = $run_id;";
+            read.Parameters.AddWithValue("$run_id", saved.RunId);
+            var root = JsonNode.Parse((string?)read.ExecuteScalar() ?? string.Empty)?.AsObject()
+                ?? throw new InvalidOperationException("persisted result_json should be valid");
+            AssertTrue(root["scenario"]?["inventoryFlow"] is JsonObject,
+                "optional inventory flow should be written only inside result_json");
+            AssertTrue(root["scenario"]?["scenarioMetricEvidence"] is JsonArray,
+                "path-addressed metric evidence should be written only inside result_json");
+        }
+        using (var schema = connection.CreateCommand())
+        {
+            schema.CommandText = "PRAGMA table_info(scenario_runs);";
+            using var reader = schema.ExecuteReader();
+            var columns = new List<string>();
+            while (reader.Read())
+            {
+                columns.Add(reader.GetString(1));
+            }
+            AssertTrue(!columns.Any(item => item.Contains("inventory_flow", StringComparison.OrdinalIgnoreCase)),
+                "physical result persistence must not add an inventory-flow column or migration");
+        }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static IReadOnlyList<string> RequiredPhysicalScenarioMetricPaths() => new[]
+{
+    "metrics.serviceLevelPercent",
+    "metrics.averageInventoryValue",
+    "budget[*].projectedInventoryValue",
+    "budget[*].budgetInventoryVariance",
+    "productFamilyDashboard.summaries[*].serviceLevelPercent",
+    "productFamilyDashboard.summaries[*].averageInventoryValue",
+    "productFamilyDashboard.summaries[*].peakInventoryValue",
+    "productFamilyDashboard.summaries[*].budgetInventoryVariance",
+    "productFamilyDashboard.details[*].weeklyCells[*].inventoryValue",
+    "productFamilyDashboard.details[*].weeklyCells[*].budgetInventoryVariance",
+    "productFamilyDashboard.weeklyCells[*].inventoryValue",
+    "productFamilyDashboard.weeklyCells[*].budgetInventoryVariance",
+    "bufferTrend.kpis.averageInventoryValue",
+    "bufferTrend.kpis.peakInventoryValue",
+    "bufferTrend.kpis.inventoryValueDelta",
+    "bufferTrend.series[*].inventoryValue",
+    "bufferTrend.familySummaries[*].averageInventoryValue",
+    "bufferTrend.weeklyCells[*].inventoryValue"
+};
+
+static void RemovePhysicalComparisonFields(JsonObject comparison)
+{
+    foreach (var field in new[]
+    {
+        "physicalServiceLevelDelta",
+        "physicalAverageInventoryValueDelta",
+        "physicalPeakInventoryValueDelta",
+        "physicalBudgetInventoryVarianceDelta",
+        "physicalDeltaEvidenceStatus",
+        "physicalDeltaExplanation"
+    })
+    {
+        comparison.Remove(field);
+    }
+}
+
+static void AssertMissingPhysicalDelta(JsonObject comparison, params string[] fields)
+{
+    foreach (var field in fields)
+    {
+        AssertTrue(comparison.ContainsKey(field), $"comparison should expose optional {field}");
+        AssertTrue(comparison[field] is null, $"{field} should be null when either physical projection is incomplete");
+    }
+    AssertEqual("EvidenceMissing", comparison["physicalDeltaEvidenceStatus"]?.GetValue<string>() ?? string.Empty,
+        "physical delta evidence status");
+    AssertTrue(!string.IsNullOrWhiteSpace(comparison["physicalDeltaExplanation"]?.GetValue<string>()),
+        "missing physical delta should carry an explanation");
 }
 
 static InventoryFlowProjectionResult ProjectInventoryFlow(ScenarioWorkspaceDataSet data, SkuBufferSetting sku) =>

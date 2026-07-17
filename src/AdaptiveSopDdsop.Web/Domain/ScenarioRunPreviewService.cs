@@ -56,9 +56,22 @@ public sealed class ScenarioRunPreviewService
                 request.SkuFilter,
                 request.FamilyFilter))
             : LoadFrozenWorkspaceData(request with { HorizonWeeks = horizonWeeks }, frozenBaseline);
+        var inventoryFlowSupplierCapacityWindows = frozenBaseline is null
+            ? null
+            : ScopeFrozenInventoryFlowSupplierCapacityWindows(frozenBaseline, data);
         var parameters = MergeTemplateParameters(data, request.TemplateId, request.Parameters);
 
-        var baseline = BuildCase("baseline", "基准方案", data, data.Skus, data.Demand, Array.Empty<PrebuildCampaign>(), Array.Empty<ResourceCapacityAdjustment>(), Array.Empty<SupplierCapacityLimit>());
+        var baseline = BuildCase(
+            "baseline",
+            "基准方案",
+            data,
+            data.Skus,
+            data.Demand,
+            Array.Empty<PrebuildCampaign>(),
+            Array.Empty<ResourceCapacityAdjustment>(),
+            Array.Empty<SupplierCapacityLimit>(),
+            frozenBaseline?.SnapshotId,
+            inventoryFlowSupplierCapacityWindows);
         var scenarioSkus = ApplySkuPolicyOverrides(data.Skus, parameters.SkuPolicyOverrides ?? Array.Empty<SkuPolicyOverride>());
         var scenarioDemand = ApplyExternalDemandChanges(
             ApplyDemandEvents(data, request.TemplateId),
@@ -78,14 +91,24 @@ public sealed class ScenarioRunPreviewService
             scenarioDemand,
             parameters.PrebuildCampaigns ?? Array.Empty<PrebuildCampaign>(),
             capacityAdjustments,
-            supplierCapacityLimits);
+            supplierCapacityLimits,
+            frozenBaseline?.SnapshotId,
+            inventoryFlowSupplierCapacityWindows);
 
-        var bufferTrendComparison = BufferTrendWorkspaceService.Compare(baseline.BufferTrend, scenario.BufferTrend);
+        var bufferTrendComparison = BufferTrendWorkspaceService.Compare(
+            baseline.BufferTrend,
+            scenario.BufferTrend,
+            baseline.InventoryFlow,
+            scenario.InventoryFlow);
         scenario = scenario with
         {
             ProductFamilyDashboard = ProductFamilyDashboardService.WithComparison(
                 scenario.ProductFamilyDashboard,
-                ProductFamilyDashboardService.Compare(baseline.ProductFamilyDashboard, scenario.ProductFamilyDashboard)),
+                ProductFamilyDashboardService.Compare(
+                    baseline.ProductFamilyDashboard,
+                    scenario.ProductFamilyDashboard,
+                    baseline.InventoryFlow,
+                    scenario.InventoryFlow)),
             BufferTrend = BufferTrendWorkspaceService.WithComparison(scenario.BufferTrend, bufferTrendComparison)
         };
         var trace = BuildAuditTrace(data, request, parameters, baseline, scenario).ToList();
@@ -101,7 +124,7 @@ public sealed class ScenarioRunPreviewService
             request with { HorizonWeeks = horizonWeeks, Parameters = parameters },
             baseline,
             scenario,
-            Compare(baseline.Metrics, scenario.Metrics),
+            Compare(baseline, scenario),
             RccpWorkspaceService.Compare(baseline.Rccp, scenario.Rccp),
             trace,
             IsPersisted: false);
@@ -137,7 +160,7 @@ public sealed class ScenarioRunPreviewService
             throw new ArgumentException($"冻结基线缺少资源能力证据：{string.Join("、", missingResources)}。", nameof(frozenBaseline));
         }
 
-        var supplierWindows = frozenBaseline.Payload.SupplierCommitments
+        var commitmentWindows = frozenBaseline.Payload.SupplierCommitments
             .SelectMany(commitment => Enumerable.Range(1, data.Request.HorizonWeeks)
                 .Select(week => new SupplierCapacityWindow(
                     commitment.Supplier,
@@ -147,7 +170,7 @@ public sealed class ScenarioRunPreviewService
                     commitment.LeadTimeDays,
                     commitment.RiskStatus)))
             .ToList();
-        if (supplierWindows.Count == 0)
+        if (commitmentWindows.Count == 0)
         {
             throw new ArgumentException("冻结基线缺少供应承诺证据。", nameof(frozenBaseline));
         }
@@ -156,9 +179,24 @@ public sealed class ScenarioRunPreviewService
         {
             Inventory = inventory,
             Resources = resources,
-            SupplierCapacityWindows = supplierWindows,
+            SupplierCapacityWindows = commitmentWindows,
             MasterSettings = frozenBaseline.Payload.MasterSettings
         };
+    }
+
+    private static IReadOnlyList<SupplierCapacityWindow> ScopeFrozenInventoryFlowSupplierCapacityWindows(
+        CurrentBaselineSnapshot frozenBaseline,
+        ScenarioWorkspaceDataSet data)
+    {
+        var planningInputs = frozenBaseline.Payload.PlanningInputs
+            ?? throw new InvalidOperationException("该冻结基线不含完整类型化计划输入，不能用于库存流投影。");
+        var sourceKeys = data.SupplierItemSources
+            .Select(item => (item.Supplier, item.MaterialFamily))
+            .ToHashSet();
+        return planningInputs.SupplierCapacityWindows
+            .Where(item => sourceKeys.Contains((item.Supplier, item.MaterialFamily)))
+            .Where(item => item.Week <= data.Request.HorizonWeeks)
+            .ToList();
     }
 
     private static ScenarioWorkspaceDataSet ScopeFrozenPlanningInputs(
@@ -208,14 +246,28 @@ public sealed class ScenarioRunPreviewService
         IReadOnlyList<WeeklyDemand> demand,
         IReadOnlyList<PrebuildCampaign> prebuildCampaigns,
         IReadOnlyList<ResourceCapacityAdjustment> capacityAdjustments,
-        IReadOnlyList<SupplierCapacityLimit> supplierCapacityLimits)
+        IReadOnlyList<SupplierCapacityLimit> supplierCapacityLimits,
+        string? baselineSnapshotId,
+        IReadOnlyList<SupplierCapacityWindow>? inventoryFlowSupplierCapacityWindows)
     {
+        var inventoryFlowData = inventoryFlowSupplierCapacityWindows is null
+            ? data
+            : data with { SupplierCapacityWindows = inventoryFlowSupplierCapacityWindows };
         var bufferRun = DemandDrivenPlanningEngine.ProjectBuffers(
             skus,
             data.Inventory,
             demand,
             data.Request.HorizonWeeks,
             prebuildCampaigns);
+        var inventoryFlow = InventoryFlowProjectionService.Project(
+            inventoryFlowData,
+            caseId,
+            skus,
+            demand,
+            bufferRun.ReplenishmentOrders,
+            prebuildCampaigns,
+            supplierCapacityLimits,
+            baselineSnapshotId);
         var capacityLoads = DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
             bufferRun.ReplenishmentOrders,
             data.ResourceRoutings,
@@ -231,9 +283,12 @@ public sealed class ScenarioRunPreviewService
             capacityLoads,
             supplyRequirements,
             bufferRun.Traces);
-        var supplierCapacity = ConstraintWorkspaceService.CompareSupplierCapacity(data.SupplierCapacityWindows, supplyRequirements, supplierCapacityLimits);
-        var budget = CompareBudget(data, skus, bufferRun.BufferProjections);
-        var bufferTrend = BufferTrendWorkspaceService.Build(data, caseId, name, skus, plan);
+        var activeSupplierWindows = data.SupplierCapacityWindows
+            .Where(item => item.Week <= data.Request.HorizonWeeks)
+            .ToList();
+        var supplierCapacity = ConstraintWorkspaceService.CompareSupplierCapacity(activeSupplierWindows, supplyRequirements, supplierCapacityLimits);
+        var budget = CompareBudget(data, skus, bufferRun.BufferProjections, inventoryFlow);
+        var bufferTrend = BufferTrendWorkspaceService.Build(data, caseId, name, skus, plan, inventoryFlow);
         var productFamilyDashboard = ProductFamilyDashboardService.Build(
             data,
             caseId,
@@ -241,7 +296,8 @@ public sealed class ScenarioRunPreviewService
             skus,
             plan,
             supplierCapacity,
-            budget);
+            budget,
+            inventoryFlow);
         var rccp = RccpWorkspaceService.Build(data, caseId, $"{name} RCCP", plan);
         var constraints = ConstraintWorkspaceService.Build(data, caseId, $"{name} 受限 / 不受限", plan, supplierCapacity);
         var supplierCollaboration = SupplierCollaborationWorkspaceService.Build(
@@ -255,14 +311,16 @@ public sealed class ScenarioRunPreviewService
             caseId,
             name,
             plan,
-            CalculateMetrics(data, skus, bufferRun.BufferProjections, bufferRun.ReplenishmentOrders, capacityLoads, supplierCapacity),
+            CalculateMetrics(data, skus, bufferRun.BufferProjections, bufferRun.ReplenishmentOrders, capacityLoads, supplierCapacity, inventoryFlow),
             productFamilyDashboard,
             bufferTrend,
             rccp,
             constraints,
             supplierCollaboration,
             supplierCapacity,
-            budget);
+            budget,
+            inventoryFlow,
+            BuildMetricEvidence(inventoryFlow, caseId, baselineSnapshotId));
     }
 
     private static ScenarioRunParameterSet MergeTemplateParameters(
@@ -423,15 +481,21 @@ public sealed class ScenarioRunPreviewService
     private static IReadOnlyList<BudgetComparison> CompareBudget(
         ScenarioWorkspaceDataSet data,
         IReadOnlyList<SkuBufferSetting> skus,
-        IReadOnlyList<BufferProjectionPoint> projections)
+        IReadOnlyList<BufferProjectionPoint> projections,
+        InventoryFlowProjectionResult? inventoryFlow)
     {
         var skuMap = skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
         return data.BudgetBenchmarks.Select(benchmark =>
         {
-            var projectedInventory = projections
-                .Where(item => item.Week == benchmark.Week)
-                .Where(item => skuMap.TryGetValue(item.Sku, out var sku) && sku.Family == benchmark.Family)
-                .Sum(item => item.EndNetFlowAfterReplenishment * skuMap[item.Sku].UnitCost);
+            var projectedInventory = IsComplete(inventoryFlow)
+                ? inventoryFlow!.Points
+                    .Where(item => item.Week == benchmark.Week)
+                    .Where(item => skuMap.TryGetValue(item.Sku, out var sku) && sku.Family == benchmark.Family)
+                    .Sum(item => item.EndingInventoryValue)
+                : projections
+                    .Where(item => item.Week == benchmark.Week)
+                    .Where(item => skuMap.TryGetValue(item.Sku, out var sku) && sku.Family == benchmark.Family)
+                    .Sum(item => item.EndNetFlowAfterReplenishment * skuMap[item.Sku].UnitCost);
             return new BudgetComparison(
                 benchmark.Family,
                 benchmark.Week,
@@ -450,14 +514,21 @@ public sealed class ScenarioRunPreviewService
         IReadOnlyList<BufferProjectionPoint> projections,
         IReadOnlyList<ProjectedReplenishmentOrder> orders,
         IReadOnlyList<CapacityLoadProjection> loads,
-        IReadOnlyList<SupplierCapacityComparison> supplierCapacity)
+        IReadOnlyList<SupplierCapacityComparison> supplierCapacity,
+        InventoryFlowProjectionResult? inventoryFlow)
     {
-        var service = data.HistoricalDemand.Count == 0 ? 0m : decimal.Round(data.HistoricalDemand.Average(item => item.ServiceLevelPercent), 1);
+        var service = IsComplete(inventoryFlow)
+            ? decimal.Round(inventoryFlow!.Summary!.OnTimeServicePercent ?? 0m, 1)
+            : data.HistoricalDemand.Count == 0
+                ? 0m
+                : decimal.Round(data.HistoricalDemand.Average(item => item.ServiceLevelPercent), 1);
         var healthyProjectionCount = projections.Count(item => item.BufferStatus is "Green" or "OverTopOfGreen");
         var bufferHealth = projections.Count == 0 ? 0m : decimal.Round(healthyProjectionCount * 100m / projections.Count, 1);
-        var averageInventory = projections.Count == 0
-            ? 0m
-            : projections.Join(skus, point => point.Sku, sku => sku.Sku, (point, sku) => point.EndNetFlowAfterReplenishment * sku.UnitCost).Average();
+        var averageInventory = IsComplete(inventoryFlow)
+            ? inventoryFlow!.Summary!.AverageInventoryValue
+            : projections.Count == 0
+                ? 0m
+                : projections.Join(skus, point => point.Sku, sku => sku.Sku, (point, sku) => point.EndNetFlowAfterReplenishment * sku.UnitCost).Average();
         var peakLoad = loads.Count == 0 ? 0m : loads.Max(item => item.LoadPercent);
         var averageLoad = loads.Count == 0 ? 0m : decimal.Round(loads.Average(item => item.LoadPercent), 1);
         var flowIndex = CalculateFlowIndex(bufferHealth, averageLoad);
@@ -477,19 +548,194 @@ public sealed class ScenarioRunPreviewService
             orders.Count);
     }
 
-    private static ScenarioComparisonMetrics Compare(ScenarioPreviewMetrics baseline, ScenarioPreviewMetrics scenario)
+    private static ScenarioComparisonMetrics Compare(ScenarioRunPreviewCase baseline, ScenarioRunPreviewCase scenario)
     {
+        var baselineMetrics = baseline.Metrics;
+        var scenarioMetrics = scenario.Metrics;
+        var physicalComplete = IsComplete(baseline.InventoryFlow) && IsComplete(scenario.InventoryFlow);
+        var serviceDelta = decimal.Round(scenarioMetrics.ServiceLevelPercent - baselineMetrics.ServiceLevelPercent, 1);
+        var inventoryDelta = scenarioMetrics.AverageInventoryValue - baselineMetrics.AverageInventoryValue;
         return new ScenarioComparisonMetrics(
-            decimal.Round(scenario.ServiceLevelPercent - baseline.ServiceLevelPercent, 1),
-            decimal.Round(scenario.FlowIndex - baseline.FlowIndex, 1),
-            scenario.AverageInventoryValue - baseline.AverageInventoryValue,
-            scenario.PeakLoadPercent - baseline.PeakLoadPercent,
-            scenario.AverageLoadPercent - baseline.AverageLoadPercent,
-            scenario.RedSkuCount - baseline.RedSkuCount,
-            scenario.SupplyGap - baseline.SupplyGap,
-            scenario.ReplenishmentValue - baseline.ReplenishmentValue,
-            scenario.ReplenishmentOrderCount - baseline.ReplenishmentOrderCount);
+            serviceDelta,
+            decimal.Round(scenarioMetrics.FlowIndex - baselineMetrics.FlowIndex, 1),
+            inventoryDelta,
+            scenarioMetrics.PeakLoadPercent - baselineMetrics.PeakLoadPercent,
+            scenarioMetrics.AverageLoadPercent - baselineMetrics.AverageLoadPercent,
+            scenarioMetrics.RedSkuCount - baselineMetrics.RedSkuCount,
+            scenarioMetrics.SupplyGap - baselineMetrics.SupplyGap,
+            scenarioMetrics.ReplenishmentValue - baselineMetrics.ReplenishmentValue,
+            scenarioMetrics.ReplenishmentOrderCount - baselineMetrics.ReplenishmentOrderCount,
+            physicalComplete ? serviceDelta : null,
+            physicalComplete ? inventoryDelta : null,
+            physicalComplete ? "Complete" : "EvidenceMissing",
+            physicalComplete
+                ? "Both scenario cases use complete physical inventory projections."
+                : "Physical scenario deltas are omitted because at least one case lacks complete inventory-flow evidence.");
     }
+
+    internal static ScenarioRunPreviewResult RestoreLegacyInventoryEvidence(
+        ScenarioRunPreviewResult result,
+        string? baselineSnapshotId = null)
+    {
+        var baseline = RestoreLegacyCase(result.Baseline, baselineSnapshotId);
+        var scenario = RestoreLegacyCase(result.Scenario, baselineSnapshotId);
+        var comparison = result.Comparison.PhysicalDeltaEvidenceStatus is null
+            ? result.Comparison with
+            {
+                PhysicalServiceLevelDelta = null,
+                PhysicalAverageInventoryValueDelta = null,
+                PhysicalDeltaEvidenceStatus = "EvidenceMissing",
+                PhysicalDeltaExplanation = "This stored scenario predates physical comparison evidence; compatibility deltas remain legacy references."
+            }
+            : result.Comparison;
+        return result with
+        {
+            Baseline = baseline,
+            Scenario = scenario,
+            Comparison = comparison
+        };
+    }
+
+    private static ScenarioRunPreviewCase RestoreLegacyCase(
+        ScenarioRunPreviewCase previewCase,
+        string? baselineSnapshotId)
+    {
+        var inventoryFlow = previewCase.InventoryFlow ?? LegacyMissingFlow(previewCase.CaseId, baselineSnapshotId);
+        var evidence = previewCase.ScenarioMetricEvidence
+            ?? BuildMetricEvidence(inventoryFlow, previewCase.CaseId, baselineSnapshotId);
+        var familyComparison = previewCase.ProductFamilyDashboard.Comparison.PhysicalDeltaEvidenceStatus is null
+            ? previewCase.ProductFamilyDashboard.Comparison with
+            {
+                PhysicalServiceLevelDelta = null,
+                PhysicalAverageInventoryValueDelta = null,
+                PhysicalBudgetInventoryVarianceDelta = null,
+                PhysicalDeltaEvidenceStatus = "EvidenceMissing",
+                PhysicalDeltaExplanation = "This stored product-family comparison predates physical evidence; compatibility deltas remain legacy references."
+            }
+            : previewCase.ProductFamilyDashboard.Comparison;
+        var bufferComparison = previewCase.BufferTrend.Comparison.PhysicalDeltaEvidenceStatus is null
+            ? previewCase.BufferTrend.Comparison with
+            {
+                PhysicalAverageInventoryValueDelta = null,
+                PhysicalPeakInventoryValueDelta = null,
+                PhysicalDeltaEvidenceStatus = "EvidenceMissing",
+                PhysicalDeltaExplanation = "This stored buffer comparison predates physical evidence; compatibility deltas remain legacy references."
+            }
+            : previewCase.BufferTrend.Comparison;
+
+        return previewCase with
+        {
+            InventoryFlow = inventoryFlow,
+            ScenarioMetricEvidence = evidence,
+            ProductFamilyDashboard = previewCase.ProductFamilyDashboard with { Comparison = familyComparison },
+            BufferTrend = previewCase.BufferTrend with { Comparison = bufferComparison }
+        };
+    }
+
+    private static InventoryFlowProjectionResult LegacyMissingFlow(string caseId, string? baselineSnapshotId) =>
+        new(
+            caseId,
+            "EvidenceMissing",
+            Array.Empty<InventoryFlowPoint>(),
+            Array.Empty<InventoryReceiptLogEntry>(),
+            Array.Empty<InventoryFlowSkuSummary>(),
+            null,
+            new[]
+            {
+                new InventoryFlowTrace(
+                    "LegacyResult",
+                    null,
+                    null,
+                    null,
+                    "The stored result predates physical inventory projection evidence; legacy compatibility values were retained without relabeling them as physical facts.")
+            },
+            Array.Empty<PlanningEvidenceIssue>(),
+            baselineSnapshotId);
+
+    private static IReadOnlyList<ScenarioMetricEvidence> BuildMetricEvidence(
+        InventoryFlowProjectionResult inventoryFlow,
+        string caseId,
+        string? baselineSnapshotId)
+    {
+        var complete = IsComplete(inventoryFlow);
+        var status = complete ? "Complete" : "EvidenceMissing";
+        var source = complete ? "PhysicalProjection" : "LegacyReference";
+        var paths = new[]
+        {
+            "metrics.serviceLevelPercent",
+            "metrics.averageInventoryValue",
+            "budget[*].projectedInventoryValue",
+            "budget[*].budgetInventoryVariance",
+            "productFamilyDashboard.summaries[*].serviceLevelPercent",
+            "productFamilyDashboard.summaries[*].averageInventoryValue",
+            "productFamilyDashboard.summaries[*].peakInventoryValue",
+            "productFamilyDashboard.summaries[*].budgetInventoryVariance",
+            "productFamilyDashboard.details[*].weeklyCells[*].inventoryValue",
+            "productFamilyDashboard.details[*].weeklyCells[*].budgetInventoryVariance",
+            "productFamilyDashboard.details[*].bufferSummaries[*].averageInventoryValue",
+            "productFamilyDashboard.weeklyCells[*].inventoryValue",
+            "productFamilyDashboard.weeklyCells[*].budgetInventoryVariance",
+            "bufferTrend.kpis.averageInventoryValue",
+            "bufferTrend.kpis.peakInventoryValue",
+            "bufferTrend.kpis.inventoryValueDelta",
+            "bufferTrend.series[*].inventoryValue",
+            "bufferTrend.familySummaries[*].averageInventoryValue",
+            "bufferTrend.weeklyCells[*].inventoryValue",
+            "bufferTrend.skuDetails[*].series[*].inventoryValue"
+        };
+        var cashPaths = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "metrics.averageInventoryValue",
+            "budget[*].projectedInventoryValue",
+            "productFamilyDashboard.summaries[*].averageInventoryValue",
+            "productFamilyDashboard.summaries[*].peakInventoryValue",
+            "productFamilyDashboard.details[*].weeklyCells[*].inventoryValue",
+            "productFamilyDashboard.details[*].bufferSummaries[*].averageInventoryValue",
+            "productFamilyDashboard.weeklyCells[*].inventoryValue",
+            "bufferTrend.kpis.averageInventoryValue",
+            "bufferTrend.kpis.peakInventoryValue",
+            "bufferTrend.kpis.inventoryValueDelta",
+            "bufferTrend.series[*].inventoryValue",
+            "bufferTrend.familySummaries[*].averageInventoryValue",
+            "bufferTrend.weeklyCells[*].inventoryValue",
+            "bufferTrend.skuDetails[*].series[*].inventoryValue"
+        };
+        var evidence = new List<ScenarioMetricEvidence>();
+        foreach (var path in paths)
+        {
+            var category = path.Contains("serviceLevelPercent", StringComparison.Ordinal)
+                ? "projected service"
+                : path.Contains("budgetInventoryVariance", StringComparison.Ordinal)
+                    ? "inventory-budget variance"
+                    : "physical inventory";
+            evidence.Add(new ScenarioMetricEvidence(
+                path,
+                status,
+                source,
+                complete
+                    ? $"The {category} compatibility value is sourced from the complete physical inventory projection."
+                    : $"The {category} compatibility value is retained from the legacy calculation because complete physical evidence is unavailable.",
+                caseId,
+                inventoryFlow.BaselineSnapshotId ?? baselineSnapshotId));
+            if (cashPaths.Contains(path))
+            {
+                evidence.Add(new ScenarioMetricEvidence(
+                    path,
+                    status,
+                    source,
+                    complete
+                        ? "The cash-occupation view reuses this physical inventory amount and has its own path-addressed evidence entry."
+                        : "The cash-occupation compatibility view retains this legacy amount and does not claim a new physical fact.",
+                    caseId,
+                    inventoryFlow.BaselineSnapshotId ?? baselineSnapshotId));
+            }
+        }
+
+        return evidence;
+    }
+
+    private static bool IsComplete(InventoryFlowProjectionResult? inventoryFlow) =>
+        inventoryFlow is { Status: "Complete", Summary: not null };
 
     private static IReadOnlyList<ScenarioAuditTrace> BuildAuditTrace(
         ScenarioWorkspaceDataSet data,

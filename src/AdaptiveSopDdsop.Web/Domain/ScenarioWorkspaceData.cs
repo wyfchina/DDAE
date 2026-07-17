@@ -480,7 +480,11 @@ public sealed record BufferTrendComparison(
     decimal PeakInventoryValueDelta,
     int RedWeekDelta,
     int ReplenishmentOrderCountDelta,
-    decimal ReplenishmentQuantityDelta);
+    decimal ReplenishmentQuantityDelta,
+    decimal? PhysicalAverageInventoryValueDelta = null,
+    decimal? PhysicalPeakInventoryValueDelta = null,
+    string? PhysicalDeltaEvidenceStatus = null,
+    string? PhysicalDeltaExplanation = null);
 
 public sealed record BufferFamilySummary(
     string Family,
@@ -658,7 +662,12 @@ public sealed record ProductFamilyDashboardComparison(
     decimal SupplyGapDelta,
     decimal CapacityGapDelta,
     int RedWeekDelta,
-    decimal BudgetInventoryVarianceDelta);
+    decimal BudgetInventoryVarianceDelta,
+    decimal? PhysicalServiceLevelDelta = null,
+    decimal? PhysicalAverageInventoryValueDelta = null,
+    decimal? PhysicalBudgetInventoryVarianceDelta = null,
+    string? PhysicalDeltaEvidenceStatus = null,
+    string? PhysicalDeltaExplanation = null);
 
 public sealed record ScenarioRunPreviewCase(
     string CaseId,
@@ -684,7 +693,11 @@ public sealed record ScenarioComparisonMetrics(
     int RedSkuCountDelta,
     decimal SupplyGapDelta,
     decimal ReplenishmentValueDelta,
-    int ReplenishmentOrderCountDelta);
+    int ReplenishmentOrderCountDelta,
+    decimal? PhysicalServiceLevelDelta = null,
+    decimal? PhysicalAverageInventoryValueDelta = null,
+    string? PhysicalDeltaEvidenceStatus = null,
+    string? PhysicalDeltaExplanation = null);
 
 public sealed record ScenarioAuditTrace(
     string Stage,
