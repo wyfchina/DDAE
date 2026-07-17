@@ -506,7 +506,15 @@ public static class InventoryFlowProjectionService
         var totalRequested = candidates.Sum(item => item.Quantity);
         var acceptedBySource = new Dictionary<string, decimal>(StringComparer.Ordinal);
         var residualBySource = new Dictionary<string, decimal>(StringComparer.Ordinal);
-        if (totalRequested <= capacity || totalRequested == 0m)
+        var maximumAcceptedBySource = candidates.ToDictionary(
+            item => item.SourceId,
+            item => QuantizeQuantityDown(Math.Max(0m, item.Quantity)),
+            StringComparer.Ordinal);
+        var available = Math.Max(0m, Math.Min(capacity, totalRequested));
+        var allocatable = Math.Min(
+            QuantizeQuantityDown(available),
+            maximumAcceptedBySource.Values.Sum());
+        if (totalRequested == 0m || (totalRequested <= capacity && allocatable == totalRequested))
         {
             foreach (var candidate in candidates)
             {
@@ -516,24 +524,24 @@ public static class InventoryFlowProjectionService
         }
         else
         {
-            var available = Math.Max(0m, Math.Min(capacity, totalRequested));
-            var roundedAvailable = Math.Min(totalRequested, RoundQuantity(available));
             foreach (var candidate in candidates)
             {
-                var rawShare = available * candidate.Quantity / totalRequested;
-                var accepted = Math.Min(candidate.Quantity, Math.Max(0m, RoundQuantity(rawShare)));
+                var rawShare = allocatable * candidate.Quantity / totalRequested;
+                var accepted = Math.Min(
+                    maximumAcceptedBySource[candidate.SourceId],
+                    Math.Max(0m, RoundQuantity(rawShare)));
                 acceptedBySource[candidate.SourceId] = accepted;
                 residualBySource[candidate.SourceId] = 0m;
             }
 
-            var residual = roundedAvailable - acceptedBySource.Values.Sum();
+            var residual = allocatable - acceptedBySource.Values.Sum();
             var unassignedResidual = residual;
             for (var index = candidates.Count - 1; index >= 0 && unassignedResidual != 0m; index--)
             {
                 var candidate = candidates[index];
                 var accepted = acceptedBySource[candidate.SourceId];
                 var adjustment = unassignedResidual > 0m
-                    ? Math.Min(unassignedResidual, candidate.Quantity - accepted)
+                    ? Math.Min(unassignedResidual, maximumAcceptedBySource[candidate.SourceId] - accepted)
                     : -Math.Min(-unassignedResidual, accepted);
                 acceptedBySource[candidate.SourceId] += adjustment;
                 residualBySource[candidate.SourceId] += adjustment;
@@ -646,6 +654,17 @@ public static class InventoryFlowProjectionService
 
     private static decimal RoundQuantity(decimal value) =>
         decimal.Round(value, QuantityOutputPrecision);
+
+    private static decimal QuantizeQuantityDown(decimal value)
+    {
+        var scale = 1m;
+        for (var digit = 0; digit < QuantityOutputPrecision; digit++)
+        {
+            scale *= 10m;
+        }
+
+        return decimal.Floor(value * scale) / scale;
+    }
 
     private static IReadOnlyList<InventoryFlowPoint> BuildPoints(
         ScenarioWorkspaceDataSet data,

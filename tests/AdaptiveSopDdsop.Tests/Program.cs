@@ -141,6 +141,8 @@ var tests = new (string Name, Action Run)[]
     ("Supplier capacity constrains simulated receipts only", TestSupplierCapacityConstrainsSimulatedOnly),
     ("Supplier capacity allocates proportionally", TestSupplierCapacityAllocatesProportionally),
     ("Supplier capacity assigns rounding residual deterministically", TestSupplierCapacityAssignsRoundingResidualDeterministically),
+    ("Supplier capacity never rounds fractional limits upward", TestSupplierCapacityNeverRoundsFractionalLimitUpward),
+    ("Supplier capacity quantizes fractional source caps", TestSupplierCapacityQuantizesFractionalSourceCaps),
     ("Supplier capacity rounding never overallocates a source", TestSupplierCapacityRoundingNeverOverallocatesSource),
     ("Deferred simulated receipt carries forward", TestDeferredSimulatedReceiptCarriesForward),
     ("Frozen receipts remain fixed under capacity loss", TestFrozenReceiptsRemainFixed),
@@ -6549,6 +6551,73 @@ static void TestSupplierCapacityAssignsRoundingResidualDeterministically()
             item.SourceId == allocated[1].SourceId &&
             item.Explanation.Contains("residual=1", StringComparison.Ordinal)),
         "rounding residual assignment must be stable and traceable");
+}
+
+static void TestSupplierCapacityNeverRoundsFractionalLimitUpward()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 7);
+    var source = data.SupplierItemSources.Single();
+    var order = new ProjectedReplenishmentOrder(sku.Sku, 1, 1m, 10m, "TopOfGreen");
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 0.6m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-fractional-limit",
+        new[] { sku },
+        data.Demand,
+        new[] { order },
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    var allocated = result.ReceiptLog.Single(item =>
+        item.SourceKind == "SimulatedReplenishment" && item.ArrivalWeek == 2);
+    AssertEqual(0m, allocated.AcceptedQuantity,
+        "capacity below the minimum output unit must not be rounded up");
+    AssertEqual(1m, allocated.DeferredQuantity,
+        "quantity rejected by capacity precision must be deferred");
+    AssertTrue(allocated.AcceptedQuantity <= 0.6m,
+        "accepted group total must not exceed raw supplier capacity");
+    AssertEqual(decimal.Truncate(allocated.AcceptedQuantity), allocated.AcceptedQuantity,
+        "accepted quantity must conform to zero-decimal output precision");
+    AssertEqual(decimal.Truncate(allocated.RoundingResidual), allocated.RoundingResidual,
+        "rounding residual must conform to zero-decimal output precision");
+}
+
+static void TestSupplierCapacityQuantizesFractionalSourceCaps()
+{
+    var (data, skus) = BuildSharedSupplierInventoryFlowFixture(2, 2, 10m);
+    var source = data.SupplierItemSources.First();
+    var orders = skus
+        .Select(sku => new ProjectedReplenishmentOrder(sku.Sku, 1, 0.6m, 6m, "TopOfGreen"))
+        .ToList();
+    var limit = new SupplierCapacityLimit(source.Supplier, source.MaterialFamily, 2, 2, 0.6m);
+
+    var result = InventoryFlowProjectionService.Project(
+        data,
+        "supplier-capacity-fractional-source-caps",
+        skus,
+        data.Demand,
+        orders,
+        Array.Empty<PrebuildCampaign>(),
+        new[] { limit });
+
+    var allocated = result.ReceiptLog
+        .Where(item => item.SourceKind == "SimulatedReplenishment" && item.ArrivalWeek == 2)
+        .ToList();
+    AssertTrue(allocated.All(item => item.AcceptedQuantity == decimal.Truncate(item.AcceptedQuantity)),
+        "every accepted quantity must conform to zero-decimal output precision");
+    AssertTrue(allocated.All(item => item.RoundingResidual == decimal.Truncate(item.RoundingResidual)),
+        "every rounding residual must conform to zero-decimal output precision");
+    AssertTrue(allocated.All(item => item.AcceptedQuantity <= item.RequestedQuantity),
+        "no source may receive more than it requested");
+    AssertTrue(allocated.Sum(item => item.AcceptedQuantity) <= 0.6m,
+        "accepted group total must not exceed raw supplier capacity");
+    AssertEqual(0m, allocated.Sum(item => item.AcceptedQuantity),
+        "fractional source caps below the minimum output unit cannot accept a whole unit");
 }
 
 static void TestSupplierCapacityRoundingNeverOverallocatesSource()
