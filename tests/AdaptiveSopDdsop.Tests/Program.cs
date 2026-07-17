@@ -40,6 +40,7 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline blocks incomplete DDMRP sizing evidence", TestCurrentBaselineBlocksIncompleteDdmrpSizingEvidence),
     ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
+    ("Current baseline UI shows typed planning evidence without zero backfill", TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
     ("Seed time-buffer progress covers every requested horizon week", TestSeedTimeBufferProgressCoversRequestedHorizon),
     ("Time-buffer baseline freeze rejects partial horizon evidence", TestTimeBufferBaselineFreezeRejectsPartialHorizonEvidence),
@@ -1686,6 +1687,95 @@ static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
     AssertTrue(
         !renderRule.Contains("item.isRequired &&", StringComparison.Ordinal),
         "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
+}
+
+static void TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    var meetingSnapshotStart = page.IndexOf("id=\"baseline-meeting-snapshot-view\"", StringComparison.Ordinal);
+    var nextWorkspaceStart = page.IndexOf("id=\"data-readiness-panel\"", meetingSnapshotStart, StringComparison.Ordinal);
+    AssertTrue(meetingSnapshotStart >= 0 && nextWorkspaceStart > meetingSnapshotStart,
+        "current-baseline meeting snapshot should bound its planning evidence area");
+
+    foreach (var (id, heading) in new[]
+    {
+        ("baseline-coverage-evidence", "覆盖证据"),
+        ("baseline-receipt-evidence", "确认到货"),
+        ("baseline-backlog-evidence", "期初积压")
+    })
+    {
+        var sectionStart = page.IndexOf($"id=\"{id}\"", meetingSnapshotStart, StringComparison.Ordinal);
+        AssertTrue(sectionStart > meetingSnapshotStart && sectionStart < nextWorkspaceStart,
+            $"{id} should be a current-baseline sibling evidence section");
+        var sectionEnd = page.IndexOf("</section>", sectionStart, StringComparison.Ordinal);
+        AssertTrue(sectionEnd > sectionStart, $"{id} should have a closing section tag");
+        var section = page.Substring(sectionStart, sectionEnd - sectionStart);
+        AssertTrue(section.Contains($"<h2>{heading}</h2>", StringComparison.Ordinal),
+            $"{id} should use the required Chinese heading");
+        AssertTrue(heading.Length <= 6, $"{id} heading should be at most six Chinese characters");
+    }
+
+    foreach (var receiptColumn in new[] { "SKU", "数量", "预计周", "类型", "来源", "确认", "截止", "证据状态" })
+    {
+        AssertTrue(page.Contains($"<th>{receiptColumn}</th>", StringComparison.Ordinal),
+            $"confirmed receipt evidence should expose {receiptColumn}");
+    }
+    foreach (var backlogColumn in new[] { "行", "SKU", "数量", "新鲜度", "完整性", "阻断项" })
+    {
+        AssertTrue(page.Contains($"<th>{backlogColumn}</th>", StringComparison.Ordinal),
+            $"opening backlog evidence should expose {backlogColumn}");
+    }
+
+    var renderEvidence = SourceFunctionBody(script, "renderBaselinePlanningEvidence");
+    AssertTrue(
+        renderEvidence.Contains("planningInputs.planningEvidenceCoverage", StringComparison.Ordinal) &&
+        renderEvidence.Contains("planningInputs.confirmedReceipts", StringComparison.Ordinal) &&
+        renderEvidence.Contains("planningInputs.openingBacklog", StringComparison.Ordinal),
+        "baseline evidence renderer should read the three typed backend DTO fields");
+    AssertTrue(
+        renderEvidence.Contains("candidateId", StringComparison.Ordinal) &&
+        renderEvidence.Contains("masterSettingVersion", StringComparison.Ordinal) &&
+        renderEvidence.Contains("snapshotNumber", StringComparison.Ordinal) &&
+        renderEvidence.Contains("不可变", StringComparison.Ordinal),
+        "candidate and frozen baseline contexts should expose candidate/snapshot identity, version and immutability");
+    AssertTrue(
+        renderEvidence.Contains("后端未提供 SKU", StringComparison.Ordinal) &&
+        renderEvidence.Contains("后端未提供数量", StringComparison.Ordinal) &&
+        renderEvidence.Contains("后端未提供预计周", StringComparison.Ordinal),
+        "missing receipt identity, quantity and week should explain the absent backend evidence");
+
+    var evidenceValue = SourceFunctionBody(script, "baselineEvidenceValue");
+    AssertTrue(
+        evidenceValue.Contains("value === null", StringComparison.Ordinal) &&
+        evidenceValue.Contains("value === undefined", StringComparison.Ordinal) &&
+        evidenceValue.Contains("value === \"\"", StringComparison.Ordinal) &&
+        evidenceValue.Contains("证据缺失", StringComparison.Ordinal) &&
+        evidenceValue.Contains("reason", StringComparison.Ordinal),
+        "typed evidence fields should distinguish missing values and show their reason");
+    AssertTrue(!evidenceValue.Contains("if (!value)", StringComparison.Ordinal),
+        "explicit numeric zero must not be mistaken for missing evidence");
+
+    var evidenceNumber = SourceFunctionBody(script, "baselineEvidenceNumber");
+    AssertTrue(evidenceNumber.Contains("numberFormat.format(Number(item))", StringComparison.Ordinal),
+        "an explicitly recorded complete zero should render as truthful zero");
+
+    var typedEvidenceFunctions = renderEvidence + evidenceValue + evidenceNumber;
+    AssertTrue(
+        !typedEvidenceFunctions.Contains("|| 0", StringComparison.Ordinal) &&
+        !typedEvidenceFunctions.Contains("?? 0", StringComparison.Ordinal) &&
+        !typedEvidenceFunctions.Contains("valueOr(value, 0)", StringComparison.Ordinal),
+        "typed baseline evidence rendering must not backfill missing backend values with zero");
+
+    var frozenDetail = SourceFunctionBody(script, "openBaselineSnapshotDetail");
+    AssertTrue(
+        frozenDetail.Contains("renderBaselinePlanningEvidence(snapshot", StringComparison.Ordinal) &&
+        !frozenDetail.Contains("state.currentBaselineCandidate", StringComparison.Ordinal),
+        "frozen evidence should render only the selected immutable snapshot DTO");
+    AssertTrue(script.Contains("DemoFixture: \"演示数据\"", StringComparison.Ordinal),
+        "ordinary demo source codes should be localized without changing stored values");
 }
 
 static void TestTimeBufferEvidenceRulesControlBaselineFreeze()

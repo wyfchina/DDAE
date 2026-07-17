@@ -1402,6 +1402,65 @@ body.has-focus-panel { overflow: hidden; }
   border: 1px solid var(--color-border);
   border-radius: 6px;
 }
+.baseline-planning-evidence-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 8px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: #f8fbfa;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.baseline-planning-evidence-context strong { color: var(--color-text); }
+.baseline-planning-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr);
+  gap: 12px;
+  margin: 12px 0 14px;
+}
+.baseline-planning-evidence-card { padding: 12px; }
+.baseline-planning-evidence-card .panel-heading { margin-bottom: 8px; }
+.baseline-backlog-evidence-card { grid-column: 1 / -1; }
+.baseline-evidence-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+.baseline-evidence-summary div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #e3e9e7;
+  border-radius: 6px;
+  background: #fbfcfc;
+}
+.baseline-evidence-summary dt,
+.baseline-evidence-strip strong {
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.baseline-evidence-summary dd { margin: 3px 0 0; font-size: 12px; }
+.baseline-evidence-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+  color: var(--color-text);
+  font-size: 11px;
+}
+.baseline-evidence-strip span { display: inline-flex; align-items: center; gap: 5px; }
+.baseline-evidence-table { min-width: 720px; }
+.baseline-evidence-table td { vertical-align: top; }
+.baseline-evidence-table td small { display: block; margin-top: 3px; color: var(--color-muted); }
+.baseline-evidence-missing { display: inline-grid; gap: 2px; color: #a4362d; }
+.baseline-evidence-missing strong { color: inherit; font-size: inherit; }
+.baseline-evidence-missing small { color: #7e4b47; font-size: 10px; font-weight: 500; }
 .capacity-layer-list { display: grid; gap: 12px; }
 .capacity-layer-item {
   display: grid;
@@ -1653,8 +1712,11 @@ body.has-focus-panel { overflow: hidden; }
   .stage-grid.two-column,
   .scenario-separation-grid,
   .future-capacity-separation,
+  .baseline-planning-evidence-grid,
   .decision-category-grid,
   .coordination-grid { grid-template-columns: 1fr; }
+  .baseline-backlog-evidence-card { grid-column: auto; }
+  .baseline-planning-evidence-context { align-items: flex-start; flex-direction: column; }
   .baseline-freeze-actions { grid-template-columns: 1fr; min-width: 0; width: 100%; }
   .stage-heading { align-items: flex-start; flex-direction: column; }
   .comparison-column + .comparison-column { border-left: 0; border-top: 1px solid var(--color-border); }

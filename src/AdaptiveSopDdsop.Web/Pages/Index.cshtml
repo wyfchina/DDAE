@@ -442,6 +442,23 @@
                     </div>
                 </div>
                 <div id="current-baseline-kpis" class="rccp-kpis" aria-label="会前状态关键指标：服务、库存、在制品、积压、供应覆盖与峰值负荷"></div>
+                <div id="baseline-planning-evidence-context" class="baseline-planning-evidence-context" aria-live="polite"></div>
+                <div class="baseline-planning-evidence-grid">
+                    <section id="baseline-coverage-evidence" class="stage-card baseline-planning-evidence-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">类型化事实</span><h2>覆盖证据</h2></div></div>
+                        <dl id="baseline-coverage-evidence-list" class="baseline-evidence-summary"></dl>
+                    </section>
+                    <section id="baseline-receipt-evidence" class="stage-card baseline-planning-evidence-card baseline-receipt-evidence-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">冻结事实</span><h2>确认到货</h2></div></div>
+                        <div id="baseline-receipt-evidence-summary" class="baseline-evidence-strip"></div>
+                        <div class="table-scroll"><table class="data-table baseline-evidence-table"><thead><tr><th>SKU</th><th>数量</th><th>预计周</th><th>类型</th><th>来源</th><th>确认</th><th>截止</th><th>证据状态</th></tr></thead><tbody id="baseline-receipt-evidence-body"></tbody></table></div>
+                    </section>
+                    <section id="baseline-backlog-evidence" class="stage-card baseline-planning-evidence-card baseline-backlog-evidence-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">截止事实</span><h2>期初积压</h2></div></div>
+                        <div id="baseline-backlog-evidence-summary" class="baseline-evidence-strip"></div>
+                        <div class="table-scroll"><table class="data-table baseline-evidence-table"><thead><tr><th>行</th><th>SKU</th><th>数量</th><th>新鲜度</th><th>完整性</th><th>阻断项</th></tr></thead><tbody id="baseline-backlog-evidence-body"></tbody></table></div>
+                    </section>
+                </div>
             <section id="data-readiness-panel" class="workspace-section">
                 <div class="result-context-bar" aria-label="筛选条件">
                     <label><span>产品族</span><select id="family-filter"></select></label>

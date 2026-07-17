@@ -4594,6 +4594,191 @@ function baselineFreezeBlockingIssues(sections) {
   return issues;
 }
 
+function baselineEvidenceMissing(reason, label = "证据缺失") {
+  const detail = reason === null || reason === undefined || reason === ""
+    ? "后端未提供缺失原因"
+    : businessEvidenceLabel(reason);
+  return `<span class="baseline-evidence-missing"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span>`;
+}
+
+function baselineEvidenceValue(value, reason, formatter = item => String(item)) {
+  return value === null || value === undefined || value === ""
+    ? baselineEvidenceMissing(reason, "证据缺失")
+    : escapeHtml(formatter(value));
+}
+
+function baselineEvidenceNumber(value, reason) {
+  return baselineEvidenceValue(value, reason, item => numberFormat.format(Number(item)));
+}
+
+function confirmedReceiptTypeLabel(type) {
+  return ({
+    ConfirmedInTransit: "已确认在途",
+    ConfirmedOpenSupply: "已确认开放供应",
+  })[type] || businessEvidenceLabel(type);
+}
+
+function supplySourceTypeLabel(type) {
+  return ({
+    ExternalSupplier: "外部供应商",
+    InternalSupply: "内部供应",
+  })[type] || businessEvidenceLabel(type);
+}
+
+function receiptConfirmationLabel(status) {
+  return ({
+    Confirmed: "已确认",
+    Pending: "待确认",
+    Rejected: "已拒绝",
+  })[status] || businessEvidenceLabel(status);
+}
+
+function baselineEvidenceStatus(value, missingReason) {
+  if (value === null || value === undefined || value === "") {
+    return baselineEvidenceMissing(missingReason);
+  }
+  const color = value === "Complete" ? "Green" : value === "NotApplicable" ? "neutral" : "Red";
+  return `<span class="${statusClass(color)}">${escapeHtml(evidenceStatusLabel(value))}</span>`;
+}
+
+function baselinePlanningEvidenceSection(baseline, sectionCode) {
+  if (!Array.isArray(baseline?.sections)) return undefined;
+  return baseline.sections.find(section => section.sectionCode === sectionCode);
+}
+
+function baselineEvidenceBlockerText(section, blockers) {
+  if (!section) return "证据缺失：后端未提供证据分区";
+  const matching = blockers.filter(issue => issue.section === section);
+  if (matching.length === 0) return "无";
+  return matching.map(issue => {
+    const reason = issue.item?.missingReason || issue.section?.missingReason;
+    if (reason) return businessEvidenceLabel(reason);
+    const freshness = issue.item?.freshnessStatus || issue.section?.freshnessStatus;
+    const completeness = issue.item?.completenessStatus || issue.section?.completenessStatus;
+    return `${freshnessLabel(freshness)} / ${completenessLabel(completeness)}（后端未提供阻断原因）`;
+  }).join("；");
+}
+
+function baselineEvidenceSectionSummary(section, blockers) {
+  if (!section) return baselineEvidenceMissing("后端未提供证据分区");
+  return [
+    `<span><strong>新鲜度</strong>${baselineEvidenceValue(section.freshnessStatus, "后端未提供新鲜度", freshnessLabel)}</span>`,
+    `<span><strong>完整性</strong>${baselineEvidenceValue(section.completenessStatus, "后端未提供完整性", completenessLabel)}</span>`,
+    `<span><strong>来源</strong>${baselineEvidenceValue(section.evidenceLabel, "后端未提供证据来源", baselineSourceLabel)}</span>`,
+    `<span><strong>阻断项</strong>${escapeHtml(baselineEvidenceBlockerText(section, blockers))}</span>`,
+  ].join("");
+}
+
+function renderBaselinePlanningEvidence(baseline, viewKind = "Candidate", updatePage = true) {
+  const planningInputs = baseline?.payload?.planningInputs;
+  const coverage = planningInputs ? planningInputs.planningEvidenceCoverage : undefined;
+  const receipts = planningInputs ? planningInputs.confirmedReceipts : undefined;
+  const openingBacklog = planningInputs ? planningInputs.openingBacklog : undefined;
+  const blockers = baselineFreezeBlockingIssues(baseline?.sections);
+  const coverageSection = baselinePlanningEvidenceSection(baseline, "PLANNING_EVIDENCE_COVERAGE");
+  const receiptSection = baselinePlanningEvidenceSection(baseline, "CONFIRMED_RECEIPTS");
+  const backlogSection = baselinePlanningEvidenceSection(baseline, "OPENING_BACKLOG");
+  const isFrozen = viewKind === "Frozen";
+  const identityLabel = isFrozen ? "快照" : "候选";
+  const identity = isFrozen ? baseline?.snapshotNumber : baseline?.candidateId;
+  const identityReason = isFrozen ? "后端未提供快照号" : "后端未提供候选号";
+  const immutableLabel = isFrozen ? "不可变" : "待冻结";
+  const contextItems = [
+    [identityLabel, baselineEvidenceValue(identity, identityReason)],
+    ["版本", baselineEvidenceValue(baseline?.masterSettingVersion, "后端未提供主设置版本")],
+    ["状态", isFrozen
+      ? baselineEvidenceValue(baseline?.status, "后端未提供冻结状态", baselineStatusLabel)
+      : immutableLabel],
+    ["可变性", immutableLabel],
+  ];
+  const contextHtml = `<strong>${identityLabel} ${baselineEvidenceValue(identity, identityReason)}</strong><span>版本 ${baselineEvidenceValue(baseline?.masterSettingVersion, "后端未提供主设置版本")} · ${immutableLabel}</span>`;
+
+  const coverageRange = coverage === null || coverage === undefined
+    ? baselineEvidenceMissing("后端未提供覆盖记录")
+    : `第 ${baselineEvidenceNumber(coverage.coverageFromWeek, "后端未提供起始周")} 周至第 ${baselineEvidenceNumber(coverage.coverageThroughWeek, "后端未提供截止周")} 周`;
+  const coverageItems = [
+    ["范围", coverageRange],
+    ["锚点", baselineEvidenceValue(coverage?.anchorDate, "后端未提供锚点日期")],
+    ["证据状态", baselineEvidenceStatus(coverage?.evidenceStatus, "后端未提供覆盖证据状态")],
+    ["新鲜度", baselineEvidenceValue(coverageSection?.freshnessStatus, "后端未提供覆盖新鲜度", freshnessLabel)],
+    ["完整性", baselineEvidenceValue(coverageSection?.completenessStatus, "后端未提供覆盖完整性", completenessLabel)],
+    ["阻断项", escapeHtml(baselineEvidenceBlockerText(coverageSection, blockers))],
+  ];
+  const coverageHtml = coverageItems.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join("");
+
+  let receiptRows;
+  let receiptDrawerItems;
+  if (!Array.isArray(receipts)) {
+    const missing = baselineEvidenceMissing(planningInputs ? "后端未提供确认到货列表" : "后端未提供类型化计划输入");
+    receiptRows = `<tr><td class="empty-cell" colspan="8">${missing}</td></tr>`;
+    receiptDrawerItems = [["确认到货", missing]];
+  } else if (receipts.length === 0) {
+    receiptRows = emptyRow("无确认到货记录", 8);
+    receiptDrawerItems = [["确认到货", "无确认到货记录"]];
+  } else {
+    receiptRows = receipts.map(item => {
+      const source = `${baselineEvidenceValue(item.sourceReference, "后端未提供来源引用")}<small>${baselineEvidenceValue(item.supplySourceType, "后端未提供来源类型", supplySourceTypeLabel)} · ${baselineEvidenceValue(item.evidenceLabel, "后端未提供证据来源", baselineSourceLabel)}</small>`;
+      return row([
+        baselineEvidenceValue(item.sku, "后端未提供 SKU"),
+        baselineEvidenceNumber(item.quantity, "后端未提供数量"),
+        baselineEvidenceNumber(item.expectedReceiptWeek, "后端未提供预计周"),
+        baselineEvidenceValue(item.receiptType, "后端未提供到货类型", confirmedReceiptTypeLabel),
+        source,
+        baselineEvidenceValue(item.confirmationStatus, "后端未提供确认状态", receiptConfirmationLabel),
+        baselineEvidenceValue(item.asOfUtc, "后端未提供截止时间"),
+        baselineEvidenceStatus(item.evidenceStatus, "后端未提供证据状态"),
+      ]);
+    }).join("");
+    receiptDrawerItems = receipts.map((item, index) => [
+      item.receiptId === null || item.receiptId === undefined || item.receiptId === "" ? `记录 ${index + 1}` : String(item.receiptId),
+      `SKU ${baselineEvidenceValue(item.sku, "后端未提供 SKU")} · 数量 ${baselineEvidenceNumber(item.quantity, "后端未提供数量")} · 预计周 ${baselineEvidenceNumber(item.expectedReceiptWeek, "后端未提供预计周")}<br>类型 ${baselineEvidenceValue(item.receiptType, "后端未提供到货类型", confirmedReceiptTypeLabel)} · 来源 ${baselineEvidenceValue(item.sourceReference, "后端未提供来源引用")} · 确认 ${baselineEvidenceValue(item.confirmationStatus, "后端未提供确认状态", receiptConfirmationLabel)}<br>截止 ${baselineEvidenceValue(item.asOfUtc, "后端未提供截止时间")} · 证据 ${baselineEvidenceStatus(item.evidenceStatus, "后端未提供证据状态")}`,
+    ]);
+  }
+
+  const backlogBlocker = baselineEvidenceBlockerText(backlogSection, blockers);
+  let backlogRows;
+  let backlogDrawerItems;
+  if (!Array.isArray(openingBacklog)) {
+    const missing = baselineEvidenceMissing(planningInputs ? "后端未提供期初积压列表" : "后端未提供类型化计划输入");
+    backlogRows = `<tr><td class="empty-cell" colspan="6">${missing}</td></tr>`;
+    backlogDrawerItems = [["期初积压", missing]];
+  } else if (openingBacklog.length === 0) {
+    backlogRows = emptyRow("无期初积压记录", 6);
+    backlogDrawerItems = [["期初积压", "无期初积压记录"]];
+  } else {
+    backlogRows = openingBacklog.map(item => row([
+      baselineEvidenceValue(item.backlogId, "后端未提供积压行号"),
+      baselineEvidenceValue(item.sku, "后端未提供 SKU"),
+      baselineEvidenceNumber(item.quantity, "后端未提供数量"),
+      baselineEvidenceValue(backlogSection?.freshnessStatus, "后端未提供新鲜度", freshnessLabel),
+      baselineEvidenceStatus(item.evidenceStatus, "后端未提供完整性"),
+      escapeHtml(backlogBlocker),
+    ])).join("");
+    backlogDrawerItems = openingBacklog.map((item, index) => [
+      item.backlogId === null || item.backlogId === undefined || item.backlogId === "" ? `行 ${index + 1}` : String(item.backlogId),
+      `SKU ${baselineEvidenceValue(item.sku, "后端未提供 SKU")} · 数量 ${baselineEvidenceNumber(item.quantity, "后端未提供数量")}<br>新鲜度 ${baselineEvidenceValue(backlogSection?.freshnessStatus, "后端未提供新鲜度", freshnessLabel)} · 完整性 ${baselineEvidenceStatus(item.evidenceStatus, "后端未提供完整性")} · 阻断项 ${escapeHtml(backlogBlocker)}`,
+    ]);
+  }
+
+  if (updatePage) {
+    byId("baseline-planning-evidence-context").innerHTML = contextHtml;
+    byId("baseline-coverage-evidence-list").innerHTML = coverageHtml;
+    byId("baseline-receipt-evidence-summary").innerHTML = baselineEvidenceSectionSummary(receiptSection, blockers);
+    byId("baseline-receipt-evidence-body").innerHTML = receiptRows;
+    byId("baseline-backlog-evidence-summary").innerHTML = baselineEvidenceSectionSummary(backlogSection, blockers);
+    byId("baseline-backlog-evidence-body").innerHTML = backlogRows;
+  }
+
+  return {
+    drawerSections: [
+      { title: "快照信息", items: contextItems },
+      { title: "覆盖证据", items: coverageItems },
+      { title: "确认到货", items: receiptDrawerItems },
+      { title: "期初积压", items: backlogDrawerItems },
+    ],
+  };
+}
+
 function renderCurrentBaselineWorkspace() {
   const candidate = state.currentBaselineCandidate;
   if (!candidate) return;
@@ -4613,6 +4798,7 @@ function renderCurrentBaselineWorkspace() {
     ["供应覆盖", metricOrEvidenceMissing(kpis.supplyCoverageWeeks, value => `${number(value)} 周`), "会前事实"],
     ["峰值负荷", metricOrEvidenceMissing(kpis.peakResourceLoadPercent, percent), "会前事实"],
   ].map(item => stageKpi(...item)).join("") : stageKpi("会前证据", "证据缺失", "未按零处理");
+  renderBaselinePlanningEvidence(candidate, "Candidate");
   byId("baseline-evidence-body").innerHTML = candidate.sections.map(item => row([
     `<strong>${escapeHtml(baselineSectionLabel(item.name))}</strong><small>${item.isRequired ? "关键" : "辅助"}</small>`,
     escapeHtml(baselineSourceLabel(item.sourceAuthority)),
@@ -4680,6 +4866,7 @@ async function openBaselineSnapshotDetail(snapshotId) {
   const response = await fetch(`/api/current-baselines/${snapshotId}`, { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`冻结基线详情接口失败：${response.status}`);
   const snapshot = await response.json();
+  const planningEvidence = renderBaselinePlanningEvidence(snapshot, "Frozen", false);
   const parameters = valueOr(snapshot.payload?.planningInputs?.ddmrpParameters, []);
   const items = parameters.map(item => [
     `${item.sku} ${item.name}`,
@@ -4687,7 +4874,7 @@ async function openBaselineSnapshotDetail(snapshotId) {
       ? "旧版本缺少提前期因子；该快照保持只读，不能用于重算"
       : `提前期因子 ${number(item.leadTimeFactor)} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}`,
   ]);
-  openWorkspaceDrawer("冻结基线定容证据", [{
+  openWorkspaceDrawer("冻结基线证据", [...planningEvidence.drawerSections, {
     title: `${snapshot.snapshotNumber} · ${baselineStatusLabel(snapshot.status)}`,
     items: items.length ? items : [["定容证据", "旧版本未保存 DDMRP 参数明细"]],
   }]);
