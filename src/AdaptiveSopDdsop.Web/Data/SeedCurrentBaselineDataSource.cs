@@ -26,21 +26,41 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
     public CurrentBaselineCandidate GetCandidate()
     {
         var asOf = new DateTimeOffset(2026, 6, 30, 8, 0, 0, TimeSpan.Zero).ToString("O");
-        var inTransit = _data.Inventory.Select(item => new BaselineTransitItem(item.Sku, item.OpenSupply, item.OpenSupply > 0 ? "Confirmed" : "None")).ToList();
-        var backlog = _data.Demand.Where(item => item.Week == 1).Select(item => new BaselineBacklogItem(item.Sku, item.Week, item.BaselineDemand, "ConfirmedDemand")).ToList();
+        var anchor = PlanningEvidenceValidator.BusinessDateForSourceTimestamp(asOf);
+        var planningInputs = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(52, anchor));
+        var confirmedReceipts = planningInputs.ConfirmedReceipts ?? Array.Empty<ConfirmedReceiptEvidence>();
+        var openingBacklog = planningInputs.OpeningBacklog ?? Array.Empty<OpeningBacklogEvidence>();
+        var inTransit = confirmedReceipts
+            .GroupBy(item => item.Sku, StringComparer.Ordinal)
+            .Select(group => new BaselineTransitItem(
+                group.Key,
+                group.Sum(item => item.Quantity),
+                group.All(item => item.ConfirmationStatus == "Confirmed") ? "Confirmed" : "EvidenceMissing"))
+            .OrderBy(item => item.Sku, StringComparer.Ordinal)
+            .ToList();
+        var backlog = openingBacklog
+            .Select(item => new BaselineBacklogItem(
+                item.Sku,
+                1,
+                item.Quantity,
+                item.EvidenceStatus == "Complete" ? "ConfirmedDemand" : "EvidenceMissing"))
+            .OrderBy(item => item.Sku, StringComparer.Ordinal)
+            .ToList();
+        var annualDemandBySku = planningInputs.Demand
+            .GroupBy(item => item.Sku, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Average(item => item.BaselineDemand), StringComparer.Ordinal);
         var wip = _data.ResourceRoutings.Select(route => new BaselineWipItem(
             route.ResourceCode,
             route.Sku,
-            decimal.Round(_data.Demand.Where(item => item.Sku == route.Sku && item.Week == 1).Sum(item => item.BaselineDemand) * 0.35m, 0),
+            annualDemandBySku.TryGetValue(route.Sku, out var averageDemand)
+                ? decimal.Round(averageDemand * 0.35m, 0)
+                : 0m,
             "DemoObserved")).ToList();
         var supplier = _data.SupplierConstraints.Select(item => new BaselineSupplierCommitment(
             item.Supplier, item.MaterialFamily, item.MonthlyCapacity, item.LeadTimeDays, item.RiskStatus)).ToList();
         var resources = _data.Resources.Select(item => new BaselineResourceAvailability(item.Code, item.Name, item.WeeklyAvailableUnits, "StandardCalendar")).ToList();
         var adjustments = _data.KnownEvents.Where(item => item.Status != "Closed").Select(item => new BaselineTemporaryAdjustment(
             item.EventId, item.Name, item.Window, item.AppliesTo, item.Status)).ToList();
-        var planningInputs = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(
-            52,
-            new DateOnly(2026, 6, 1)));
         var ddmrpSizingItems = planningInputs.Skus.Select(item =>
         {
             var complete = item.LeadTimeFactor is > 0m and <= 1m &&
@@ -55,6 +75,10 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 complete ? null : "缺少提前期因子、参数快照号或完整证据");
         }).ToList();
         var kpis = BuildKpis(asOf, planningInputs, backlog, wip);
+        var planningValidation = PlanningEvidenceValidator.ValidateForFreeze(planningInputs);
+        var receiptStatus = SectionStatus("ConfirmedReceipt");
+        var backlogStatus = SectionStatus("OpeningBacklog");
+        var coverageStatus = SectionStatus("Coverage");
         var timeBufferEvidence = BuildTimeBufferEvidence(asOf, planningInputs);
         var capacityProtectionCount = planningInputs.CapacityProtections?.Count ?? 0;
         var analysisAvailability = new List<BaselineAnalysisAvailability>
@@ -83,15 +107,21 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             Section("CURRENT_KPIS", "Meeting snapshot KPIs", kpis.SourceAuthority, asOf, 7,
                 completenessStatus: kpis.EvidenceStatus),
             Section("INVENTORY", "当前库存与净流量位置", "DDAE Demo Inventory Adapter", asOf, _data.Inventory.Count),
-            Section("IN_TRANSIT", "在途与开放供应", "DDAE Demo Supply Adapter", asOf, inTransit.Count),
-            Section("BACKLOG", "未结与积压需求", "DDAE Demo Demand Adapter", asOf, backlog.Count),
+            Section("CONFIRMED_RECEIPTS", "已确认在途与开放供应", "DDAE Demo Confirmed Supply Evidence", asOf,
+                confirmedReceipts.Count, completenessStatus: receiptStatus),
+            Section("OPENING_BACKLOG", "期初未结与积压需求", "DDAE Demo Opening Backlog Evidence", asOf,
+                openingBacklog.Count, completenessStatus: backlogStatus),
+            Section("PLANNING_EVIDENCE_COVERAGE", "计划证据覆盖范围", "DDAE Demo Planning Coverage Evidence", asOf,
+                planningInputs.PlanningEvidenceCoverage is null ? 0 : 1, completenessStatus: coverageStatus),
             Section("WIP", "在制品与控制点队列", "DDAE Demo WIP Evidence", asOf, wip.Count),
             Section("SUPPLIER_COMMITMENTS", "供应商最新承诺", "DDAE Demo Supplier Evidence", asOf, supplier.Count),
             Section("RESOURCE_AVAILABILITY", "资源可用能力", "DDAE Demo Capacity Evidence", asOf, resources.Count),
             Section("TEMPORARY_ADJUSTMENTS", "已生效临时措施", "DDAE Demo Governance", asOf, adjustments.Count, required: false),
             Section("MASTER_SETTINGS", "当前 DDOM 参数版本", "DDAE Governance", asOf, _data.MasterSettings.Count),
             Section("PLANNING_INPUTS", "白盒重算类型化输入", "DDAE Demo Planning Snapshot", asOf,
-                planningInputs.Skus.Count + planningInputs.Demand.Count + planningInputs.ResourceRoutings.Count + planningInputs.SupplierItemSources.Count),
+                planningInputs.Skus.Count + planningInputs.Demand.Count + planningInputs.ResourceRoutings.Count +
+                planningInputs.SupplierItemSources.Count + confirmedReceipts.Count + openingBacklog.Count,
+                completenessStatus: planningValidation.Status == "Complete" ? "Complete" : "EvidenceMissing"),
             Section("ROUTING_SEQUENCE", "Sequenced resource-routing evidence", "DDAE Demo Planning Snapshot", asOf,
                 planningInputs.ResourceRoutings.Count, missingReason: "Resource-routing sequence evidence is missing."),
             Section("CAPACITY_PROTECTION", "Upstream capacity-protection evidence", "DDAE Demo Planning Snapshot", asOf,
@@ -100,6 +130,11 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         sections.Add(DdmrpSizingSection(asOf, ddmrpSizingItems));
         sections.AddRange(timeBufferEvidence.Sections);
         return new CurrentBaselineCandidate("BASE-CANDIDATE-DEMO-20260630", asOf, "DEMO-MS-2026-06", sections, payload, "DemoFixture");
+
+        string SectionStatus(string scope) => planningValidation.Issues.Any(item =>
+            item.Scope == scope && item.BlocksFreeze)
+            ? "EvidenceMissing"
+            : "Complete";
     }
 
     private static BaselineEvidenceSection DdmrpSizingSection(
@@ -144,19 +179,38 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         var backlogUnits = backlog.Count == 0
             ? (decimal?)null
             : backlog.Sum(item => item.Quantity);
-        var weekOneDemandFacts = planningInputs.Demand
+        var horizonWeeks = Math.Clamp(planningInputs.Request.HorizonWeeks, 1, 52);
+        var annualDemandFacts = planningInputs.Demand
             .Where(item =>
-                item.Week == 1 &&
+                item.Week is >= 1 && item.Week <= horizonWeeks &&
                 !string.IsNullOrWhiteSpace(item.Sku) &&
                 item.BaselineDemand >= 0m)
             .ToList();
-        var weeklyDemand = weekOneDemandFacts.Sum(item => item.BaselineDemand);
-        var supplyUnits = planningInputs.Inventory.Sum(item => item.OnHand + item.OpenSupply);
+        var skuCodes = planningInputs.Skus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
+        var demandGroups = annualDemandFacts
+            .GroupBy(item => (item.Sku, item.Week))
+            .ToList();
+        var demandBySkuWeek = demandGroups
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.BaselineDemand));
+        var hasCompleteDemandEvidence = skuCodes.Count > 0 &&
+            demandGroups.All(group => group.Count() == 1) &&
+            skuCodes.All(sku => Enumerable.Range(1, horizonWeeks).All(week => demandBySkuWeek.ContainsKey((sku, week))));
+        var weeklyDemandTotals = Enumerable.Range(1, horizonWeeks)
+            .Select(week => annualDemandFacts.Where(item => item.Week == week).Sum(item => item.BaselineDemand))
+            .ToList();
+        var averageWeeklyDemand = hasCompleteDemandEvidence
+            ? weeklyDemandTotals.Average()
+            : 0m;
+        var receipts = planningInputs.ConfirmedReceipts ?? Array.Empty<ConfirmedReceiptEvidence>();
+        var supplyUnits = planningInputs.Inventory.Sum(item => item.OnHand) + receipts.Sum(item => item.Quantity);
         var hasInventoryEvidence = planningInputs.Inventory.Count > 0 &&
             planningInputs.Inventory.All(item => !string.IsNullOrWhiteSpace(item.Sku));
-        var coverage = !hasInventoryEvidence || weekOneDemandFacts.Count == 0 || weeklyDemand <= 0m
+        var hasConfirmedSupplyEvidence = planningInputs.ConfirmedReceipts is not null &&
+            planningInputs.Inventory.All(item =>
+                Math.Abs(receipts.Where(receipt => receipt.Sku == item.Sku).Sum(receipt => receipt.Quantity) - item.OpenSupply) <= 0.01m);
+        var coverage = !hasInventoryEvidence || !hasConfirmedSupplyEvidence || averageWeeklyDemand <= 0m
             ? (decimal?)null
-            : decimal.Round(supplyUnits / weeklyDemand, 1);
+            : decimal.Round(supplyUnits / averageWeeklyDemand, 1);
 
         var availableResources = planningInputs.Resources
             .Where(resource => resource.WeeklyAvailableUnits > 0m)
@@ -164,12 +218,9 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
         var availableResourceCodes = availableResources
             .Select(resource => resource.Code)
             .ToHashSet(StringComparer.Ordinal);
-        var skuCodes = planningInputs.Skus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
-        var demandBySku = weekOneDemandFacts
-            .GroupBy(item => item.Sku, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Sum(item => item.BaselineDemand), StringComparer.Ordinal);
         var routings = planningInputs.ResourceRoutings;
-        var hasConsistentLoadEvidence = availableResources.Count > 0 &&
+        var hasConsistentLoadEvidence = hasCompleteDemandEvidence &&
+            availableResources.Count > 0 &&
             availableResourceCodes.Count == availableResources.Count &&
             routings.Count > 0 &&
             routings.All(route =>
@@ -177,16 +228,16 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 skuCodes.Contains(route.Sku) &&
                 route.CapacityPerUnit > 0m &&
                 route.OperationSequence > 0 &&
-                IsCompleteEvidence(route.EvidenceStatus) &&
-                demandBySku.ContainsKey(route.Sku)) &&
+                IsCompleteEvidence(route.EvidenceStatus)) &&
             availableResources.All(resource => routings.Any(route => route.ResourceCode == resource.Code));
         var peakLoad = hasConsistentLoadEvidence
-            ? availableResources.Max(resource => decimal.Round(
-                routings
-                    .Where(route => route.ResourceCode == resource.Code)
-                    .Sum(route => demandBySku[route.Sku] * route.CapacityPerUnit) * 100m /
-                resource.WeeklyAvailableUnits,
-                1))
+            ? Enumerable.Range(1, horizonWeeks).SelectMany(week => availableResources.Select(resource => decimal.Round(
+                    routings
+                        .Where(route => route.ResourceCode == resource.Code)
+                        .Sum(route => demandBySkuWeek[(route.Sku, week)] * route.CapacityPerUnit) * 100m /
+                    resource.WeeklyAvailableUnits,
+                    1)))
+                .Max()
             : (decimal?)null;
         var evidenceStatus = historicalService.HasValue &&
             !string.IsNullOrWhiteSpace(serviceWindow) &&

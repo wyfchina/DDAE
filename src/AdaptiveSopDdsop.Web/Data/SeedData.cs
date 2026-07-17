@@ -21,7 +21,7 @@ public static class SeedData
             new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 0.30m, 4, 90, 260_000m, 260),
             new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 0.55m, 6, 45, 1_960_000m, 120),
             new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 0.60m, 6, 35, 2_850_000m, 90),
-            new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 0.40m, 4, 160, 180_000m, 520),
+            new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 0.40m, 4, 12, 180_000m, 520),
             new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 0.50m, 5, 120, 320_000m, 360),
             new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 0.18m, 16, 0.65m, 6, 80, 540_000m, 180),
             new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 0.35m, 4, 260, 42_000m, 760),
@@ -46,9 +46,15 @@ public static class SeedData
             new("CBL-HAR-402", 120, 30, 36),
         };
 
-        var demandShape = new[] { 0.72m, 0.92m, 1.18m, 1.48m, 0.80m, 1.05m, 1.32m, 1.62m, 0.76m, 0.98m, 1.24m, 1.52m };
+        var demandShape = new[]
+        {
+            0.72m, 0.92m, 1.18m, 1.48m, 0.80m, 1.05m, 1.32m, 1.62m, 0.76m, 0.98m, 1.24m, 1.52m, 0.00m,
+            0.88m, 0.94m, 1.08m, 1.21m, 1.36m, 1.12m, 0.97m, 1.04m, 1.18m, 1.43m, 1.57m, 1.11m, 0.83m, 0.00m,
+            0.68m, 0.91m, 1.07m, 1.29m, 1.45m, 1.62m, 1.34m, 1.16m, 0.99m, 1.08m, 1.27m, 1.51m, 0.00m,
+            0.74m, 0.86m, 1.03m, 1.26m, 1.39m, 1.58m, 1.71m, 1.48m, 1.22m, 1.06m, 0.89m, 0.65m
+        };
         var demand = skus
-            .SelectMany(sku => Enumerable.Range(1, 12)
+            .SelectMany(sku => Enumerable.Range(1, demandShape.Length)
                 .Select(week => new WeeklyDemand(
                     sku.Sku,
                     week,
@@ -378,7 +384,7 @@ public static class SeedData
             DemandAdjustmentFactor = daf,
             ZoneAdjustmentFactor = zoneAdjustment,
             EffectiveFromWeek = 1,
-            EffectiveThroughWeek = 12,
+            EffectiveThroughWeek = 52,
             ParameterStatus = sku.Family == "星载电子" ? "Proposed" : "Current",
             LeadTimeFactor = sku.DecoupledLeadTimeDays switch
             {

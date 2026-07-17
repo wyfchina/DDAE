@@ -114,6 +114,11 @@ var tests = new (string Name, Action Run)[]
     ("Scenario workspace seed data covers baseline scenario use cases", TestScenarioWorkspaceSeedDataCoversUseCases),
     ("Scenario workspace exposes complete DDMRP parameter profiles", TestScenarioWorkspaceExposesCompleteDdmrpParameterProfiles),
     ("Scenario workspace adapter can map alternate source structures", TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures),
+    ("Seed planning evidence has 52 weeks", TestSeedPlanningEvidenceHasFiftyTwoWeeks),
+    ("AV-COM-201 sizing is calibrated", TestAvCom201SizingIsCalibrated),
+    ("Baseline derives typed planning evidence", TestBaselineDerivesTypedPlanningEvidence),
+    ("Baseline freeze rejects incomplete planning evidence", TestBaselineFreezeRejectsIncompletePlanningEvidence),
+    ("Frozen planning evidence round trips", TestFrozenPlanningEvidenceRoundTrips),
     ("Planning evidence accepts complete 52 weeks", TestPlanningEvidenceAcceptsCompleteCoverage),
     ("Planning evidence rejects demand gaps", TestPlanningEvidenceRejectsDemandGaps),
     ("Planning evidence rejects duplicate negative and expired rows", TestPlanningEvidenceRejectsInvalidRows),
@@ -1404,7 +1409,7 @@ static void TestCurrentBaselineRejectsMissingSnapshotKpiEvidence()
     {
         var baseData = SeedData.Create();
         var basePlanningInputs = new SeedScenarioWorkspaceDataSource(baseData)
-            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
         var skuWithoutCost = basePlanningInputs.Inventory.First().Sku;
         var cases = new List<(
             string Name,
@@ -1419,8 +1424,8 @@ static void TestCurrentBaselineRejectsMissingSnapshotKpiEvidence()
                 kpis => kpis.WorkInProcessUnits),
             (
                 "empty backlog",
-                baseData with { Demand = baseData.Demand.Where(item => item.Week != 1).ToList() },
-                basePlanningInputs,
+                baseData,
+                basePlanningInputs with { OpeningBacklog = Array.Empty<OpeningBacklogEvidence>() },
                 kpis => kpis.BacklogUnits),
             (
                 "missing resource evidence",
@@ -1669,7 +1674,7 @@ static void TestTimeBufferEvidenceRulesControlBaselineFreeze()
     {
         var validationData = SeedData.Create();
         var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
-            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
         var timeBuffer = planningInputs.TimeBuffers!.Single();
         var progress = planningInputs.ControlPointProgress!.First(item => item.BufferId == timeBuffer.BufferId);
         var timeSectionCodes = new[] { "TIME_BUFFER_DEFINITIONS", "TIME_BUFFER_PRODUCT_SCOPES", "CONTROL_POINT_PROGRESS" };
@@ -1828,7 +1833,7 @@ static void TestTimeBufferBaselineFreezeRejectsPartialHorizonEvidence()
     {
         var validationData = SeedData.Create();
         var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
-            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
         var definition = planningInputs.TimeBuffers!.Single();
         var partialInputs = planningInputs with
         {
@@ -2058,7 +2063,7 @@ static void TestMixedTimeBufferProgressReportsActualMissingWeek()
     {
         var validationData = SeedData.Create();
         var planningInputs = new SeedScenarioWorkspaceDataSource(validationData)
-            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+            .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
         var definition = planningInputs.TimeBuffers!.Single();
         var mixedProgress = new[]
         {
@@ -5616,6 +5621,247 @@ static void TestScenarioWorkspaceAdapterCanMapAlternateSourceStructures()
     AssertTrue(data.Skus.All(item => item.Family == "星载电子"), "adapter should honor family filters");
     AssertTrue(data.Demand.All(item => item.Week <= 8), "adapter should honor requested horizon");
     AssertTrue(data.ScenarioTemplates.Count > 0, "adapter should return scenario-ready templates");
+}
+
+static void TestSeedPlanningEvidenceHasFiftyTwoWeeks()
+{
+    var seed = SeedData.Create();
+    var expectedWeeks = Enumerable.Range(1, 52).ToArray();
+
+    foreach (var sku in seed.Skus)
+    {
+        var annualDemand = seed.Demand
+            .Where(item => item.Sku == sku.Sku)
+            .OrderBy(item => item.Week)
+            .ToList();
+        var values = annualDemand.Select(item => item.BaselineDemand).ToList();
+
+        AssertEqual(52, annualDemand.Count, $"annual demand row count for {sku.Sku}");
+        AssertTrue(annualDemand.Select(item => item.Week).SequenceEqual(expectedWeeks),
+            $"annual demand must explicitly cover weeks 1..52 for {sku.Sku}");
+        AssertTrue(values.Any(item => item == 0m), $"annual demand must retain explicit zero weeks for {sku.Sku}");
+        AssertTrue(!RepeatsEvery(values, 4), $"annual demand must not repeat a four-week template for {sku.Sku}");
+        AssertTrue(!RepeatsEvery(values, 8), $"annual demand must not repeat an eight-week template for {sku.Sku}");
+    }
+
+    var anchor = new DateOnly(2026, 6, 30);
+    var shortHorizon = new SeedScenarioWorkspaceDataSource(seed)
+        .Load(new ScenarioWorkspaceDataRequest(8, anchor));
+
+    AssertEqual(seed.Skus.Count * 8, shortHorizon.Demand.Count, "short-horizon active demand row count");
+    AssertTrue(shortHorizon.Demand.All(item => item.Week is >= 1 and <= 8),
+        "short-horizon load should crop active demand to the requested weeks");
+    AssertTrue(shortHorizon.DdmrpParameters.All(item => item.EffectiveThroughWeek >= 52),
+        "governed DDMRP parameters should cover the full annual fixture");
+    AssertEqual(anchor, shortHorizon.PlanningEvidenceCoverage!.AnchorDate, "planning evidence anchor");
+    AssertEqual(1, shortHorizon.PlanningEvidenceCoverage.CoverageFromWeek, "planning evidence first week");
+    AssertEqual(52, shortHorizon.PlanningEvidenceCoverage.CoverageThroughWeek, "planning evidence last week");
+    AssertEqual("Complete", shortHorizon.PlanningEvidenceCoverage.EvidenceStatus, "planning evidence coverage status");
+    AssertTrue(shortHorizon.ConfirmedReceipts is { Count: > 0 },
+        "short-horizon loads should retain the complete frozen receipt fact set");
+    AssertEqual(seed.Skus.Count, shortHorizon.OpeningBacklog!.Count,
+        "short-horizon loads should retain one opening-backlog row per governed SKU");
+
+    foreach (var window in shortHorizon.SupplierCapacityWindows
+                 .GroupBy(item => new { item.Supplier, item.MaterialFamily }))
+    {
+        var rows = window.OrderBy(item => item.Week).ToList();
+        AssertEqual(52, rows.Count, $"annual supplier commitment row count for {window.Key.Supplier}/{window.Key.MaterialFamily}");
+        AssertTrue(rows.Select(item => item.Week).SequenceEqual(expectedWeeks),
+            $"supplier commitments must uniquely cover weeks 1..52 for {window.Key.Supplier}/{window.Key.MaterialFamily}");
+        AssertTrue(rows.All(item => item.CommittedCapacity >= 0m),
+            $"supplier commitments must be nonnegative for {window.Key.Supplier}/{window.Key.MaterialFamily}");
+    }
+
+    static bool RepeatsEvery(IReadOnlyList<decimal> values, int period) =>
+        values.Count > period && values.Skip(period).Select((value, index) => value == values[index % period]).All(item => item);
+}
+
+static void TestAvCom201SizingIsCalibrated()
+{
+    var sku = SeedData.Create().Skus.Single(item => item.Sku == "AV-COM-201");
+    var zones = DdmrpCalculator.CalculateZones(sku);
+
+    AssertEqual(12m, sku.MinimumOrderQuantity, "AV-COM-201 MOQ");
+    AssertEqual(8m, zones.Red, "AV-COM-201 standard red zone");
+    AssertEqual(9m, zones.Yellow, "AV-COM-201 standard yellow zone");
+    AssertEqual(13m, zones.Green, "AV-COM-201 standard green zone");
+}
+
+static void TestBaselineDerivesTypedPlanningEvidence()
+{
+    var seed = SeedData.Create();
+    var source = new SeedCurrentBaselineDataSource(seed);
+    var candidate = source.GetCandidate();
+    var planning = candidate.Payload.PlanningInputs;
+
+    AssertTrue(planning is not null, "baseline candidate should expose typed planning inputs");
+    AssertTrue(planning!.ConfirmedReceipts is { Count: > 0 }, "baseline candidate should expose confirmed receipts");
+    AssertEqual(seed.Skus.Count, planning.OpeningBacklog!.Count, "baseline opening-backlog row count");
+    AssertTrue(planning.PlanningEvidenceCoverage is not null, "baseline candidate should expose planning evidence coverage");
+    AssertEqual(
+        PlanningEvidenceValidator.BusinessDateForSourceTimestamp(candidate.AsOfUtc),
+        planning.Request.AnchorDate,
+        "baseline anchor should be the Asia/Shanghai business date of the source cutoff");
+    AssertEqual(planning.Request.AnchorDate, planning.PlanningEvidenceCoverage!.AnchorDate, "coverage and request anchor");
+
+    var expectedNonzeroBacklog = new Dictionary<string, decimal>(StringComparer.Ordinal)
+    {
+        ["PAY-SAR-102"] = 1m,
+        ["AV-FPGA-203"] = 2m,
+        ["CBL-HAR-402"] = 8m
+    };
+    var actualNonzeroBacklog = planning.OpeningBacklog
+        .Where(item => item.Quantity != 0m)
+        .ToDictionary(item => item.Sku, item => item.Quantity, StringComparer.Ordinal);
+    AssertTrue(actualNonzeroBacklog.Count == expectedNonzeroBacklog.Count &&
+               expectedNonzeroBacklog.All(item => actualNonzeroBacklog.TryGetValue(item.Key, out var quantity) && quantity == item.Value),
+        "opening backlog should preserve only the three explicit nonzero demo facts");
+
+    var skuByCode = planning.Skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    var sourceBySku = planning.SupplierItemSources.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    foreach (var receipt in planning.ConfirmedReceipts!)
+    {
+        var sku = skuByCode[receipt.Sku];
+        var expectedWeek = Math.Max(1, (int)Math.Ceiling(sku.DecoupledLeadTimeDays / 7m));
+        var expectedDate = planning.Request.AnchorDate.AddDays(7 * (expectedWeek - 1) + 2);
+        var supplierSource = sourceBySku[receipt.Sku];
+
+        AssertEqual(expectedWeek, receipt.ExpectedReceiptWeek, $"authoritative receipt week for {receipt.Sku}");
+        AssertEqual(expectedDate, receipt.ExpectedReceiptDate, $"receipt date inside authoritative bucket for {receipt.Sku}");
+        AssertEqual(expectedWeek <= 2 ? "ConfirmedInTransit" : "ConfirmedOpenSupply", receipt.ReceiptType,
+            $"receipt type for {receipt.Sku}");
+        AssertEqual("Confirmed", receipt.ConfirmationStatus, $"receipt confirmation status for {receipt.Sku}");
+        AssertEqual("Complete", receipt.EvidenceStatus, $"receipt evidence status for {receipt.Sku}");
+        AssertEqual("DemoFixture", receipt.EvidenceLabel, $"receipt evidence label for {receipt.Sku}");
+        AssertEqual(supplierSource.Supplier, receipt.Supplier, $"receipt supplier mapping for {receipt.Sku}");
+        AssertEqual(supplierSource.MaterialFamily, receipt.MaterialFamily, $"receipt material mapping for {receipt.Sku}");
+    }
+    AssertEqual(planning.ConfirmedReceipts.Count,
+        planning.ConfirmedReceipts.Select(item => item.ReceiptId).Distinct(StringComparer.Ordinal).Count(),
+        "receipt IDs should be unique");
+    AssertEqual(planning.ConfirmedReceipts.Count,
+        planning.ConfirmedReceipts.Select(item => item.SourceReference).Distinct(StringComparer.Ordinal).Count(),
+        "receipt source references should be unique");
+    foreach (var inventory in planning.Inventory)
+    {
+        AssertEqual(inventory.OpenSupply,
+            planning.ConfirmedReceipts.Where(item => item.Sku == inventory.Sku).Sum(item => item.Quantity),
+            $"confirmed receipts reconcile to open supply for {inventory.Sku}");
+    }
+
+    var fpgaReceipt = planning.ConfirmedReceipts.Single(item => item.Sku == "AV-FPGA-203");
+    var fpgaBacklog = planning.OpeningBacklog.Single(item => item.Sku == "AV-FPGA-203");
+    var alteredPlanning = planning with
+    {
+        ConfirmedReceipts = planning.ConfirmedReceipts
+            .Select(item => item.Sku == fpgaReceipt.Sku ? item with { Quantity = item.Quantity + 7m } : item)
+            .ToList(),
+        OpeningBacklog = planning.OpeningBacklog
+            .Select(item => item.Sku == fpgaBacklog.Sku ? item with { Quantity = item.Quantity + 5m } : item)
+            .ToList()
+    };
+    var derivedCandidate = new SeedCurrentBaselineDataSource(seed, new StaticScenarioWorkspaceDataSource(alteredPlanning)).GetCandidate();
+    AssertEqual(fpgaReceipt.Quantity + 7m,
+        derivedCandidate.Payload.InTransit.Single(item => item.Sku == fpgaReceipt.Sku).Quantity,
+        "transit summary should be derived from confirmed receipt evidence");
+    AssertEqual(fpgaBacklog.Quantity + 5m,
+        derivedCandidate.Payload.Backlog.Single(item => item.Sku == fpgaBacklog.Sku).Quantity,
+        "backlog summary should be derived from opening-backlog evidence");
+    AssertTrue(derivedCandidate.Payload.Backlog.Single(item => item.Sku == fpgaBacklog.Sku).Quantity !=
+               seed.Inventory.Single(item => item.Sku == fpgaBacklog.Sku).QualifiedDemand,
+        "backlog summary should not fall back to InventoryPosition.QualifiedDemand");
+
+    foreach (var sectionCode in new[] { "CONFIRMED_RECEIPTS", "OPENING_BACKLOG", "PLANNING_EVIDENCE_COVERAGE" })
+    {
+        var section = candidate.Sections.Single(item => item.SectionCode == sectionCode);
+        AssertTrue(!string.IsNullOrWhiteSpace(section.SourceAuthority), $"{sectionCode} source authority");
+        AssertEqual(candidate.AsOfUtc, section.AsOfUtc, $"{sectionCode} cutoff");
+        AssertEqual("Fresh", section.FreshnessStatus, $"{sectionCode} freshness");
+        AssertEqual("Complete", section.CompletenessStatus, $"{sectionCode} completeness");
+        AssertEqual("DemoFixture", section.EvidenceLabel, $"{sectionCode} evidence label");
+    }
+}
+
+static void TestBaselineFreezeRejectsIncompletePlanningEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-incomplete-planning-evidence-{Guid.NewGuid():N}.db");
+    try
+    {
+        var candidate = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var completePlanning = BuildCompletePlanningEvidenceData();
+        var incompletePlanning = completePlanning with
+        {
+            PlanningEvidenceCoverage = completePlanning.PlanningEvidenceCoverage! with { CoverageThroughWeek = 12 }
+        };
+        var incompleteCandidate = candidate with
+        {
+            Payload = candidate.Payload with { PlanningInputs = incompletePlanning }
+        };
+        var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(incompleteCandidate), databasePath);
+
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "incomplete planning evidence"));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains("IncompleteCoverage", StringComparison.Ordinal);
+        }
+
+        AssertTrue(rejected, "planning evidence validation should reject incomplete annual coverage");
+        AssertEqual(0, service.List(10).Count, "rejected planning evidence must not create a snapshot");
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM current_baseline_audit_events;";
+        AssertEqual(0L, Convert.ToInt64(command.ExecuteScalar()), "rejected planning evidence must not create a failure audit row");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestFrozenPlanningEvidenceRoundTrips()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-planning-evidence-round-trip-{Guid.NewGuid():N}.db");
+    try
+    {
+        var service = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
+        var candidate = service.GetCandidate();
+        var candidatePlanning = candidate.Payload.PlanningInputs!;
+
+        var frozen = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "freeze typed annual evidence"));
+        var next = service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", "freeze next typed annual evidence version"));
+        var loaded = service.GetDetail(frozen.SnapshotId)!;
+        var loadedPlanning = loaded.Payload.PlanningInputs;
+
+        AssertTrue(loadedPlanning is not null, "frozen snapshot should retain typed planning inputs");
+        AssertEqual(JsonSerializer.Serialize(candidatePlanning.ConfirmedReceipts),
+            JsonSerializer.Serialize(loadedPlanning!.ConfirmedReceipts),
+            "confirmed receipt evidence JSON round trip");
+        AssertEqual(JsonSerializer.Serialize(candidatePlanning.OpeningBacklog),
+            JsonSerializer.Serialize(loadedPlanning.OpeningBacklog),
+            "opening backlog evidence JSON round trip");
+        AssertEqual(JsonSerializer.Serialize(candidatePlanning.PlanningEvidenceCoverage),
+            JsonSerializer.Serialize(loadedPlanning.PlanningEvidenceCoverage),
+            "planning evidence coverage JSON round trip");
+        AssertTrue(loadedPlanning.Skus.All(sku =>
+                loadedPlanning.Demand.Count(item => item.Sku == sku.Sku) == 52),
+            "frozen candidate should retain all 52 demand weeks per governed SKU");
+        AssertTrue(next.SnapshotNumber.EndsWith("-002", StringComparison.Ordinal),
+            "successful planning evidence freezes should increment the immutable baseline version");
+        AssertEqual(1, service.GetAuditEvents(frozen.SnapshotId).Count(item => item.EventType == "BaselineFrozen"),
+            "successful planning evidence freeze should use the existing audit chain");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
 }
 
 static void TestPlanningEvidenceAcceptsCompleteCoverage()

@@ -40,6 +40,8 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         var sources = _data.SupplierItemSources
             .Where(item => skuCodes.Contains(item.Sku))
             .ToList();
+        var confirmedReceipts = BuildConfirmedReceipts(scopedSkus, inventory, sources, request.AnchorDate);
+        var openingBacklog = BuildOpeningBacklog(scopedSkus, request.AnchorDate);
 
         return new ScenarioWorkspaceDataSet(
             scopedRequest,
@@ -53,7 +55,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             BuildHistoricalDemand(scopedSkus, horizonWeeks),
             BuildBudgetBenchmarks(scopedSkus, horizonWeeks),
             BuildResourceCalendar(resources, horizonWeeks),
-            BuildSupplierCapacityWindows(sources, horizonWeeks),
+            BuildSupplierCapacityWindows(sources, 52),
             BuildScenarioTemplates(scopedSkus, resources),
             BuildDdmrpParameters(scopedSkus),
             _data.MasterSettings
@@ -65,7 +67,10 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             BuildCapacityProtections(routings),
             BuildTimeBuffers(),
             BuildControlPointProgress(horizonWeeks),
-            BuildTimeBufferProductScopes(scopedSkus));
+            BuildTimeBufferProductScopes(scopedSkus),
+            confirmedReceipts,
+            openingBacklog,
+            new PlanningEvidenceCoverage(request.AnchorDate, 1, 52, "Complete"));
     }
 
     private static IReadOnlyList<CapacityProtectionDefinition> BuildCapacityProtections(
@@ -262,6 +267,77 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
 
         return skus.ToList();
     }
+
+    private static IReadOnlyList<ConfirmedReceiptEvidence> BuildConfirmedReceipts(
+        IReadOnlyList<SkuBufferSetting> skus,
+        IReadOnlyList<InventoryPosition> inventory,
+        IReadOnlyList<SupplierItemSource> sources,
+        DateOnly anchor)
+    {
+        var skuByCode = skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        var sourceBySku = sources.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        var asOfUtc = SourceCutoffUtc(anchor);
+
+        return inventory
+            .OrderBy(item => item.Sku, StringComparer.Ordinal)
+            .Select(item =>
+            {
+                var sku = skuByCode[item.Sku];
+                var source = sourceBySku[item.Sku];
+                var expectedWeek = Math.Max(1, (int)Math.Ceiling(sku.DecoupledLeadTimeDays / 7m));
+                var expectedDate = anchor.AddDays(7 * (expectedWeek - 1) + 2);
+                var sourceTimestampUtc = new DateTimeOffset(
+                        expectedDate.ToDateTime(TimeOnly.MinValue),
+                        TimeSpan.FromHours(8))
+                    .ToUniversalTime()
+                    .ToString("O");
+
+                return new ConfirmedReceiptEvidence(
+                    $"DEMO-RECEIPT-{item.Sku}-{expectedWeek:00}",
+                    item.Sku,
+                    item.OpenSupply,
+                    expectedWeek,
+                    expectedDate,
+                    expectedWeek <= 2 ? "ConfirmedInTransit" : "ConfirmedOpenSupply",
+                    $"DEMO-OPEN-SUPPLY-{item.Sku}-{expectedWeek:00}",
+                    "ExternalSupplier",
+                    source.Supplier,
+                    source.MaterialFamily,
+                    "Confirmed",
+                    "Complete",
+                    asOfUtc,
+                    "DemoFixture",
+                    sourceTimestampUtc);
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<OpeningBacklogEvidence> BuildOpeningBacklog(
+        IReadOnlyList<SkuBufferSetting> skus,
+        DateOnly anchor)
+    {
+        var asOfUtc = SourceCutoffUtc(anchor);
+        return skus
+            .OrderBy(item => item.Sku, StringComparer.Ordinal)
+            .Select(item => new OpeningBacklogEvidence(
+                $"DEMO-OPENING-BACKLOG-{item.Sku}",
+                item.Sku,
+                item.Sku switch
+                {
+                    "PAY-SAR-102" => 1m,
+                    "AV-FPGA-203" => 2m,
+                    "CBL-HAR-402" => 8m,
+                    _ => 0m
+                },
+                $"DEMO-CUSTOMER-BACKLOG-{item.Sku}",
+                "Complete",
+                asOfUtc,
+                "DemoFixture"))
+            .ToList();
+    }
+
+    private static string SourceCutoffUtc(DateOnly anchor) =>
+        new DateTimeOffset(anchor.ToDateTime(new TimeOnly(8, 0)), TimeSpan.Zero).ToString("O");
 
     private static IReadOnlyList<HistoricalDemandActual> BuildHistoricalDemand(
         IReadOnlyList<SkuBufferSetting> skus,

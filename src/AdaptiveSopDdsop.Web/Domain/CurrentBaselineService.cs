@@ -142,6 +142,17 @@ public sealed class CurrentBaselineService
         {
             throw new ArgumentException("关键基线证据不完整：缺少白盒重算所需的类型化计划输入。", nameof(request));
         }
+        var planningEvidenceValidation = PlanningEvidenceValidator.ValidateForFreeze(candidate.Payload.PlanningInputs);
+        var planningEvidenceBlockers = planningEvidenceValidation.Issues
+            .Where(item => item.BlocksFreeze)
+            .Select(item => $"{item.Scope}/{item.Sku ?? "-"}/{item.Week?.ToString() ?? "-"}/{item.Reason}/{item.SourceId ?? "-"}")
+            .ToList();
+        if (planningEvidenceBlockers.Count > 0)
+        {
+            throw new ArgumentException(
+                $"关键基线计划证据验证失败：{string.Join("; ", planningEvidenceBlockers)}。",
+                nameof(request));
+        }
 
         var now = DateTimeOffset.UtcNow.ToString("O");
         var snapshotId = Guid.NewGuid().ToString("N");
