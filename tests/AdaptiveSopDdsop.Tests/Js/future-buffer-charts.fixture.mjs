@@ -124,6 +124,120 @@ function createRuntime(source) {
   return { context, elements };
 }
 
+function makeStandaloneBufferTrend() {
+  const makeDetail = (sku, name, offset, replenishmentWeek) => {
+    const series = Array.from({ length: 12 }, (_, index) => {
+      const week = index + 1;
+      const topOfRed = 38 + offset + week;
+      const topOfYellow = topOfRed + 34 + (week % 3);
+      const topOfGreen = topOfYellow + 42 + (week % 4);
+      const endNetFlowBeforeReplenishment = topOfYellow - 18 + (week % 5) * 7;
+      const replenishmentQuantity = week === replenishmentWeek ? 36 + offset : 0;
+      const status = endNetFlowBeforeReplenishment <= topOfRed
+        ? "Red"
+        : endNetFlowBeforeReplenishment <= topOfYellow ? "Yellow" : "Green";
+      const periodStartDate = new Date(Date.UTC(2026, 5, 1 + index * 7)).toISOString().slice(0, 10);
+      return {
+        sku,
+        week,
+        periodStartDate,
+        timePhasedAdu: 9 + offset / 10 + (week % 4),
+        startNetFlow: topOfYellow + 15 - week,
+        demand: 16 + offset / 5 + (week * 7) % 17,
+        endNetFlowBeforeReplenishment,
+        endNetFlowAfterReplenishment: endNetFlowBeforeReplenishment + replenishmentQuantity,
+        topOfRed,
+        topOfYellow,
+        topOfGreen,
+        inventoryValue: (72 + offset - week) * 100,
+        replenishmentQuantity,
+        isReplenishment: replenishmentQuantity > 0,
+        isPrebuild: false,
+        status,
+        demandSpikeThreshold: 38 + offset / 4,
+        physicalPosition: {
+          endingOnHand: 72 + offset - week,
+          endingBacklog: week === 11 ? 3 : 0,
+          onHandStatus: week >= 10 ? "Yellow" : "Green",
+          evidenceStatus: "Complete",
+          source: "InventoryFlowProjection",
+        },
+      };
+    });
+    return {
+      sku,
+      name,
+      family: "独立测试产品族",
+      adu: 10 + offset / 10,
+      decoupledLeadTimeDays: 14 + offset / 2,
+      minimumOrderQuantity: 12 + offset,
+      orderCycleDays: 7,
+      unitCost: 100,
+      zone: {
+        topOfRed: series[0].topOfRed,
+        topOfYellow: series[0].topOfYellow,
+        topOfGreen: series[0].topOfGreen,
+      },
+      series,
+      replenishmentOrders: [{
+        sku,
+        week: replenishmentWeek,
+        quantity: 36 + offset,
+        value: (36 + offset) * 100,
+        trigger: "OrderCycle",
+      }],
+      traces: [{ sku, week: replenishmentWeek, explanation: `${sku} standalone replenishment trace` }],
+      activities: [],
+      attributes: [],
+      bufferSizing: [],
+      bom: [],
+      orderDetails: [],
+    };
+  };
+
+  const skuDetails = [
+    makeDetail("STANDALONE-A", "独立测试物料 A", 0, 4),
+    makeDetail("STANDALONE-B", "独立测试物料 B", 18, 7),
+  ];
+  const series = skuDetails.flatMap(detail => detail.series);
+  return {
+    caseId: "standalone-buffer-fixture",
+    name: "独立缓冲图测试",
+    horizonWeeks: 12,
+    selectedSku: "STANDALONE-A",
+    kpis: {
+      redSkuCount: 0,
+      yellowSkuCount: 2,
+      shortageCount: 0,
+      averageInventoryValue: 0,
+      peakInventoryValue: 0,
+      replenishmentOrderCount: 2,
+      inventoryValueDelta: 0,
+      onHandRedSkuCount: 0,
+      onHandYellowSkuCount: 2,
+      onHandStockoutWeekCount: 2,
+    },
+    series,
+    zoneBands: skuDetails.map(detail => ({ sku: detail.sku, ...detail.zone })),
+    comparison: {
+      averageInventoryValueDelta: 0,
+      peakInventoryValueDelta: 0,
+      redWeekDelta: 0,
+      replenishmentOrderCountDelta: 0,
+      replenishmentQuantityDelta: 0,
+    },
+    familySummaries: [],
+    weeklyCells: series.map(point => ({
+      sku: point.sku,
+      family: "独立测试产品族",
+      week: point.week,
+      inventoryValue: point.inventoryValue,
+      status: point.status,
+    })),
+    skuDetails,
+  };
+}
+
 function cubicValue(start, firstControl, secondControl, end, t) {
   const oneMinus = 1 - t;
   return oneMinus ** 3 * start
@@ -502,7 +616,8 @@ export async function runFutureBufferChartFixtures(trend, scriptPath = defaultSc
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dtoPath = process.argv[2];
-  assert.ok(dtoPath, "expected a serialized future buffer trend DTO path");
-  const trend = JSON.parse(await readFile(dtoPath, "utf8"));
+  const trend = dtoPath
+    ? JSON.parse(await readFile(dtoPath, "utf8"))
+    : makeStandaloneBufferTrend();
   await runFutureBufferChartFixtures(trend);
 }
