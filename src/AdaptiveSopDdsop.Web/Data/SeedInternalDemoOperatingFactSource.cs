@@ -111,7 +111,7 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
                 eventCodes[week - 1] = NamedInventoryEvents.TryGetValue(weekOffset, out var eventCode)
                     ? eventCode
                     : "NONE";
-                adjustments[week - 1] = InventoryAdjustment(sku.Sku, weekOffset, index);
+                adjustments[week - 1] = InventoryAdjustment(sku.Sku, weekOffset);
             }
 
             // Historical receipts are recorded facts.  The opening balance is the amount required to
@@ -130,8 +130,12 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
                 var ending = RoundSignedQuantity(opening + receipts[week - 1] - consumption + adjustment);
                 var isLatest = offset == -1;
                 var inventory = baselineBySku[sku.Sku];
-                var openSupply = isLatest ? inventory.OpenSupply : 0m;
-                var qualifiedDemand = isLatest ? inventory.QualifiedDemand : 0m;
+                var openSupply = isLatest
+                    ? inventory.OpenSupply
+                    : HistoricalOpenSupply(sku, index, week, cadence, receipts[week - 1], offset);
+                var qualifiedDemand = isLatest
+                    ? inventory.QualifiedDemand
+                    : HistoricalQualifiedDemand(sku, index, week, demands[week - 1]);
                 var threshold = RoundQuantity(sku.Adu * 7m * (1.30m + (index % 3) * 0.05m));
 
                 ledger.Add(new WeeklyInventoryMovementFact(
@@ -179,7 +183,7 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
                     "Complete",
                     demand,
                     group.Average(item => item.DemandSpikeThreshold),
-                    group.Sum(item => item.EndingNetFlow));
+                    null);
             })
             .ToList();
     }
@@ -220,7 +224,41 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
     private static OperatingBalanceBridgeFact BalanceBridge(string metricCode, string itemKey, decimal balance) =>
         new(metricCode, itemKey, balance, 0m, 0m, 0m, balance, "Complete");
 
-    private static decimal InventoryAdjustment(string sku, int weekOffset, int skuIndex) =>
+    private static decimal HistoricalOpenSupply(
+        SkuBufferSetting sku,
+        int skuIndex,
+        int week,
+        int cadence,
+        decimal recordedReceipt,
+        int weekOffset)
+    {
+        var receiptWeeksAway = cadence - week % cadence;
+        var confirmedInbound = receiptWeeksAway <= 2
+            ? sku.Adu * 7m * (0.72m + (skuIndex % 3) * 0.08m)
+            : 0m;
+        var openPurchaseCommitment = sku.Adu * 7m *
+            (0.24m + ((week * ((skuIndex % 4) + 2) + skuIndex) % 6) * 0.09m);
+        var eventAdjustment = weekOffset == -39 && sku.Sku == "AV-FPGA-203"
+            ? -openPurchaseCommitment
+            : 0m;
+        return RoundQuantity(recordedReceipt + confirmedInbound + openPurchaseCommitment + eventAdjustment);
+    }
+
+    private static decimal HistoricalQualifiedDemand(
+        SkuBufferSetting sku,
+        int skuIndex,
+        int week,
+        decimal actualDemand)
+    {
+        var allocationFactor = 0.82m +
+            ((week * ((skuIndex % 3) + 3) + skuIndex) % 7) * 0.045m;
+        var committedBacklog = (week + skuIndex * 2) % 9 == 0
+            ? sku.Adu * (1m + skuIndex % 3)
+            : 0m;
+        return RoundQuantity(actualDemand * allocationFactor + committedBacklog);
+    }
+
+    private static decimal InventoryAdjustment(string sku, int weekOffset) =>
         (weekOffset, sku) switch
         {
             (-46, "AV-COM-201") => -4m,

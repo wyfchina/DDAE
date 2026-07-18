@@ -9,6 +9,8 @@ var tests = new (string Name, Action Run)[]
     ("Internal demo fact set conserves 52 weeks for all twelve SKUs", TestInternalDemoFactSetConservesAllSkuInventory),
     ("Internal demo demand profiles are not proportional copies", TestInternalDemoDemandProfilesAreDistinct),
     ("Internal demo inventory adjustments belong to named event weeks", TestInternalDemoInventoryAdjustmentsUseNamedEvents),
+    ("Internal demo historical net flow has explicit varying supply and demand components", TestInternalDemoHistoricalNetFlowHasExplicitComponents),
+    ("Internal demo operating facts leave target NFP empty without parameter evidence", TestInternalDemoOperatingFactsDoNotRelabelActualNfpAsTarget),
     ("Scenario workspace exposes shared fact-set lineage", TestScenarioWorkspaceExposesSharedFactSetLineage),
     ("FPGA MOQ is five in master and scenario data", TestFpgaMoqIsFiveInMasterAndScenario),
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
@@ -322,6 +324,37 @@ static void TestInternalDemoInventoryAdjustmentsUseNamedEvents()
         AssertTrue(expected.TryGetValue(item.WeekOffset, out var eventCode) && eventCode == item.EventCode,
             $"{item.Sku}/{item.WeekOffset} adjustment must use the shared event registry");
     }
+}
+
+static void TestInternalDemoHistoricalNetFlowHasExplicitComponents()
+{
+    var facts = new SeedInternalDemoOperatingFactSource(SeedData.Create()).Load();
+    var history = facts.InventoryMovements.Where(item => item.WeekOffset < -1).ToList();
+    AssertTrue(history.Count > 0, "historical ledger must contain prior weeks");
+    AssertTrue(history.Count(item => item.OpenSupply > 0m) > history.Count / 2,
+        "most historical weeks must expose recorded open-supply evidence");
+    AssertTrue(history.Count(item => item.QualifiedDemand > 0m) > history.Count / 2,
+        "most historical weeks must expose recorded qualified-demand evidence");
+    AssertTrue(history.Count(item => item.EndingNetFlow != item.EndingOnHand) > history.Count / 2,
+        "historical NFP must not mechanically equal on-hand for most weeks");
+    AssertTrue(history.Select(item => item.OpenSupply).Distinct().Count() > 12,
+        "open supply must vary beyond a per-SKU constant");
+    AssertTrue(history.Select(item => item.QualifiedDemand).Distinct().Count() > 12,
+        "qualified demand must vary beyond a per-SKU constant");
+    AssertTrue(history.All(item => item.EndingNetFlow == item.EndingOnHand + item.OpenSupply - item.QualifiedDemand),
+        "historical NFP must reconcile to its physical components");
+}
+
+static void TestInternalDemoOperatingFactsDoNotRelabelActualNfpAsTarget()
+{
+    var facts = new SeedInternalDemoOperatingFactSource(SeedData.Create()).Load();
+    AssertTrue(facts.OperatingFacts.All(item => item.TargetNetFlowPosition is null),
+        "target NFP must be empty when this source has no parameter evidence");
+    AssertTrue(facts.OperatingFacts.All(item =>
+            item.TargetNetFlowPosition != facts.InventoryMovements
+                .Where(movement => movement.WeekOffset == item.WeekOffset)
+                .Sum(movement => movement.EndingNetFlow)),
+        "actual ending NFP must not be relabeled as a target");
 }
 
 static void TestScenarioWorkspaceExposesSharedFactSetLineage()
