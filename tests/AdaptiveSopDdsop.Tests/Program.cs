@@ -64,6 +64,9 @@ var tests = new (string Name, Action Run)[]
     ("Historical CCR role wins when a resource is also upstream", TestHistoricalCcrRoleWinsOverUpstreamRole),
     ("History review uses the effective historical parameter snapshot for every point", TestHistoryReviewUsesEffectiveParameterSnapshot),
     ("History inventory projection sizes weekly zones from rolling SKU demand", TestHistoryInventoryProjectionUsesRollingSkuDemand),
+    ("History inventory evidence verifies stock and net-flow equations", TestHistoryInventoryEvidenceChecksBothEquations),
+    ("History projection separates weekly event and parameter reason", TestHistoryProjectionSeparatesReasons),
+    ("History projection does not publish target net-flow position", TestHistoryProjectionOmitsTargetNetFlow),
     ("History review preserves annual rolling context across range views", TestHistoryReviewPreservesAnnualRollingContextAcrossRanges),
     ("History time buffer projects only fully matched abnormal cost events", TestHistoryTimeBufferProjectsOnlyFullyMatchedCostEvents),
     ("History review exposes missing evidence instead of zero or current-parameter backfill", TestHistoryReviewDoesNotBackfillMissingEvidence),
@@ -2879,15 +2882,11 @@ static void TestHistoryInventoryProjectionUsesRollingSkuDemand()
     {
         var source = sourceByWeek[point.WeekOffset];
         var expected = ExpectedRollingHistorySizing(facts, sku, point.WeekOffset);
-        AssertEqual(source.QualifiedDemand, point.ActualDemand, $"week {point.WeekOffset} actual demand projection");
+        AssertEqual(source.ActualDemand, point.ActualDemand, $"week {point.WeekOffset} actual demand projection");
         AssertEqual(source.DemandSpikeThreshold, point.DemandSpikeThreshold, $"week {point.WeekOffset} demand threshold projection");
         AssertEqual<decimal?>(expected.Zones.TopOfRed, point.TopOfRed, $"week {point.WeekOffset} rolling top of red");
         AssertEqual<decimal?>(expected.Zones.TopOfYellow, point.TopOfYellow, $"week {point.WeekOffset} rolling top of yellow");
         AssertEqual<decimal?>(expected.Zones.TopOfGreen, point.TopOfGreen, $"week {point.WeekOffset} rolling top of green");
-        AssertEqual<decimal?>(
-            decimal.Round((expected.Zones.TopOfYellow + expected.Zones.TopOfGreen) / 2m, 2),
-            point.TargetNetFlowPosition,
-            $"week {point.WeekOffset} rolling target NFP");
     }
 
     var distinctZoneHeights = view.Points
@@ -2918,14 +2917,33 @@ static void TestHistoryInventoryProjectionUsesRollingSkuDemand()
         JsonSerializer.Serialize(poisonedProjection.InventoryBuffers),
         "per-SKU history projection must not read global weekly operating facts");
 
+    var qualifiedDemandPoisonedFacts = facts with
+    {
+        BufferFacts = facts.BufferFacts
+            .Select(item => item.Sku == sku
+                ? item with
+                {
+                    QualifiedDemand = item.QualifiedDemand + 999m,
+                    EndingNetFlow = item.EndingNetFlow - 999m
+                }
+                : item)
+            .ToList()
+    };
+    var qualifiedDemandPoisonedView = HistoryReviewProjectionBuilder.Build(qualifiedDemandPoisonedFacts, definitions, 3)
+        .InventoryBuffers.Single(item => item.Sku == sku);
+    AssertTrue(
+        view.Points.Zip(qualifiedDemandPoisonedView.Points)
+            .All(pair => (pair.First.TopOfRed, pair.First.TopOfYellow, pair.First.TopOfGreen) ==
+                (pair.Second.TopOfRed, pair.Second.TopOfYellow, pair.Second.TopOfGreen)),
+        "qualified-demand poison must not change rolling historical ADU zones");
+
     var zeroDemandFacts = facts with
     {
         BufferFacts = facts.BufferFacts
             .Select(item => item.Sku == sku && item.WeekOffset == -5
                 ? item with
                 {
-                    QualifiedDemand = 0m,
-                    EndingNetFlow = item.EndingOnHand + item.OpenSupply
+                    ActualDemand = 0m
                 }
                 : item)
             .ToList()
@@ -2937,6 +2955,82 @@ static void TestHistoryInventoryProjectionUsesRollingSkuDemand()
     AssertTrue(
         zeroDemandPoint.TopOfGreen is > 0m && zeroDemandPoint.EvidenceStatus == "Complete",
         "an explicit zero-demand week must remain valid rolling evidence rather than becoming a gap");
+}
+
+static void TestHistoryInventoryEvidenceChecksBothEquations()
+{
+    const string sku = "AV-COM-201";
+    const int poisonedWeek = -8;
+    var seed = SeedData.Create();
+    var review = new HistoryReviewWorkspaceService(
+        new OpeningOnHandContinuityPoisonHistoryOperatingFactSource(
+            new SeedHistoryOperatingFactSource(seed), sku, poisonedWeek),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(12);
+    var points = (review.InventoryBuffers ?? throw new InvalidOperationException("inventory projection is missing"))
+        .Single(item => item.Sku == sku)
+        .Points;
+    var earliest = points.Single(item => item.WeekOffset == -52);
+    var poisoned = points.Single(item => item.WeekOffset == poisonedWeek);
+
+    AssertTrue(
+        earliest.OpeningOnHand.HasValue &&
+        earliest.EvidenceChecks?.Single(item => item.Code == "InventoryContinuity").Status == "Complete",
+        "the earliest annual point must retain explicit historical opening evidence");
+    AssertEqual("EvidenceMissing", poisoned.EvidenceStatus, "poisoned opening stock evidence status");
+    AssertEqual(
+        "EvidenceMissing",
+        poisoned.EvidenceChecks?.Single(item => item.Code == "InventoryContinuity").Status,
+        "poisoned opening stock continuity evidence");
+    AssertTrue(
+        points.Where(item => item.WeekOffset != poisonedWeek).All(item => item.EvidenceStatus == "Complete"),
+        "only the point with poisoned opening stock should lose evidence");
+    AssertTrue(
+        poisoned.EvidenceChecks?.Single(item => item.Code == "InventoryEquation").Status == "EvidenceMissing" &&
+        poisoned.EvidenceChecks?.Single(item => item.Code == "NetFlowEquation").Status == "Complete",
+        "stock and net-flow equations should be independently evidenced");
+}
+
+static void TestHistoryProjectionSeparatesReasons()
+{
+    const string sku = "AV-COM-201";
+    const int transitionWeek = -26;
+    var seed = SeedData.Create();
+    var facts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var definitions = new SeedScenarioWorkspaceDataSource(seed)
+        .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+    var evidenceFacts = facts with
+    {
+        BufferFacts = facts.BufferFacts
+            .Select(item => item.Sku == sku && item.WeekOffset == transitionWeek
+                ? item with { ExplicitCause = "进口到货节奏调整" }
+                : item)
+            .ToList(),
+        DdmrpParameterFacts = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>())
+            .Select(item => item.Sku == sku && item.SnapshotId == $"HIST-{sku}-V2"
+                ? item with { ChangeReason = "定容参数转版" }
+                : item)
+            .ToList()
+    };
+    var point = HistoryReviewProjectionBuilder.Build(evidenceFacts, definitions, 3)
+        .InventoryBuffers.Single(item => item.Sku == sku)
+        .Points.Single(item => item.WeekOffset == transitionWeek);
+
+    AssertEqual("进口到货节奏调整", point.WeeklyEvent, "weekly business event");
+    AssertEqual("定容参数转版", point.ParameterChangeReason, "parameter-change reason");
+    AssertTrue(point.WeeklyEvent != point.ParameterChangeReason,
+        "weekly event and parameter-change reason must remain distinct evidence");
+}
+
+static void TestHistoryProjectionOmitsTargetNetFlow()
+{
+    var data = SeedData.Create();
+    var review = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(data),
+        new SeedScenarioWorkspaceDataSource(data)).GetReview(6);
+    AssertTrue(review.InventoryBuffers!.SelectMany(item => item.Points)
+        .All(point => point.TargetNetFlowPosition is null),
+        "target net-flow position must remain absent");
 }
 
 static void TestHistoryReviewPreservesAnnualRollingContextAcrossRanges()
@@ -2965,7 +3059,8 @@ static void TestHistoryReviewPreservesAnnualRollingContextAcrossRanges()
             AssertEqual(annualPoint.TopOfRed, recentPoint.TopOfRed, $"{recentView.Sku} week {recentPoint.WeekOffset} top of red across views");
             AssertEqual(annualPoint.TopOfYellow, recentPoint.TopOfYellow, $"{recentView.Sku} week {recentPoint.WeekOffset} top of yellow across views");
             AssertEqual(annualPoint.TopOfGreen, recentPoint.TopOfGreen, $"{recentView.Sku} week {recentPoint.WeekOffset} top of green across views");
-            AssertEqual(annualPoint.TargetNetFlowPosition, recentPoint.TargetNetFlowPosition, $"{recentView.Sku} week {recentPoint.WeekOffset} target NFP across views");
+            AssertEqual(annualPoint.EndingOnHand, recentPoint.EndingOnHand, $"{recentView.Sku} week {recentPoint.WeekOffset} ending on-hand across views");
+            AssertEqual(annualPoint.NetFlow, recentPoint.NetFlow, $"{recentView.Sku} week {recentPoint.WeekOffset} net-flow across views");
             AssertEqual(annualPoint.ActualDemand, recentPoint.ActualDemand, $"{recentView.Sku} week {recentPoint.WeekOffset} actual demand across views");
             AssertEqual(annualPoint.DemandSpikeThreshold, recentPoint.DemandSpikeThreshold, $"{recentView.Sku} week {recentPoint.WeekOffset} demand threshold across views");
         }
@@ -2973,12 +3068,13 @@ static void TestHistoryReviewPreservesAnnualRollingContextAcrossRanges()
     }
 
     var representativeView = recentViews.Single(item => item.Sku == "AV-COM-201");
+    var representativeZoneHeights = representativeView.Points
+        .Select(point => (point.TopOfRed, point.TopOfYellow, point.TopOfGreen))
+        .Distinct()
+        .ToList();
     AssertTrue(
-        representativeView.Points
-            .Select(point => (point.TopOfRed, point.TopOfYellow, point.TopOfGreen))
-            .Distinct()
-            .Count() >= 3,
-        "the representative six-month inventory view must retain at least three rolling zone-height sets");
+        representativeZoneHeights.Count >= 2,
+        "the representative six-month inventory view must retain multiple rolling zone-height sets from actual demand evidence");
 }
 
 static void TestHistoryTimeBufferProjectsOnlyFullyMatchedCostEvents()
@@ -3177,9 +3273,9 @@ static DdmrpSizingResult ExpectedRollingHistorySizing(HistoryFactSet facts, stri
             item.WeekOffset <= weekOffset &&
             item.WeekOffset >= weekOffset - 12 &&
             item.EvidenceStatus == "Complete" &&
-            item.QualifiedDemand.HasValue)
+            item.ActualDemand.HasValue)
         .OrderBy(item => item.WeekOffset)
-        .Select(item => item.QualifiedDemand!.Value)
+        .Select(item => item.ActualDemand!.Value)
         .ToList();
     var historicalAdu = decimal.Round(weeklyDemand.Average() / 7m, 2, MidpointRounding.AwayFromZero);
     var parameter = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>()).Single(item =>
@@ -6216,7 +6312,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "inventory history should pass one shared weekly x mapping to its position and volatility charts");
 
     var inventoryPositionBody = SourceFunctionBody(script, "renderHistoryInventoryPositionChart");
-    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow", "point.targetNetFlowPosition" })
+    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow" })
     {
         AssertTrue(inventoryPositionBody.Contains(backendField, StringComparison.Ordinal), $"inventory position history must read backend {backendField}");
     }
@@ -12100,6 +12196,36 @@ internal sealed class InvalidAbnormalCostLedgerHistoryOperatingFactSource : IHis
                     "星载电子",
                     "星载电子需求控制点",
                     "DDAE 演示历史事实台账"))
+                .ToList()
+        };
+    }
+}
+
+internal sealed class OpeningOnHandContinuityPoisonHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+    private readonly string _sku;
+    private readonly int _weekOffset;
+
+    public OpeningOnHandContinuityPoisonHistoryOperatingFactSource(
+        IHistoryOperatingFactSource inner,
+        string sku,
+        int weekOffset)
+    {
+        _inner = inner;
+        _sku = sku;
+        _weekOffset = weekOffset;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with
+        {
+            BufferFacts = facts.BufferFacts
+                .Select(item => item.Sku == _sku && item.WeekOffset == _weekOffset
+                    ? item with { OpeningOnHand = item.OpeningOnHand + 1m }
+                    : item)
                 .ToList()
         };
     }

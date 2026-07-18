@@ -132,18 +132,41 @@ public static class HistoryReviewProjectionBuilder
                 EvidenceMissing,
                 matchingFacts.Count == 0 ? "历史库存事实缺失" : "历史库存事实重复",
                 null,
-                EvidenceMissing);
+                EvidenceMissing,
+                EvidenceChecks: MissingInventoryEvidenceChecks(
+                    matchingFacts.Count == 0 ? "历史库存事实缺失" : "历史库存事实重复"));
         }
 
         var fact = matchingFacts[0];
-        var quantitiesComplete = fact.EvidenceStatus == Complete &&
+        var sourceFieldsComplete = fact.EvidenceStatus == Complete &&
+            fact.OpeningOnHand.HasValue &&
+            fact.ActualReceipts.HasValue &&
+            fact.ActualConsumption.HasValue &&
+            fact.InventoryAdjustment.HasValue &&
             fact.EndingOnHand.HasValue &&
             fact.OpenSupply.HasValue &&
             fact.QualifiedDemand.HasValue &&
-            fact.EndingNetFlow.HasValue &&
+            fact.EndingNetFlow.HasValue;
+        var precedingFacts = skuFacts
+            .Where(item => item.WeekOffset == weekOffset - 1)
+            .ToList();
+        var continuityValid = precedingFacts.Count == 0
+            ? weekOffset == -facts.Request.Weeks &&
+                fact.EvidenceStatus == Complete && fact.OpeningOnHand.HasValue
+            : precedingFacts.Count == 1 &&
+                precedingFacts[0].EvidenceStatus == Complete &&
+                precedingFacts[0].EndingOnHand.HasValue &&
+                fact.OpeningOnHand.HasValue &&
+                Math.Abs(fact.OpeningOnHand.GetValueOrDefault() - precedingFacts[0].EndingOnHand.GetValueOrDefault()) <= 0.1m;
+        var inventoryEquationValid = sourceFieldsComplete &&
             Math.Abs(
-                fact.EndingOnHand.Value + fact.OpenSupply.Value - fact.QualifiedDemand.Value -
-                fact.EndingNetFlow.Value) <= 0.1m;
+                fact.EndingOnHand.GetValueOrDefault() -
+                (fact.OpeningOnHand.GetValueOrDefault() + fact.ActualReceipts.GetValueOrDefault() -
+                 fact.ActualConsumption.GetValueOrDefault() + fact.InventoryAdjustment.GetValueOrDefault())) <= 0.1m;
+        var netFlowEquationValid = sourceFieldsComplete &&
+            Math.Abs(
+                fact.EndingOnHand.GetValueOrDefault() + fact.OpenSupply.GetValueOrDefault() - fact.QualifiedDemand.GetValueOrDefault() -
+                fact.EndingNetFlow.GetValueOrDefault()) <= 0.1m;
         var snapshots = string.IsNullOrWhiteSpace(fact.ParameterSnapshotId)
             ? new List<HistoricalDdmrpParameterFact>()
             : parameterFacts
@@ -161,20 +184,27 @@ public static class HistoryReviewProjectionBuilder
                 Setting = snapshots[0].Setting with { Adu = rollingAdu.Value }
             })
             : null;
-        var actualDemand = fact.EvidenceStatus == Complete && fact.QualifiedDemand is >= 0m
-            ? fact.QualifiedDemand
+        var actualDemand = fact.EvidenceStatus == Complete && fact.ActualDemand is >= 0m
+            ? fact.ActualDemand
             : null;
         var demandSpikeThreshold = fact.EvidenceStatus == Complete && fact.DemandSpikeThreshold is > 0m
             ? fact.DemandSpikeThreshold
             : null;
-        decimal? targetNetFlowPosition = sizing is null
-            ? null
-            : decimal.Round(
-                (sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m,
-                2,
-                MidpointRounding.AwayFromZero);
-        var complete = quantitiesComplete && sizing is not null &&
-            actualDemand.HasValue && demandSpikeThreshold.HasValue && targetNetFlowPosition.HasValue;
+        var checks = new List<HistoryEvidenceCheck>
+        {
+            Check("SourceFields", "数量字段完整", sourceFieldsComplete, "期初、收货、消耗、调整、期末、开放供应和合格需求"),
+            Check("InventoryContinuity", "跨周库存连续", continuityValid, "本周期初等于上周期末"),
+            Check("InventoryEquation", "库存结转恒等式", inventoryEquationValid, "期末=期初+收货-消耗+调整"),
+            Check("NetFlowEquation", "净流量恒等式", netFlowEquationValid, "净流量=期末在手+开放供应-合格需求"),
+            Check("ParameterSnapshot", "唯一参数快照", snapshots.Count == 1, fact.ParameterSnapshotId ?? "快照缺失"),
+            Check("Sizing", "定容可复算", sizing is not null, sizing is null ? "定容证据缺失" : "后端定容完成"),
+            Check("DemandEvidence", "需求与尖峰阈值", actualDemand.HasValue && demandSpikeThreshold.HasValue, "SKU级历史需求事实"),
+        };
+        var complete = checks.All(item => item.Status == Complete);
+        var weeklyEvent = string.IsNullOrWhiteSpace(fact.ExplicitCause) ? null : fact.ExplicitCause;
+        var parameterChangeReason = snapshots.Count == 1
+            ? snapshots[0].ChangeReason
+            : null;
 
         return new HistoryInventoryPoint(
             weekOffset,
@@ -192,8 +222,30 @@ public static class HistoryReviewProjectionBuilder
             complete ? Complete : EvidenceMissing,
             actualDemand,
             demandSpikeThreshold,
-            complete ? targetNetFlowPosition : null);
+            null,
+            weeklyEvent,
+            parameterChangeReason,
+            checks,
+            fact.OpeningOnHand,
+            fact.ActualReceipts,
+            fact.ActualConsumption,
+            fact.InventoryAdjustment);
     }
+
+    private static HistoryEvidenceCheck Check(string code, string label, bool complete, string detail) =>
+        new(code, label, complete ? Complete : EvidenceMissing, detail);
+
+    private static IReadOnlyList<HistoryEvidenceCheck> MissingInventoryEvidenceChecks(string detail) =>
+        new[]
+        {
+            Check("SourceFields", "数量字段完整", false, detail),
+            Check("InventoryContinuity", "跨周库存连续", false, detail),
+            Check("InventoryEquation", "库存结转恒等式", false, detail),
+            Check("NetFlowEquation", "净流量恒等式", false, detail),
+            Check("ParameterSnapshot", "唯一参数快照", false, detail),
+            Check("Sizing", "定容可复算", false, detail),
+            Check("DemandEvidence", "需求与尖峰阈值", false, detail),
+        };
 
     private static decimal? CalculateRollingHistoricalAdu(
         IReadOnlyList<WeeklyBufferFact> skuFacts,
@@ -216,14 +268,14 @@ public static class HistoryReviewProjectionBuilder
         if (weeklyDemand.Any(items =>
                 items.Count != 1 ||
                 items[0].EvidenceStatus != Complete ||
-                !items[0].QualifiedDemand.HasValue ||
-                items[0].QualifiedDemand.GetValueOrDefault() < 0m))
+                !items[0].ActualDemand.HasValue ||
+                items[0].ActualDemand.GetValueOrDefault() < 0m))
         {
             return null;
         }
 
         var rollingAdu = decimal.Round(
-            weeklyDemand.Average(items => items[0].QualifiedDemand!.Value) / 7m,
+            weeklyDemand.Average(items => items[0].ActualDemand!.Value) / 7m,
             2,
             MidpointRounding.AwayFromZero);
         return rollingAdu > 0m ? rollingAdu : null;

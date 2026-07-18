@@ -175,7 +175,7 @@ function createStandaloneHistoryReview(weeks = 26) {
       evidenceStatus: "Complete",
       actualDemand: Math.round((38 + 16 * Math.sin(index / 2.4)) * multiplier),
       demandSpikeThreshold: Math.round(55 * multiplier),
-      targetNetFlowPosition: Math.round((topOfYellow + topOfGreen) / 2),
+      targetNetFlowPosition: null,
     };
   });
   const makeSnapshot = (sku, name, controlPoint, multiplier = 1) => ({
@@ -377,7 +377,6 @@ export async function runHistoryBufferRendererFixtures(
     && inventoryPositionChart.includes("history-zone-fill is-green")
     && /history-zone-fill is-red[^>]+d="[^"]*C /.test(inventoryPositionChart),
     "weekly backend zones should render as monotone stacked areas");
-  assert.ok(inventoryPositionChart.includes("history-series-line is-target-nfp"), "target NFP should be visible");
   assert.ok(inventoryVolatilityChart.includes("history-demand-threshold"), "backend demand-spike threshold should be visible");
   const positionDomain = inventoryPositionChart.match(/data-history-week-domain="([^"]+)"/)?.[1];
   const volatilityDomain = inventoryVolatilityChart.match(/data-history-week-domain="([^"]+)"/)?.[1];
@@ -420,7 +419,6 @@ export async function runHistoryBufferRendererFixtures(
     "history-zone-point is-green",
     "history-series-point is-on-hand",
     "history-series-point is-net-flow",
-    "history-series-point is-target-nfp",
   ]) {
     assert.equal((singletonPosition.match(new RegExp(cssClass, "g")) || []).length, 2,
       `valid-missing-valid position evidence should expose two ${cssClass} singleton markers`);

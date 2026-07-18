@@ -59,7 +59,8 @@ public sealed record HistoricalDdmrpParameterFact(
     SkuBufferSetting Setting,
     string SourceAuthority,
     string AsOfUtc,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    string? ChangeReason = null);
 
 public sealed record HistoricalCapacityProtectionFact(
     string SnapshotId,

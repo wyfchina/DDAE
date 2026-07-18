@@ -2,12 +2,25 @@ namespace AdaptiveSopDdsop.Web.Domain;
 
 public sealed record HistoryDistributionBucket(string Code, string Label, int Count, decimal Percent);
 
+public sealed record HistoryEvidenceCheck(
+    string Code,
+    string Label,
+    string Status,
+    string Detail);
+
 public sealed record HistoryInventoryPoint(
     int WeekOffset, string PeriodStartDate, decimal? EndingOnHand, decimal? OpenSupply,
     decimal? QualifiedDemand, decimal? NetFlow, decimal? TopOfRed, decimal? TopOfYellow,
     decimal? TopOfGreen, string Status, string Cause, string? ParameterSnapshotId, string EvidenceStatus,
     decimal? ActualDemand = null, decimal? DemandSpikeThreshold = null,
-    decimal? TargetNetFlowPosition = null);
+    decimal? TargetNetFlowPosition = null,
+    string? WeeklyEvent = null,
+    string? ParameterChangeReason = null,
+    IReadOnlyList<HistoryEvidenceCheck>? EvidenceChecks = null,
+    decimal? OpeningOnHand = null,
+    decimal? ActualReceipts = null,
+    decimal? ActualConsumption = null,
+    decimal? InventoryAdjustment = null);
 
 public sealed record HistoryInventoryBufferView(
     string ControlPoint, string Sku, string Name, int DetailWindowWeeks,
