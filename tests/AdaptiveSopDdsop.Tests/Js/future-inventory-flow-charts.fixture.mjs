@@ -508,6 +508,9 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
 
   const rangeScopedPhysicalEvidence = structuredClone(preview);
   const scopedTrend = rangeScopedPhysicalEvidence.scenario.bufferTrend;
+  scopedTrend.skuDetails.forEach(detail => {
+    detail.replenishmentOrders = detail.replenishmentOrders.map(order => ({ ...order, week: 2 }));
+  });
   for (const series of [scopedTrend.series, ...scopedTrend.skuDetails.map(detail => detail.series)]) {
     series.forEach(point => {
       point.physicalPosition = {
