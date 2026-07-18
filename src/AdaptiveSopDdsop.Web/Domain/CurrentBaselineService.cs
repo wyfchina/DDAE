@@ -260,7 +260,7 @@ public sealed class CurrentBaselineService
         {
             issues.Add("HISTORY_RECONCILIATION 证据区段必须为必需、最新且完整");
         }
-        if (reconciliation is null || section.Items is null)
+        if (reconciliation is null || reconciliation.Lines is null || reconciliation.Lines.Count == 0 || section.Items is null)
         {
             issues.Add("HISTORY_RECONCILIATION 缺少逐行证据");
             return issues;

@@ -126,7 +126,7 @@ public static class CurrentBaselineReconciliation
         IReadOnlyCollection<string> expectedResourceCodes)
     {
         var issues = Validate(reconciliation).ToList();
-        if (reconciliation is null)
+        if (reconciliation is null || reconciliation.Lines is null || reconciliation.Lines.Count == 0)
         {
             return issues;
         }
