@@ -154,7 +154,7 @@ function createStandaloneHistoryReview(weeks = 26) {
     date.setUTCDate(date.getUTCDate() + weekOffset * 7);
     return date.toISOString().slice(0, 10);
   };
-  const makeInventoryPoints = (multiplier, parameterSnapshotId) => Array.from({ length: weeks }, (_, index) => {
+  const makeInventoryPoints = (multiplier, parameterSnapshotId, demandPhase = 0) => Array.from({ length: weeks }, (_, index) => {
     const weekOffset = -weeks + index;
     const topOfRed = Math.round((42 + 5 * Math.sin(index / 3)) * multiplier);
     const topOfYellow = topOfRed + Math.round((58 + 7 * Math.sin(index / 4)) * multiplier);
@@ -172,8 +172,14 @@ function createStandaloneHistoryReview(weeks = 26) {
       status: "Green",
       cause: "无事件",
       parameterSnapshotId,
+      weeklyEvent: index === weeks - 1 ? "来料检验放行" : "无事件",
+      parameterChangeReason: index === weeks - 1 ? "需求波动后复核参数" : "本周无参数变更",
+      evidenceChecks: [
+        { label: "库存结转恒等式", detail: "期初库存 + 开放供应 - 合格需求 = 期末在手库存", status: "Complete" },
+        { label: "需求来源", detail: "已核准需求台账", status: "Complete" },
+      ],
       evidenceStatus: "Complete",
-      actualDemand: Math.round((38 + 16 * Math.sin(index / 2.4)) * multiplier),
+      actualDemand: Math.round((38 + 16 * Math.sin((index + demandPhase) / 2.4)) * multiplier),
       demandSpikeThreshold: Math.round(55 * multiplier),
       targetNetFlowPosition: null,
     };
@@ -268,10 +274,12 @@ function createStandaloneHistoryReview(weeks = 26) {
   });
   const inventoryBuffers = [
     { controlPoint: "星载电子半成品库存控制点", sku: "AV-COM-201", name: "星载通信机", detailWindowWeeks: 3, points: makeInventoryPoints(1, "HIST-AV-COM-201-V2"), distribution: [], evidenceStatus: "Complete" },
+    { controlPoint: "星载电子半成品库存控制点", sku: "AV-OBC-202", name: "星载计算机", detailWindowWeeks: 3, points: makeInventoryPoints(.72, "HIST-AV-OBC-202-V2", 3), distribution: [], evidenceStatus: "Complete" },
     { controlPoint: "关键进口 FPGA 库存控制点", sku: "AV-FPGA-203", name: "抗辐照 FPGA", detailWindowWeeks: 3, points: makeInventoryPoints(0.24, "HIST-AV-FPGA-203-V2"), distribution: [], evidenceStatus: "Complete" },
   ];
   const ddmrpSizingSnapshots = [
     makeSnapshot("AV-COM-201", "星载通信机", "星载电子半成品库存控制点"),
+    makeSnapshot("AV-OBC-202", "星载计算机", "星载电子半成品库存控制点", .72),
     makeSnapshot("AV-FPGA-203", "抗辐照 FPGA", "关键进口 FPGA 库存控制点", 0.24),
   ];
   return {
@@ -298,6 +306,23 @@ function createStandaloneHistoryReview(weeks = 26) {
 
 function rendererFixtureWithInventoryGap(historyReview) {
   const fixture = structuredClone(historyReview);
+  let comparableSku = fixture.inventoryBuffers.find(item =>
+    item.controlPoint === fixture.inventoryBuffers[0].controlPoint && item.sku === "AV-OBC-202");
+  if (!comparableSku) {
+    comparableSku = structuredClone(fixture.inventoryBuffers[0]);
+    fixture.inventoryBuffers.push(comparableSku);
+  }
+  comparableSku.sku = "AV-OBC-202";
+  comparableSku.name = "星载计算机";
+  comparableSku.points = comparableSku.points.map((point, index) => ({
+    ...point,
+    parameterSnapshotId: "HIST-AV-OBC-202-V2",
+    actualDemand: Math.max(0, Number(point.actualDemand || 0) + (index % 2 ? 17 : -11)),
+    demandSpikeThreshold: Math.max(1, Number(point.demandSpikeThreshold || 1) - 4),
+    weeklyEvent: index === comparableSku.points.length - 1 ? "计算机模块放行" : (point.weeklyEvent || "无事件"),
+    parameterChangeReason: index === comparableSku.points.length - 1 ? "模块放行后复核参数" : (point.parameterChangeReason || "本周无参数变更"),
+    evidenceChecks: point.evidenceChecks || [{ label: "库存结转恒等式", detail: "后端结转校验", status: "Complete" }],
+  }));
   const inventoryPoints = fixture.inventoryBuffers[0].points;
   const gap = inventoryPoints[Math.floor(inventoryPoints.length / 2)];
   Object.assign(gap, {
@@ -361,6 +386,7 @@ export async function runHistoryBufferRendererFixtures(
   const zoneChart = runtime.elements.get("history-ddmrp-zone-chart").innerHTML;
   const inventoryPositionChart = runtime.elements.get("history-inventory-position-chart").innerHTML;
   const inventoryVolatilityChart = runtime.elements.get("history-inventory-volatility-chart").innerHTML;
+  const evidenceDetail = runtime.elements.get("history-inventory-evidence-detail").innerHTML;
   const timeStatusChart = runtime.elements.get("history-time-status-chart").innerHTML;
   const timeCostStrip = runtime.elements.get("history-time-cost-strip").innerHTML;
   const capacityChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
@@ -370,6 +396,24 @@ export async function runHistoryBufferRendererFixtures(
   assert.ok(zoneChart.includes("生效周段") && zoneChart.includes("证据"));
   assert.ok((inventoryPositionChart.match(/history-series-line is-on-hand/g) || []).length >= 2, "inventory gap should split the line");
   assert.ok((inventoryVolatilityChart.match(/history-demand-area/g) || []).length >= 2, "demand gap should split the area");
+  assert.ok(!inventoryPositionChart.includes("目标净流量"), "inventory position must not retain target NFP semantics");
+  assert.ok(!inventoryPositionChart.includes("is-target-nfp"), "inventory position must not retain target NFP render classes");
+  assert.ok(inventoryPositionChart.includes("期末在手库存"), "on-hand wording should name ending on-hand inventory");
+  assert.ok(inventoryPositionChart.includes("开放供应") && inventoryPositionChart.includes("合格需求"),
+    "inventory evidence table should expose backend supply and qualified demand");
+  assert.ok(evidenceDetail.includes("库存结转恒等式") && evidenceDetail.includes("参数变更原因"),
+    "selected weekly evidence should render checks and parameter-change reason");
+  const comAxisMaximum = inventoryVolatilityChart.match(/data-history-demand-axis-max="([^"]+)"/)?.[1];
+  const comDemandPath = inventoryVolatilityChart.match(/class="history-demand-area"[^>]*d="([^"]+)"/)?.[1];
+  assert.ok(comAxisMaximum && comDemandPath, "COM demand chart should publish axis evidence and a curve");
+  clickHistorySelector(runtime, "[data-history-inventory-sku]", { historyInventorySku: "AV-OBC-202" });
+  const obcVolatilityChart = runtime.elements.get("history-inventory-volatility-chart").innerHTML;
+  const obcAxisMaximum = obcVolatilityChart.match(/data-history-demand-axis-max="([^"]+)"/)?.[1];
+  const obcDemandPath = obcVolatilityChart.match(/class="history-demand-area"[^>]*d="([^"]+)"/)?.[1];
+  assert.equal(comAxisMaximum, obcAxisMaximum, "same control point must share the demand axis maximum");
+  assert.notEqual(comDemandPath, obcDemandPath, "SKU selection must change the demand curve");
+  assert.ok(obcVolatilityChart.includes("AV-OBC-202") && obcVolatilityChart.includes("星载计算机"),
+    "SKU selection must change the demand chart title");
   assert.ok(inventoryPositionChart.includes("history-evidence-gap") && inventoryVolatilityChart.includes("history-evidence-gap"),
     "both inventory charts should mark the backend evidence gap");
   assert.ok(inventoryPositionChart.includes("history-zone-fill is-red")

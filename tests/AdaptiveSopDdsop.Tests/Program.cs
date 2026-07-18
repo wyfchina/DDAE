@@ -6569,6 +6569,7 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
         "history-inventory-chart",
         "history-inventory-position-chart",
         "history-inventory-volatility-chart",
+        "history-inventory-evidence-detail",
         "history-time-buffer-options",
         "history-time-buffer-chart",
         "history-time-status-chart",
@@ -6686,6 +6687,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "historyTrendMonths: 6",
         "selectedHistoryControlPoint: null",
         "selectedHistoryInventorySku: null",
+        "selectedHistoryInventoryWeekOffset: null",
         "selectedHistorySizingSnapshot: null",
         "selectedHistoryTimeBufferId: null",
         "selectedHistoryCapacityResource: null"
@@ -6700,6 +6702,8 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "renderHistoryInventoryBuffer",
         "renderHistoryInventoryPositionChart",
         "renderHistoryInventoryVolatilityChart",
+        "renderHistoryInventoryEvidenceDetail",
+        "historyDemandAxisMaximum",
         "renderHistoryDdmrpSizingTrace",
         "renderHistoryTimeBuffer",
         "renderHistoryTimeStatusChart",
@@ -6736,7 +6740,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "inventory history should pass one shared weekly x mapping to its position and volatility charts");
 
     var inventoryPositionBody = SourceFunctionBody(script, "renderHistoryInventoryPositionChart");
-    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow" })
+    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow", "point.openSupply", "point.qualifiedDemand" })
     {
         AssertTrue(inventoryPositionBody.Contains(backendField, StringComparison.Ordinal), $"inventory position history must read backend {backendField}");
     }
@@ -6747,6 +6751,15 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "inventory position history should render monotone evidence segments and explicit gaps");
     AssertTrue(inventoryPositionBody.Contains("point.parameterSnapshotId", StringComparison.Ordinal),
         "weekly inventory evidence must identify the effective historical parameter snapshot across V1/V2");
+    AssertTrue(!inventoryPositionBody.Contains("targetNetFlowPosition", StringComparison.Ordinal)
+        && !inventoryPositionBody.Contains("is-target-nfp", StringComparison.Ordinal),
+        "inventory position history must not retain target-NFP scaling or rendering semantics");
+    var evidenceDetailBody = SourceFunctionBody(script, "renderHistoryInventoryEvidenceDetail");
+    foreach (var backendField in new[] { "point.evidenceChecks", "point.weeklyEvent", "point.parameterSnapshotId", "point.parameterChangeReason" })
+    {
+        AssertTrue(evidenceDetailBody.Contains(backendField, StringComparison.Ordinal), $"weekly detail should render backend {backendField}");
+    }
+    AssertTrue(evidenceDetailBody.Contains("escapeHtml", StringComparison.Ordinal), "weekly evidence detail must escape backend text");
     AssertTrue(inventoryPositionBody.Contains("周历史趋势", StringComparison.Ordinal)
         && inventoryPositionBody.Contains("累计提前期详细证据窗口：${number(item.detailWindowWeeks)} 周", StringComparison.Ordinal)
         && !inventoryPositionBody.Contains("周证据", StringComparison.Ordinal),
@@ -6762,6 +6775,13 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         && inventoryVolatilityBody.Contains("buildMonotonePath", StringComparison.Ordinal)
         && inventoryVolatilityBody.Contains("history-evidence-gap", StringComparison.Ordinal),
         "inventory volatility should split backend demand and threshold evidence at explicit gaps");
+    AssertTrue(inventoryVolatilityBody.Contains("demandAxisMaximum", StringComparison.Ordinal)
+        && inventoryVolatilityBody.Contains("data-history-demand-axis-max", StringComparison.Ordinal),
+        "inventory volatility should use and publish the control-point shared demand axis");
+    var demandAxisBody = SourceFunctionBody(script, "historyDemandAxisMaximum");
+    AssertTrue(demandAxisBody.Contains("history.inventoryBuffers", StringComparison.Ordinal)
+        && demandAxisBody.Contains("item.controlPoint === controlPoint", StringComparison.Ordinal),
+        "demand axis maximum must aggregate all SKU evidence for the selected control point");
 
     var sizingBody = SourceFunctionBody(script, "renderHistoryDdmrpSizingTrace");
     AssertTrue(sizingBody.Contains("item.sizingLines", StringComparison.Ordinal),
@@ -6820,7 +6840,8 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "history-inventory-sku",
         "history-sizing-snapshot",
         "history-time-buffer-id",
-        "history-capacity-resource"
+        "history-capacity-resource",
+        "history-inventory-week"
     })
     {
         AssertTrue(script.Contains(selector, StringComparison.Ordinal), $"history UI should expose {selector} selectors");
@@ -6829,6 +6850,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     {
         "state.selectedHistoryControlPoint = controlPoint.dataset.historyControlPoint",
         "state.selectedHistoryInventorySku = inventorySku.dataset.historyInventorySku",
+        "state.selectedHistoryInventoryWeekOffset = Number(inventoryWeek.dataset.historyInventoryWeek)",
         "state.selectedHistorySizingSnapshot = sizingSnapshot.dataset.historySizingSnapshot",
         "state.selectedHistoryTimeBufferId = timeBuffer.dataset.historyTimeBufferId",
         "state.selectedHistoryCapacityResource = capacityResource.dataset.historyCapacityResource",

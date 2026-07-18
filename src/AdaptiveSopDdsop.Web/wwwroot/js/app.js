@@ -22,6 +22,7 @@ const state = {
   historyTrendMonths: 6,
   selectedHistoryControlPoint: null,
   selectedHistoryInventorySku: null,
+  selectedHistoryInventoryWeekOffset: null,
   selectedHistorySizingSnapshot: null,
   selectedHistoryTimeBufferId: null,
   selectedHistoryCapacityResource: null,
@@ -4347,6 +4348,15 @@ function syncHistorySelectionState(history) {
   ])];
   state.selectedHistoryInventorySku = selectAvailable(state.selectedHistoryInventorySku, skus);
 
+  const selectedInventory = inventory.find(item =>
+    item.controlPoint === state.selectedHistoryControlPoint && item.sku === state.selectedHistoryInventorySku);
+  const inventoryWeeks = (selectedInventory?.points || [])
+    .filter(point => isFiniteHistoryValue(point.weekOffset))
+    .map(point => Number(point.weekOffset));
+  state.selectedHistoryInventoryWeekOffset = inventoryWeeks.includes(state.selectedHistoryInventoryWeekOffset)
+    ? state.selectedHistoryInventoryWeekOffset
+    : valueOr(inventoryWeeks[inventoryWeeks.length - 1], null);
+
   const sizingSnapshots = sizing
     .filter(item => item.controlPoint === state.selectedHistoryControlPoint && item.sku === state.selectedHistoryInventorySku)
     .map(item => item.snapshotId);
@@ -4532,12 +4542,39 @@ function renderHistoryInventoryBuffer(history) {
   if (!item || !item.points?.length) {
     renderHistoryMissing("history-inventory-position-chart");
     renderHistoryMissing("history-inventory-volatility-chart");
+    renderHistoryInventoryEvidenceDetail(history, null, null);
     return;
   }
 
   const weekScale = historyWeekXScale(item.points);
   renderHistoryInventoryPositionChart(history, item, weekScale);
-  renderHistoryInventoryVolatilityChart(history, item, weekScale);
+  renderHistoryInventoryVolatilityChart(history, item, weekScale, historyDemandAxisMaximum(history, item.controlPoint));
+  renderHistoryInventoryEvidenceDetail(history, item, item.points.find(point =>
+    Number(point.weekOffset) === state.selectedHistoryInventoryWeekOffset));
+}
+
+function historyDemandAxisMaximum(history, controlPoint) {
+  const values = (history.inventoryBuffers || [])
+    .filter(item => item.controlPoint === controlPoint)
+    .flatMap(item => (item.points || []).flatMap(point => [point.actualDemand, point.demandSpikeThreshold]))
+    .filter(isFiniteHistoryValue)
+    .map(Number);
+  return values.length ? Math.ceil(Math.max(...values) * 1.08) : null;
+}
+
+function renderHistoryInventoryEvidenceDetail(history, item, point) {
+  const host = byId("history-inventory-evidence-detail");
+  if (!item || !point) {
+    host.innerHTML = `<div class="table-empty"><strong>证据缺失</strong></div>`;
+    return;
+  }
+  const checks = (point.evidenceChecks || []).map(check => `
+    <li class="history-evidence-check ${check.status === "Complete" ? "is-complete" : "is-missing"}">
+      <strong>${escapeHtml(check.label)}</strong><span>${escapeHtml(check.detail)}</span>
+    </li>`).join("");
+  host.innerHTML = `<div class="history-chart-heading"><strong>${escapeHtml(point.periodStartDate)} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)}</strong><span>${escapeHtml(evidenceStatusLabel(point.evidenceStatus))}</span></div>
+    <dl class="history-zone-metadata"><div><span>参数快照</span><strong>${escapeHtml(point.parameterSnapshotId || "证据缺失")}</strong></div><div><span>当周事件</span><strong>${escapeHtml(point.weeklyEvent || "无事件")}</strong></div><div><span>参数变更原因</span><strong>${escapeHtml(point.parameterChangeReason || "本周无参数变更")}</strong></div></dl>
+    <ul class="history-evidence-check-list">${checks || "<li class=\"history-evidence-check is-missing\"><strong>证据检查</strong><span>证据缺失</span></li>"}</ul>`;
 }
 
 function capacityUtilizationBandClass(band) {
@@ -4609,7 +4646,6 @@ function renderHistoryInventoryPositionChart(history, item, weekScale) {
     point.topOfGreen,
     point.endingOnHand,
     point.netFlow,
-    point.targetNetFlowPosition,
   ]).filter(isFiniteHistoryValue);
   const height = 320;
   const top = 22;
@@ -4627,8 +4663,6 @@ function renderHistoryInventoryPositionChart(history, item, weekScale) {
     isFiniteHistoryValue(entry.point.endingOnHand));
   const netFlowSegments = contiguousEvidenceSegments(indexed, entry =>
     isFiniteHistoryValue(entry.point.netFlow));
-  const targetSegments = contiguousEvidenceSegments(indexed, entry =>
-    isFiniteHistoryValue(entry.point.targetNetFlowPosition));
 
   const zonePaths = zoneSegments.filter(segment => segment.length > 1).map((segment, segmentIndex) => {
     const redLower = segment.map(entry => ({ x: x(entry.index), y: scale.y(0) }));
@@ -4662,44 +4696,34 @@ function renderHistoryInventoryPositionChart(history, item, weekScale) {
   }).join("");
   const endingPaths = linePaths(endingSegments, "is-on-hand", point => point.endingOnHand);
   const netFlowPaths = linePaths(netFlowSegments, "is-net-flow", point => point.netFlow);
-  const targetPaths = linePaths(targetSegments, "is-target-nfp", point => point.targetNetFlowPosition);
-  const endingMarkers = lineMarkers(endingSegments, "is-on-hand", point => point.endingOnHand, "期末现有量");
+  const endingMarkers = lineMarkers(endingSegments, "is-on-hand", point => point.endingOnHand, "期末在手库存");
   const netFlowMarkers = lineMarkers(netFlowSegments, "is-net-flow", point => point.netFlow, "净流量位置");
-  const targetMarkers = lineMarkers(targetSegments, "is-target-nfp", point => point.targetNetFlowPosition, "目标净流量位置");
   const gapMarkers = indexed
     .filter(entry => !hasValidBufferZoneEvidence(entry.point) || [
       entry.point.endingOnHand,
       entry.point.netFlow,
-      entry.point.targetNetFlowPosition,
     ].some(value => !isFiniteHistoryValue(value)))
     .map(entry => `<g class="history-evidence-gap" data-week-offset="${number(entry.point.weekOffset)}"><line x1="${x(entry.index)}" y1="${top}" x2="${x(entry.index)}" y2="${bottom}"></line><text x="${x(entry.index)}" y="${top + 12}" text-anchor="middle">证据缺口</text></g>`)
     .join("");
   const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
     ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
     : "").join("");
-  const evidenceRows = points.map(point => row([
-    escapeHtml(point.periodStartDate),
-    metricOrEvidenceMissing(point.endingOnHand),
-    metricOrEvidenceMissing(point.netFlow),
-    metricOrEvidenceMissing(point.targetNetFlowPosition),
-    escapeHtml(metricOrEvidenceMissing(point.parameterSnapshotId)),
-    escapeHtml(businessEvidenceLabel(point.cause)),
-    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
-  ])).join("");
+  const evidenceRows = points.map(point => `<tr data-history-inventory-week="${number(point.weekOffset)}"${Number(point.weekOffset) === state.selectedHistoryInventoryWeekOffset ? " class=\"is-selected\"" : ""}>
+    <td>${escapeHtml(point.periodStartDate)}</td><td>${metricOrEvidenceMissing(point.endingOnHand)}</td><td>${metricOrEvidenceMissing(point.openSupply)}</td><td>${metricOrEvidenceMissing(point.qualifiedDemand)}</td><td>${metricOrEvidenceMissing(point.netFlow)}</td><td>${escapeHtml(metricOrEvidenceMissing(point.parameterSnapshotId))}</td><td>${escapeHtml(businessEvidenceLabel(point.cause))}</td><td>${escapeHtml(evidenceStatusLabel(point.evidenceStatus))}</td></tr>`).join("");
 
   host.innerHTML = `
     <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)} · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>累计提前期详细证据窗口：${number(item.detailWindowWeeks)} 周</span></div>
     <svg class="history-evidence-svg" data-history-week-domain="${escapeHtml(weekScale.domain)}" viewBox="0 0 ${weekScale.width} ${height}" role="img" aria-label="库存缓冲历史水位与动态区域">
       <line class="history-axis-line" x1="${weekScale.left}" y1="${bottom}" x2="${weekScale.width - weekScale.right}" y2="${bottom}"></line>
-      ${zonePaths}${zoneMarkers}${endingPaths}${endingMarkers}${netFlowPaths}${netFlowMarkers}${targetPaths}${targetMarkers}${gapMarkers}${periodLabels}
+      ${zonePaths}${zoneMarkers}${endingPaths}${endingMarkers}${netFlowPaths}${netFlowMarkers}${gapMarkers}${periodLabels}
       <text class="history-axis-label" x="${weekScale.left - 8}" y="${scale.y(scale.maximum) + 4}" text-anchor="end">${number(scale.maximum)}</text>
       <text class="history-axis-label" x="${weekScale.left - 8}" y="${scale.y(0) + 4}" text-anchor="end">0</text>
     </svg>
-    <div class="history-chart-legend"><span><i class="zone red"></i>红区</span><span><i class="zone yellow"></i>黄区</span><span><i class="zone green"></i>绿区</span><span><i class="line on-hand"></i>期末现有量</span><span><i class="line net-flow"></i>净流量位置</span><span><i class="line target-nfp"></i>目标净流量位置</span></div>
-    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>期末现有量</th><th>净流量位置</th><th>目标净流量</th><th>参数快照</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+    <div class="history-chart-legend"><span><i class="zone red"></i>红区</span><span><i class="zone yellow"></i>黄区</span><span><i class="zone green"></i>绿区</span><span><i class="line on-hand"></i>期末在手库存</span><span><i class="line net-flow"></i>净流量位置</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>期末在手库存</th><th>开放供应</th><th>合格需求</th><th>净流量位置</th><th>参数快照</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
 }
 
-function renderHistoryInventoryVolatilityChart(history, item, weekScale) {
+function renderHistoryInventoryVolatilityChart(history, item, weekScale, demandAxisMaximum) {
   const host = byId("history-inventory-volatility-chart");
   const points = item.points;
   const indexed = points.map((point, index) => ({ point, index }));
@@ -4712,7 +4736,7 @@ function renderHistoryInventoryVolatilityChart(history, item, weekScale) {
   const height = 260;
   const top = 20;
   const bottom = 212;
-  const scale = historyValueScale([0, ...values], top, bottom);
+  const scale = historyValueScale([0, ...(isFiniteHistoryValue(demandAxisMaximum) ? [demandAxisMaximum] : values)], top, bottom);
   if (!scale) {
     renderHistoryMissing("history-inventory-volatility-chart", "所选对象在当前历史窗口内没有需求波动证据");
     return;
@@ -4757,8 +4781,8 @@ function renderHistoryInventoryVolatilityChart(history, item, weekScale) {
   ])).join("");
 
   host.innerHTML = `
-    <div class="history-chart-heading"><strong>实际需求波动与尖峰阈值 · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>阈值来自后端历史证据，不在前端重算</span></div>
-    <svg class="history-evidence-svg history-volatility-svg" data-history-week-domain="${escapeHtml(weekScale.domain)}" data-zero-y="${scale.y(0)}" viewBox="0 0 ${weekScale.width} ${height}" role="img" aria-label="历史实际需求波动与后端尖峰阈值">
+    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)} · 实际需求波动与尖峰阈值 · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>阈值来自后端历史证据，不在前端重算</span></div>
+    <svg class="history-evidence-svg history-volatility-svg" data-history-week-domain="${escapeHtml(weekScale.domain)}" data-history-demand-axis-max="${metricOrEvidenceMissing(demandAxisMaximum)}" data-zero-y="${scale.y(0)}" viewBox="0 0 ${weekScale.width} ${height}" role="img" aria-label="历史实际需求波动与后端尖峰阈值">
       <line class="history-axis-line" x1="${weekScale.left}" y1="${bottom}" x2="${weekScale.width - weekScale.right}" y2="${bottom}"></line>
       ${demandAreas}${thresholdPaths}${thresholdMarkers}${demandMarkers}${gapMarkers}${periodLabels}
     </svg>
@@ -4856,6 +4880,12 @@ function renderHistoryDdmrpSizingTrace(history) {
     ["提前期因子", setting.leadTimeFactor == null ? "证据缺失" : number(setting.leadTimeFactor)],
     ["变异因子", metricOrEvidenceMissing(setting.variabilityFactor)],
     ["最小订购量", metricOrEvidenceMissing(setting.minimumOrderQuantity)],
+    ["需求调整因子", metricOrEvidenceMissing(setting.demandAdjustmentFactor)],
+    ["区域调整因子", metricOrEvidenceMissing(setting.zoneAdjustmentFactor)],
+    ["ADU 来源", metricOrEvidenceMissing(setting.aduSource || item.aduSource)],
+    ["DLT 来源", metricOrEvidenceMissing(setting.decoupledLeadTimeSource || item.decoupledLeadTimeSource)],
+    ["参数变更原因", metricOrEvidenceMissing(item.parameterChangeReason)],
+    ["生效周段", `第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`],
     ["订货周期", setting.orderCycleDays == null ? "证据缺失" : `${number(setting.orderCycleDays)} 天`],
     ["来源", businessEvidenceLabel(item.sourceAuthority)],
     ["来源截止", item.asOfUtc],
@@ -6370,16 +6400,21 @@ document.addEventListener("click", event => {
 
   const controlPoint = event.target.closest("[data-history-control-point]");
   const inventorySku = event.target.closest("[data-history-inventory-sku]");
+  const inventoryWeek = event.target.closest("[data-history-inventory-week]");
   const timeBuffer = event.target.closest("[data-history-time-buffer-id]");
   const sizingSnapshot = event.target.closest("[data-history-sizing-snapshot]");
   const capacityResource = event.target.closest("[data-history-capacity-resource]");
   if (controlPoint) {
     state.selectedHistoryControlPoint = controlPoint.dataset.historyControlPoint;
     state.selectedHistoryInventorySku = null;
+    state.selectedHistoryInventoryWeekOffset = null;
     state.selectedHistorySizingSnapshot = null;
   } else if (inventorySku) {
     state.selectedHistoryInventorySku = inventorySku.dataset.historyInventorySku;
+    state.selectedHistoryInventoryWeekOffset = null;
     state.selectedHistorySizingSnapshot = null;
+  } else if (inventoryWeek) {
+    state.selectedHistoryInventoryWeekOffset = Number(inventoryWeek.dataset.historyInventoryWeek);
   } else if (timeBuffer) {
     state.selectedHistoryTimeBufferId = timeBuffer.dataset.historyTimeBufferId;
   } else if (sizingSnapshot) {
@@ -6392,10 +6427,10 @@ document.addEventListener("click", event => {
 
   syncHistorySelectionState(state.historyReview);
   renderHistoryWorkspaceOptions(state.historyReview);
-  if (controlPoint || inventorySku) {
+  if (controlPoint || inventorySku || inventoryWeek) {
     renderHistoryBufferOverview(state.historyReview);
     renderHistoryInventoryBuffer(state.historyReview);
-    renderHistoryDdmrpSizingTrace(state.historyReview);
+    if (!inventoryWeek) renderHistoryDdmrpSizingTrace(state.historyReview);
   } else if (timeBuffer) {
     renderHistoryTimeBuffer(state.historyReview);
   } else if (sizingSnapshot) {
