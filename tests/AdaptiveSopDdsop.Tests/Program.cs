@@ -18,6 +18,7 @@ var tests = new (string Name, Action Run)[]
     ("Planned shutdown creates capacity warning and management review action", TestShutdownScenario),
     ("Baseline data demonstrates red yellow green and over top of green buffer statuses with Chinese names", TestBaselineStatusVarietyAndChineseNames),
     ("Five-stage internal files do not reference protected contract types or endpoints", TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints),
+    ("Desktop startup does not require Windows Event Log write access", TestDesktopStartupDoesNotRequireWindowsEventLog),
     ("Seed scale matches a credible satellite manufacturing demo", TestSeedScaleMatchesSatelliteManufacturingDemo),
     ("FPGA belongs only to its independent inventory control point", TestFpgaBelongsOnlyToIndependentInventoryControlPoint),
     ("Three independent inventory control points are explicit", TestThreeIndependentInventoryControlPointsAreExplicit),
@@ -531,6 +532,17 @@ static void TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints(
     }
     AssertTrue(businessMarkup.Contains("value=\"DemoFixture\"", StringComparison.Ordinal),
         "internal demo source value must remain unchanged in the form contract");
+}
+
+static void TestDesktopStartupDoesNotRequireWindowsEventLog()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var settingsPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "appsettings.Development.json");
+    var settings = JsonNode.Parse(File.ReadAllText(settingsPath));
+    var eventLogLevel = settings?["Logging"]?["EventLog"]?["LogLevel"]?["Default"]?.GetValue<string>();
+
+    AssertEqual("None", eventLogLevel,
+        "desktop app should keep console logging while disabling the privileged Windows Event Log provider");
 }
 
 static void TestSeedScaleMatchesSatelliteManufacturingDemo()
