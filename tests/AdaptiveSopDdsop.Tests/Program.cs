@@ -78,6 +78,9 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline reconciles from the same historical fact set", TestCurrentBaselineReconcilesHistoryClosingBalances),
     ("Current baseline blocks missing history reconciliation", TestCurrentBaselineBlocksMissingHistoryReconciliation),
     ("Current baseline blocks unbalanced history reconciliation", TestCurrentBaselineBlocksUnbalancedHistoryReconciliation),
+    ("Current baseline blocks incomplete reconciliation key coverage", TestCurrentBaselineBlocksIncompleteReconciliationKeyCoverage),
+    ("Current baseline requires exact history reconciliation evidence section", TestCurrentBaselineRequiresExactHistoryReconciliationEvidenceSection),
+    ("Current baseline recomputes reconciliation difference during freeze", TestCurrentBaselineRecomputesHistoryReconciliationDifference),
     ("Runtime seed registrations use the shared operating fact source", TestRuntimeSeedRegistrationsUseSharedFactSource),
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
@@ -2652,6 +2655,141 @@ static void TestCurrentBaselineBlocksUnbalancedHistoryReconciliation()
     }
 }
 
+static void TestCurrentBaselineBlocksIncompleteReconciliationKeyCoverage()
+{
+    var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+    var reconciliation = complete.Payload.HistoryReconciliation!;
+    var requiredLines = new List<(string Name, BaselineReconciliationLine Line)>
+    {
+        ("ON_HAND", reconciliation.Lines.First(item => item.MetricCode == "ON_HAND")),
+        ("INVENTORY_VALUE", reconciliation.Lines.Single(item => item.MetricCode == "INVENTORY_VALUE" && item.ItemKey == "ALL")),
+        ("WORK_IN_PROCESS", reconciliation.Lines.Single(item => item.MetricCode == "WORK_IN_PROCESS" && item.ItemKey == "ALL")),
+        ("BACKLOG", reconciliation.Lines.Single(item => item.MetricCode == "BACKLOG" && item.ItemKey == "ALL"))
+    };
+    requiredLines.AddRange(reconciliation.Lines
+        .Where(item => item.MetricCode == "RESOURCE_AVAILABLE_CAPACITY")
+        .Select(item => ($"RESOURCE_AVAILABLE_CAPACITY/{item.ItemKey}", item)));
+
+    foreach (var (name, removed) in requiredLines)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-reconciliation-coverage-{Guid.NewGuid():N}.db");
+        try
+        {
+            var candidate = complete with
+            {
+                Payload = complete.Payload with
+                {
+                    HistoryReconciliation = reconciliation with
+                    {
+                        Lines = reconciliation.Lines.Where(item => item != removed).ToList()
+                    }
+                }
+            };
+            var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+            var rejected = false;
+            try
+            {
+                service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", name));
+            }
+            catch (ArgumentException ex)
+            {
+                rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+            }
+
+            AssertTrue(rejected, $"missing {name} reconciliation key should reject freezing");
+            AssertEqual(0, service.List(10).Count, $"missing {name} must not persist a snapshot");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
+static void TestCurrentBaselineRequiresExactHistoryReconciliationEvidenceSection()
+{
+    var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+    var section = complete.Sections.Single(item => item.SectionCode == "HISTORY_RECONCILIATION");
+    var cases = new List<(string Name, CurrentBaselineCandidate Candidate)>
+    {
+        ("missing section", complete with { Sections = complete.Sections.Where(item => item.SectionCode != "HISTORY_RECONCILIATION").ToList() }),
+        ("duplicate section", complete with { Sections = complete.Sections.Append(section).ToList() }),
+        ("missing evidence item", complete with
+        {
+            Sections = complete.Sections.Select(item => item.SectionCode == "HISTORY_RECONCILIATION"
+                ? item with { Items = item.Items!.Skip(1).ToList() }
+                : item).ToList()
+        }),
+        ("unexpected evidence item", complete with
+        {
+            Sections = complete.Sections.Select(item => item.SectionCode == "HISTORY_RECONCILIATION"
+                ? item with { Items = item.Items!.Append(new BaselineEvidenceItem("UNEXPECTED", "unexpected", "Fresh", "Complete", false)).ToList() }
+                : item).ToList()
+        })
+    };
+
+    foreach (var (name, candidate) in cases)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-reconciliation-section-{Guid.NewGuid():N}.db");
+        try
+        {
+            var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+            var rejected = false;
+            try
+            {
+                service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", name));
+            }
+            catch (ArgumentException ex)
+            {
+                rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+            }
+
+            AssertTrue(rejected, $"{name} should reject freezing");
+            AssertEqual(0, service.List(10).Count, $"{name} must not persist a snapshot");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteSqliteFiles(databasePath);
+        }
+    }
+}
+
+static void TestCurrentBaselineRecomputesHistoryReconciliationDifference()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-reconciliation-math-{Guid.NewGuid():N}.db");
+    try
+    {
+        var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var reconciliation = complete.Payload.HistoryReconciliation! with
+        {
+            Lines = complete.Payload.HistoryReconciliation!.Lines
+                .Select((item, index) => index == 0 ? item with { BaselineBalance = item.BaselineBalance + 1m } : item)
+                .ToList()
+        };
+        var candidate = complete with { Payload = complete.Payload with { HistoryReconciliation = reconciliation } };
+        var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+        }
+
+        AssertTrue(rejected, "freeze should recompute and reject a tampered baseline balance");
+        AssertEqual(0, service.List(10).Count, "tampered reconciliation must not persist a snapshot");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
 static void TestRuntimeSeedRegistrationsUseSharedFactSource()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -2825,11 +2963,12 @@ static void TestCurrentBaselineRejectsMissingSnapshotKpiEvidence()
             }
             catch (ArgumentException ex)
             {
-                rejected = ex.Message.Contains("CURRENT_KPIS", StringComparison.Ordinal);
+                rejected = ex.Message.Contains("CURRENT_KPIS", StringComparison.Ordinal) ||
+                    ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
             }
             if (!rejected)
             {
-                failures.Add($"{item.Name} did not block freezing through CURRENT_KPIS");
+                failures.Add($"{item.Name} did not block freezing through a required evidence validator");
             }
         }
 

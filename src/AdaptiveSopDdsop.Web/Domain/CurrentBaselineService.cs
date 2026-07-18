@@ -134,7 +134,13 @@ public sealed class CurrentBaselineService
         }
 
         var candidate = _dataSource.GetCandidate();
-        var reconciliationIssues = CurrentBaselineReconciliation.Validate(candidate.Payload.HistoryReconciliation);
+        var reconciliationIssues = CurrentBaselineReconciliation.Validate(
+            candidate.Payload.HistoryReconciliation,
+            candidate.Payload.Inventory.Select(item => item.Sku).ToList(),
+            candidate.Payload.ResourceAvailability.Select(item => item.ResourceCode).ToList()).ToList();
+        reconciliationIssues.AddRange(ValidateHistoryReconciliationEvidence(
+            candidate.Sections,
+            candidate.Payload.HistoryReconciliation));
         if (reconciliationIssues.Count > 0)
         {
             throw new ArgumentException(
@@ -233,6 +239,60 @@ public sealed class CurrentBaselineService
             auditPayload));
         transaction.Commit();
         return snapshot;
+    }
+
+    private static IReadOnlyList<string> ValidateHistoryReconciliationEvidence(
+        IReadOnlyList<BaselineEvidenceSection> sections,
+        CurrentBaselineHistoryReconciliation? reconciliation)
+    {
+        var issues = new List<string>();
+        var matchingSections = sections
+            .Where(section => section.SectionCode == "HISTORY_RECONCILIATION")
+            .ToList();
+        if (matchingSections.Count != 1)
+        {
+            issues.Add("HISTORY_RECONCILIATION 证据区段必须恰好一项");
+            return issues;
+        }
+
+        var section = matchingSections[0];
+        if (!section.IsRequired || section.FreshnessStatus != "Fresh" || section.CompletenessStatus != "Complete")
+        {
+            issues.Add("HISTORY_RECONCILIATION 证据区段必须为必需、最新且完整");
+        }
+        if (reconciliation is null || section.Items is null)
+        {
+            issues.Add("HISTORY_RECONCILIATION 缺少逐行证据");
+            return issues;
+        }
+
+        var expectedKeys = reconciliation.Lines
+            .Select(line => $"{line.MetricCode}/{line.ItemKey}")
+            .ToHashSet(StringComparer.Ordinal);
+        var actualKeys = section.Items
+            .Select(item => item.ItemKey)
+            .ToList();
+        if (actualKeys.Distinct(StringComparer.Ordinal).Count() != actualKeys.Count)
+        {
+            issues.Add("HISTORY_RECONCILIATION 逐行证据键重复");
+        }
+        foreach (var missing in expectedKeys.Except(actualKeys, StringComparer.Ordinal))
+        {
+            issues.Add($"HISTORY_RECONCILIATION 缺少证据键：{missing}");
+        }
+        foreach (var unexpected in actualKeys.Except(expectedKeys, StringComparer.Ordinal))
+        {
+            issues.Add($"HISTORY_RECONCILIATION 存在非预期证据键：{unexpected}");
+        }
+        foreach (var item in section.Items)
+        {
+            if (item.FreshnessStatus != "Fresh" || item.CompletenessStatus != "Complete" || item.BlocksFreeze)
+            {
+                issues.Add($"HISTORY_RECONCILIATION 证据项不满足冻结条件：{item.ItemKey}");
+            }
+        }
+
+        return issues;
     }
 
     public IReadOnlyList<CurrentBaselineSummary> List(int limit)

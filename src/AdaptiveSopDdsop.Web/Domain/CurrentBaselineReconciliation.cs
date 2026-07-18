@@ -73,6 +73,10 @@ public static class CurrentBaselineReconciliation
         {
             issues.Add("对账事实集标识为空");
         }
+        if (reconciliation.EvidenceStatus != "Complete")
+        {
+            issues.Add("对账总体证据不完整");
+        }
 
         if (!DateTimeOffset.TryParse(reconciliation.HistoryThroughUtc, out var historyThrough) ||
             !DateTimeOffset.TryParse(reconciliation.BaselineAsOfUtc, out var baselineAsOf) ||
@@ -96,14 +100,77 @@ public static class CurrentBaselineReconciliation
 
         foreach (var line in reconciliation.Lines)
         {
+            var expected = line.HistoryClosingBalance + line.IntervalIncrease
+                - line.IntervalDecrease + line.Adjustment;
+            var recomputedDifference = decimal.Round(line.BaselineBalance - expected, 2);
             if (line.EvidenceStatus != "Complete")
             {
                 issues.Add($"{line.MetricCode}/{line.ItemKey} 证据不完整");
             }
-            if (Math.Abs(line.Difference) > 0.01m)
+            if (Math.Abs(recomputedDifference) > 0.01m)
             {
-                issues.Add($"{line.MetricCode}/{line.ItemKey} 差异为 {line.Difference}");
+                issues.Add($"{line.MetricCode}/{line.ItemKey} 重算差异为 {recomputedDifference}");
             }
+            if (Math.Abs(line.Difference - recomputedDifference) > 0.01m)
+            {
+                issues.Add($"{line.MetricCode}/{line.ItemKey} 报送差异与重算不一致");
+            }
+        }
+
+        return issues;
+    }
+
+    public static IReadOnlyList<string> Validate(
+        CurrentBaselineHistoryReconciliation? reconciliation,
+        IReadOnlyCollection<string> expectedSkuKeys,
+        IReadOnlyCollection<string> expectedResourceCodes)
+    {
+        var issues = Validate(reconciliation).ToList();
+        if (reconciliation is null)
+        {
+            return issues;
+        }
+
+        var skuKeys = expectedSkuKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToList();
+        var resourceCodes = expectedResourceCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToList();
+        if (skuKeys.Distinct(StringComparer.Ordinal).Count() != skuKeys.Count)
+        {
+            issues.Add("候选库存 SKU 键重复");
+        }
+        if (resourceCodes.Distinct(StringComparer.Ordinal).Count() != resourceCodes.Count)
+        {
+            issues.Add("候选资源能力键重复");
+        }
+        if (skuKeys.Distinct(StringComparer.Ordinal).Count() != 12)
+        {
+            issues.Add("当前基线必须包含 12 个库存 SKU 对账键");
+        }
+
+        var expectedKeys = skuKeys
+            .Select(key => (MetricCode: "ON_HAND", ItemKey: key))
+            .Append((MetricCode: "INVENTORY_VALUE", ItemKey: "ALL"))
+            .Append((MetricCode: "WORK_IN_PROCESS", ItemKey: "ALL"))
+            .Append((MetricCode: "BACKLOG", ItemKey: "ALL"))
+            .Concat(resourceCodes.Select(code => (MetricCode: "RESOURCE_AVAILABLE_CAPACITY", ItemKey: code)))
+            .ToHashSet();
+        var actualKeys = reconciliation.Lines
+            .Select(line => (MetricCode: line.MetricCode, ItemKey: line.ItemKey))
+            .ToHashSet();
+        foreach (var missing in expectedKeys.Except(actualKeys))
+        {
+            issues.Add($"缺少必需对账键：{missing.MetricCode}/{missing.ItemKey}");
+        }
+        foreach (var unexpected in actualKeys.Except(expectedKeys))
+        {
+            issues.Add($"存在非预期对账键：{unexpected.MetricCode}/{unexpected.ItemKey}");
+        }
+        if (reconciliation.Lines.Count(line => line.MetricCode == "ON_HAND") != 12)
+        {
+            issues.Add("ON_HAND 对账行必须恰好为 12 行");
         }
 
         return issues;
