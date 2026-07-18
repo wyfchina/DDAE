@@ -6041,19 +6041,44 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
   const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
   const planningInputs = baselineDetail?.payload?.planningInputs;
   const definitions = planningInputs && planningInputs.timeBuffers ? planningInputs.timeBuffers : [];
-  const definitionById = new Map(definitions.map(item => [item.bufferId, item]));
   const timeBufferResults = cases.flatMap(item => (item.breaches || [])
     .filter(breach => breach.scopeType === "TimeBuffer" || breach.scopeType === "Time")
-    .map(breach => ({
-      key: `${item.responseId}|${breach.target}`,
-      responseId: item.responseId,
-      caseName: item.name,
-      breach,
-      definition: definitionById.get(breach.target),
-      points: (item.timeBufferProjection || [])
+    .map(breach => {
+      const definitionMatches = definitions.filter(item => item.bufferId === breach.target);
+      const points = (item.timeBufferProjection || [])
         .filter(point => point.bufferId === breach.target)
-        .sort((left, right) => left.week - right.week),
-    })));
+        .sort((left, right) => left.week - right.week);
+      const projectionWeekKeys = points.map(point => point.week);
+      const projectionWeeksUnique = new Set(projectionWeekKeys).size === projectionWeekKeys.length;
+      const completeEnvelope = breach.evidenceStatus === "Complete"
+        && definitionMatches.length === 1
+        && definitionMatches[0].evidenceStatus === "Complete"
+        && points.length > 0
+        && projectionWeeksUnique
+        && points.every(point => point.evidenceStatus === "Complete");
+      const baseResult = {
+        key: `${item.responseId}|${breach.target}`,
+        responseId: item.responseId,
+        caseName: item.name,
+        breach,
+        definition: definitionMatches.length === 1 ? definitionMatches[0] : null,
+        points,
+        hasDuplicateWeeks: !projectionWeeksUnique,
+        evidenceReason: breach.evidenceStatus !== "Complete"
+          ? evidenceStatusLabel(breach.evidenceStatus)
+          : definitionMatches.length === 0 ? "冻结基线缺少时间缓冲定义"
+            : definitionMatches.length > 1 ? "冻结基线存在重复时间缓冲定义"
+              : definitionMatches[0].evidenceStatus !== "Complete" ? "冻结时间缓冲定义证据缺失"
+                : points.length === 0 ? "后端未返回周度侵入证据"
+                  : !projectionWeeksUnique ? "周度证据包含重复周"
+                    : points.some(point => point.evidenceStatus !== "Complete") ? "周度侵入证据不完整"
+                      : "后端证据完整",
+      };
+      if (breach.evidenceStatus === "NotApplicable") {
+        return { ...baseResult, effectiveEvidenceStatus: "NotApplicable" };
+      }
+      return { ...baseResult, effectiveEvidenceStatus: completeEnvelope ? "Complete" : "EvidenceMissing" };
+    }));
 
   if (!timeBufferResults.length) {
     state.selectedTimeBufferBreachKey = null;
@@ -6066,8 +6091,8 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
   }
 
   const retained = timeBufferResults.find(item => item.key === state.selectedTimeBufferBreachKey);
-  const firstComplete = timeBufferResults.find(item => item.breach.evidenceStatus === "Complete");
-  const firstUnavailable = timeBufferResults.find(item => item.breach.evidenceStatus === "NotApplicable" || item.breach.evidenceStatus === "EvidenceMissing");
+  const firstComplete = timeBufferResults.find(item => item.effectiveEvidenceStatus === "Complete");
+  const firstUnavailable = timeBufferResults.find(item => item.effectiveEvidenceStatus === "NotApplicable" || item.effectiveEvidenceStatus === "EvidenceMissing");
   const selected = retained || firstComplete || firstUnavailable || timeBufferResults[0];
   state.selectedTimeBufferBreachKey = selected.key;
   select.innerHTML = timeBufferResults.map(item => {
@@ -6077,9 +6102,7 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
   }).join("");
   select.value = selected.key;
 
-  const evidenceStatus = selected.breach.evidenceStatus === "Complete"
-    ? "Complete"
-    : selected.breach.evidenceStatus === "NotApplicable" ? "NotApplicable" : "EvidenceMissing";
+  const evidenceStatus = selected.effectiveEvidenceStatus;
   const evidenceComplete = evidenceStatus === "Complete";
   const evidenceUnavailable = evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
   chip.className = `status-chip ${evidenceComplete ? "is-valid" : evidenceStatus === "NotApplicable" ? "neutral" : "is-warning"}`;
@@ -6102,20 +6125,33 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
   const summaryItems = [
     ["控制点", definition?.controlPoint || evidenceUnavailable],
     ["保护活动", definition?.protectedActivity || evidenceUnavailable],
-    ["缓冲天数", definition?.bufferDays === null || definition?.bufferDays === undefined ? evidenceUnavailable : `${number(definition.bufferDays)} 天`],
+    ["缓冲天数", evidenceComplete && definition?.bufferDays !== null && definition?.bufferDays !== undefined ? `${number(definition.bufferDays)} 天` : evidenceUnavailable],
     ["最大侵入", evidenceComplete ? metricOrEvidenceMissing(selected.breach.maximumPenetrationPercent, percent) : evidenceUnavailable],
     ["最早红周", earliestRedWeek],
     ["连续风险", consecutiveRisk],
     ["恢复周期", recovery],
     ["影响产品", evidenceComplete ? (selected.breach.affectedProducts || []).join("、") || "不适用" : evidenceUnavailable],
     ["证据状态", evidenceStatusLabel(evidenceStatus)],
+    ["证据说明", selected.evidenceReason],
   ];
   summary.innerHTML = summaryItems.map(item => `<div><dt>${escapeHtml(item[0])}</dt><dd>${escapeHtml(item[1])}</dd></div>`).join("");
 
   const statusText = status => ({ Early: "提前", Green: "绿色", Yellow: "黄色", Red: "红色", Late: "迟到", EvidenceMissing: "证据缺失" })[status] || statusLabel(status);
-  weeklyGrid.innerHTML = selected.points.length
-    ? `<table class="heatmap-table"><thead><tr><th>方案 / 控制点</th>${selected.points.map(point => `<th>第 ${number(point.week)} 周</th>`).join("")}</tr></thead><tbody><tr><th>${escapeHtml(selected.caseName)}<small>${escapeHtml(definition?.controlPoint || selected.points[0]?.controlPoint || selected.breach.target)}</small></th>${selected.points.map(point => `<td><span class="${bufferCellClass(point.status)}" title="${escapeHtml(point.cause)}"><strong>${metricOrEvidenceMissing(point.penetrationPercent, percent)}</strong><small>${escapeHtml(statusText(point.status))} · ${escapeHtml(point.cause)}</small></span></td>`).join("")}</tr></tbody></table>`
-    : `<div class="table-empty"><strong>${evidenceUnavailable === "不适用" ? "该控制点不适用时间缓冲" : "该后端结果未返回周度侵入证据"}</strong></div>`;
+  if (evidenceStatus === "NotApplicable") {
+    weeklyGrid.innerHTML = `<div class="table-empty"><strong>该控制点不适用时间缓冲</strong></div>`;
+  } else if (selected.hasDuplicateWeeks) {
+    weeklyGrid.innerHTML = `<div class="table-empty"><strong>证据缺失：周度证据包含重复周，未生成周矩阵</strong></div>`;
+  } else if (!selected.points.length) {
+    weeklyGrid.innerHTML = `<div class="table-empty"><strong>证据缺失：该后端结果未返回周度侵入证据</strong></div>`;
+  } else {
+    const evidenceNotice = evidenceComplete
+      ? ""
+      : `<p class="muted-note">证据缺失：${escapeHtml(selected.evidenceReason)}；以下仅保留后端原始周度行。</p>`;
+    weeklyGrid.innerHTML = `${evidenceNotice}<table class="heatmap-table"><thead><tr><th>方案 / 控制点</th>${selected.points.map(point => `<th>第 ${number(point.week)} 周</th>`).join("")}</tr></thead><tbody><tr><th>${escapeHtml(selected.caseName)}<small>${escapeHtml(definition?.controlPoint || selected.points[0]?.controlPoint || selected.breach.target)}</small></th>${selected.points.map(point => {
+      const pointEvidenceComplete = point.evidenceStatus === "Complete";
+      return `<td><span class="${bufferCellClass(pointEvidenceComplete ? point.status : "EvidenceMissing")}" title="${escapeHtml(point.cause)}"><strong>${pointEvidenceComplete ? metricOrEvidenceMissing(point.penetrationPercent, percent) : "证据缺失"}</strong><small>${escapeHtml(statusText(point.status))} / ${escapeHtml(evidenceStatusLabel(point.evidenceStatus))} · ${escapeHtml(point.cause)}</small></span></td>`;
+    }).join("")}</tr></tbody></table>`;
+  }
 }
 
 function renderFutureCapacityProtection(result) {

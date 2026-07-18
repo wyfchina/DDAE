@@ -10516,6 +10516,37 @@ static void TestFutureTimeBufferEvidenceIsConsolidatedIntoBreachAnalysis()
     AssertTrue(renderer.Contains("evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal), "time-buffer display should distinguish not applicable");
     AssertTrue(renderer.Contains("证据缺失", StringComparison.Ordinal), "time-buffer display should distinguish missing evidence");
     AssertTrue(renderer.Contains("!selected.breach.isBreached ? \"不适用\"", StringComparison.Ordinal), "a complete non-breach should keep recovery explicitly not applicable");
+    foreach (var envelopeCriterion in new[]
+    {
+        "const definitionMatches = definitions.filter(item => item.bufferId === breach.target)",
+        "const projectionWeekKeys = points.map(point => point.week)",
+        "const projectionWeeksUnique = new Set(projectionWeekKeys).size === projectionWeekKeys.length",
+        "definitionMatches.length === 1",
+        "definitionMatches[0].evidenceStatus === \"Complete\"",
+        "points.length > 0",
+        "points.every(point => point.evidenceStatus === \"Complete\")",
+    })
+    {
+        AssertTrue(renderer.Contains(envelopeCriterion, StringComparison.Ordinal), $"effective time-buffer evidence should require {envelopeCriterion}");
+    }
+    AssertTrue(renderer.Contains("breach.evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal)
+        && renderer.Contains("effectiveEvidenceStatus: \"NotApplicable\"", StringComparison.Ordinal),
+        "not-applicable backend results should remain not applicable without requiring definition or projection evidence");
+    AssertTrue(renderer.Contains("effectiveEvidenceStatus: completeEnvelope ? \"Complete\" : \"EvidenceMissing\"", StringComparison.Ordinal),
+        "all non-not-applicable results should use the strict evidence envelope");
+    AssertTrue(renderer.Contains("item.effectiveEvidenceStatus === \"Complete\"", StringComparison.Ordinal),
+        "selection priority should use effective complete evidence instead of the breach flag alone");
+    AssertTrue(renderer.Contains("const evidenceStatus = selected.effectiveEvidenceStatus", StringComparison.Ordinal),
+        "chip and summary should use the effective evidence envelope");
+    AssertTrue(renderer.Contains("selected.hasDuplicateWeeks", StringComparison.Ordinal)
+        && renderer.Contains("周度证据包含重复周", StringComparison.Ordinal),
+        "duplicate weeks should show an explicit evidence-missing diagnostic instead of repeated matrix columns");
+    var notApplicableMatrix = renderer.IndexOf("if (evidenceStatus === \"NotApplicable\")", StringComparison.Ordinal);
+    var duplicateMatrix = renderer.IndexOf("if (selected.hasDuplicateWeeks)", StringComparison.Ordinal);
+    AssertTrue(notApplicableMatrix >= 0 && duplicateMatrix > notApplicableMatrix,
+        "not-applicable evidence should remain not applicable even when irrelevant projection rows are malformed");
+    AssertTrue(renderer.Contains("point.evidenceStatus === \"Complete\"", StringComparison.Ordinal),
+        "partial backend rows should visibly retain their own evidence status");
     AssertTrue(script.Contains("breach.evidenceStatus === \"Complete\" || breach.evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal), "comparison cards should accept a legitimate not-applicable scope without reporting missing evidence");
     AssertTrue(script.Contains("allBreachEvidenceNotApplicable ? \"不适用\"", StringComparison.Ordinal), "comparison cards should label an entirely not-applicable breach set explicitly");
     AssertTrue(script.Contains("const breachEvidenceAvailable = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "all future breach rows should branch on backend evidence status");
