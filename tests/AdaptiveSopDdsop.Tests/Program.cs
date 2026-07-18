@@ -75,6 +75,10 @@ var tests = new (string Name, Action Run)[]
     ("History capacity protection excludes FPGA routing evidence", TestHistoryCapacityProtectionExcludesFpgaRoutingEvidence),
     ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
     ("Historical outcome costs use annual valid-event rules", TestHistoricalOutcomeCostsUseAnnualValidEventRules),
+    ("Current baseline reconciles from the same historical fact set", TestCurrentBaselineReconcilesHistoryClosingBalances),
+    ("Current baseline blocks missing history reconciliation", TestCurrentBaselineBlocksMissingHistoryReconciliation),
+    ("Current baseline blocks unbalanced history reconciliation", TestCurrentBaselineBlocksUnbalancedHistoryReconciliation),
+    ("Runtime seed registrations use the shared operating fact source", TestRuntimeSeedRegistrationsUseSharedFactSource),
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
     ("Current baseline applies required evidence rules when section items are null or empty", TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems),
@@ -2557,6 +2561,132 @@ static void TestHistoricalOutcomeCostsUseAnnualValidEventRules()
         annual.OperatingOutcomes.ExpediteCost,
         recent.OperatingOutcomes.ExpediteCost,
         "overlapping six-month and annual valid-event cost basis");
+}
+
+static void TestCurrentBaselineReconcilesHistoryClosingBalances()
+{
+    var data = SeedData.Create();
+    var facts = new SeedInternalDemoOperatingFactSource(data).Load();
+    var candidate = new SeedCurrentBaselineDataSource(data).GetCandidate();
+    var reconciliation = candidate.Payload.HistoryReconciliation;
+
+    AssertTrue(reconciliation is not null, "current baseline should expose history reconciliation lineage");
+    AssertEqual(facts.Header.FactSetId, reconciliation!.FactSetId, "reconciliation fact-set id");
+    AssertTrue(
+        DateTimeOffset.Parse(reconciliation.HistoryThroughUtc) < DateTimeOffset.Parse(reconciliation.BaselineAsOfUtc),
+        "history cutoff must precede the baseline cutoff");
+    AssertEqual(12, reconciliation.Lines.Count(item => item.MetricCode == "ON_HAND"), "SKU quantity reconciliation count");
+    AssertEqual(1, reconciliation.Lines.Count(item => item.MetricCode == "INVENTORY_VALUE" && item.ItemKey == "ALL"), "inventory value reconciliation count");
+    AssertEqual(1, reconciliation.Lines.Count(item => item.MetricCode == "WORK_IN_PROCESS" && item.ItemKey == "ALL"), "WIP reconciliation count");
+    AssertEqual(1, reconciliation.Lines.Count(item => item.MetricCode == "BACKLOG" && item.ItemKey == "ALL"), "backlog reconciliation count");
+    AssertEqual(data.Resources.Count, reconciliation.Lines.Count(item => item.MetricCode == "RESOURCE_AVAILABLE_CAPACITY"), "resource capacity reconciliation count");
+    AssertTrue(reconciliation.Lines.All(item => item.EvidenceStatus == "Complete" && item.Difference == 0m), "all shared balance bridges should reconcile exactly");
+    AssertEqual("Complete", reconciliation.EvidenceStatus, "reconciliation evidence status");
+
+    var section = candidate.Sections.Single(item => item.SectionCode == "HISTORY_RECONCILIATION");
+    AssertTrue(section.IsRequired, "history reconciliation evidence should be required");
+    AssertEqual("Complete", section.CompletenessStatus, "history reconciliation section completeness");
+    AssertEqual(reconciliation.Lines.Count, section.Items!.Count, "history reconciliation evidence item count");
+    AssertTrue(section.Items.All(item => item.CompletenessStatus == "Complete" && !item.BlocksFreeze), "balanced reconciliation evidence should not block freeze");
+}
+
+static void TestCurrentBaselineBlocksMissingHistoryReconciliation()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-missing-reconciliation-{Guid.NewGuid():N}.db");
+    try
+    {
+        var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var candidate = complete with { Payload = complete.Payload with { HistoryReconciliation = null } };
+        var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+        }
+
+        AssertTrue(rejected, "missing history reconciliation should reject freezing");
+        AssertEqual(0, service.List(10).Count, "missing reconciliation must not persist a snapshot");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCurrentBaselineBlocksUnbalancedHistoryReconciliation()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-unbalanced-reconciliation-{Guid.NewGuid():N}.db");
+    try
+    {
+        var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var reconciliation = complete.Payload.HistoryReconciliation! with
+        {
+            Lines = complete.Payload.HistoryReconciliation!.Lines
+                .Select((item, index) => index == 0 ? item with { Difference = item.Difference + 1m } : item)
+                .ToList()
+        };
+        var candidate = complete with { Payload = complete.Payload with { HistoryReconciliation = reconciliation } };
+        var service = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+        var rejected = false;
+        try
+        {
+            service.Freeze(new CurrentBaselineFreezeRequest("DDS&OP planner", null));
+        }
+        catch (ArgumentException ex)
+        {
+            rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+        }
+
+        AssertTrue(rejected, "unbalanced history reconciliation should reject freezing");
+        AssertEqual(0, service.List(10).Count, "unbalanced reconciliation must not persist a snapshot");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestRuntimeSeedRegistrationsUseSharedFactSource()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    foreach (var registration in new[]
+    {
+        "AddSingleton<IScenarioWorkspaceDataSource>(sp =>",
+        "AddSingleton<IHistoryOperatingFactSource>(sp =>",
+        "AddSingleton<ICurrentBaselineDataSource>(sp =>"
+    })
+    {
+        var start = program.IndexOf(registration, StringComparison.Ordinal);
+        var end = start < 0 ? -1 : program.IndexOf("));", start, StringComparison.Ordinal);
+        AssertTrue(start >= 0 && end > start && program[start..end].Contains("GetRequiredService<IInternalDemoOperatingFactSource>()", StringComparison.Ordinal),
+            $"{registration} should resolve the shared fact source");
+    }
+
+    var data = SeedData.Create();
+    var source = new SeedInternalDemoOperatingFactSource(data);
+    var facts = source.Load();
+    var scenarioSource = new SeedScenarioWorkspaceDataSource(data, source);
+    var historySource = new SeedHistoryOperatingFactSource(data, source);
+    var scenario = scenarioSource.Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
+    var history = new HistoryReviewWorkspaceService(historySource, scenarioSource).GetReview(12);
+    var candidate = new SeedCurrentBaselineDataSource(data, scenarioSource, source).GetCandidate();
+    var reconciliation = candidate.Payload.HistoryReconciliation!;
+
+    AssertEqual(facts.Header.FactSetId, scenario.FactSetId, "scenario runtime fact-set id");
+    AssertEqual(facts.Header.FactSetId, history.FactSetId, "history runtime fact-set id");
+    AssertEqual(facts.Header.FactSetId, reconciliation.FactSetId, "baseline runtime fact-set id");
+    AssertEqual(facts.Header.HistoryThroughUtc, scenario.HistoryThroughUtc, "scenario runtime history cutoff");
+    AssertEqual(facts.Header.HistoryThroughUtc, history.HistoryThroughUtc, "history runtime history cutoff");
+    AssertEqual(facts.Header.HistoryThroughUtc, reconciliation.HistoryThroughUtc, "baseline runtime history cutoff");
+    AssertEqual(facts.Header.BaselineAsOfUtc, scenario.BaselineAsOfUtc, "scenario runtime baseline cutoff");
+    AssertEqual(facts.Header.BaselineAsOfUtc, reconciliation.BaselineAsOfUtc, "baseline runtime baseline cutoff");
 }
 
 static void TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf()
@@ -11543,7 +11673,7 @@ static void TestIntegrationContractEndpointsAndRemovedOptimizationPath()
     AssertTrue(program.Contains("/api/integration-contracts/production-inventory-quality-evidence-v1", StringComparison.Ordinal), "inventory quality endpoint should be exposed");
     AssertTrue(program.Contains("/api/integration-contracts/sdbr-execution-object-evidence-v1", StringComparison.Ordinal), "execution evidence endpoint should be exposed");
     AssertTrue(program.Contains("AddSingleton<HistoryReviewWorkspaceService>", StringComparison.Ordinal), "history review service should be registered");
-    AssertTrue(program.Contains("ICurrentBaselineDataSource, SeedCurrentBaselineDataSource", StringComparison.Ordinal), "current baseline source should be registered");
+    AssertTrue(program.Contains("AddSingleton<ICurrentBaselineDataSource>(sp =>", StringComparison.Ordinal), "current baseline source should be registered");
     AssertTrue(program.Contains("/api/history-review", StringComparison.Ordinal), "history review endpoint should be exposed");
     AssertTrue(program.Contains("/api/current-baselines/candidate", StringComparison.Ordinal), "current baseline candidate endpoint should be exposed");
     AssertTrue(program.Contains("/api/current-baselines/{snapshotId}/audit", StringComparison.Ordinal), "current baseline audit endpoint should be exposed");

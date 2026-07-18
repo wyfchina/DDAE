@@ -6,6 +6,7 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
 {
     private readonly ValidationData _data;
     private readonly IScenarioWorkspaceDataSource _scenarioDataSource;
+    private readonly IInternalDemoOperatingFactSource _operatingFacts;
 
     public SeedCurrentBaselineDataSource()
         : this(SeedData.Create())
@@ -13,23 +14,39 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
     }
 
     public SeedCurrentBaselineDataSource(ValidationData data)
-        : this(data, new SeedScenarioWorkspaceDataSource(data))
+        : this(data, new SeedScenarioWorkspaceDataSource(data), new SeedInternalDemoOperatingFactSource(data))
     {
     }
 
     public SeedCurrentBaselineDataSource(ValidationData data, IScenarioWorkspaceDataSource scenarioDataSource)
+        : this(data, scenarioDataSource, new SeedInternalDemoOperatingFactSource(data))
+    {
+    }
+
+    public SeedCurrentBaselineDataSource(
+        ValidationData data,
+        IScenarioWorkspaceDataSource scenarioDataSource,
+        IInternalDemoOperatingFactSource operatingFacts)
     {
         _data = data;
         _scenarioDataSource = scenarioDataSource;
+        _operatingFacts = operatingFacts;
     }
 
     public CurrentBaselineCandidate GetCandidate()
     {
-        var asOf = new DateTimeOffset(2026, 6, 30, 8, 0, 0, TimeSpan.Zero).ToString("O");
+        var facts = _operatingFacts.Load();
+        var asOf = facts.Header.BaselineAsOfUtc;
+        var inventoryOrder = _data.Inventory
+            .Select((item, index) => (item.Sku, index))
+            .ToDictionary(item => item.Sku, item => item.index, StringComparer.Ordinal);
+        var baselineInventory = facts.BaselineInventory
+            .OrderBy(item => inventoryOrder.TryGetValue(item.Sku, out var index) ? index : int.MaxValue)
+            .ToList();
         var anchor = PlanningEvidenceValidator.BusinessDateForSourceTimestamp(asOf);
         var planningInputs = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(52, anchor));
         var confirmedReceipts = planningInputs.ConfirmedReceipts ?? Array.Empty<ConfirmedReceiptEvidence>();
-        var openingBacklog = planningInputs.OpeningBacklog ?? Array.Empty<OpeningBacklogEvidence>();
+        var openingBacklog = planningInputs.OpeningBacklog ?? facts.BaselineBacklog;
         var inTransit = confirmedReceipts
             .GroupBy(item => item.Sku, StringComparer.Ordinal)
             .Select(group => new BaselineTransitItem(
@@ -46,19 +63,10 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 item.EvidenceStatus == "Complete" ? "ConfirmedDemand" : "EvidenceMissing"))
             .OrderBy(item => item.Sku, StringComparer.Ordinal)
             .ToList();
-        var annualDemandBySku = planningInputs.Demand
-            .GroupBy(item => item.Sku, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Average(item => item.BaselineDemand), StringComparer.Ordinal);
-        var wip = _data.ResourceRoutings.Select(route => new BaselineWipItem(
-            route.ResourceCode,
-            route.Sku,
-            annualDemandBySku.TryGetValue(route.Sku, out var averageDemand)
-                ? decimal.Round(averageDemand * 0.35m, 0)
-                : 0m,
-            "DemoObserved")).ToList();
+        var wip = AllocateWorkInProcess(facts.BaselineWorkInProcessUnits, _data.ResourceRoutings);
         var supplier = _data.SupplierConstraints.Select(item => new BaselineSupplierCommitment(
             item.Supplier, item.MaterialFamily, item.MonthlyCapacity, item.LeadTimeDays, item.RiskStatus)).ToList();
-        var resources = _data.Resources.Select(item => new BaselineResourceAvailability(item.Code, item.Name, item.WeeklyAvailableUnits, "StandardCalendar")).ToList();
+        var resources = planningInputs.Resources.Select(item => new BaselineResourceAvailability(item.Code, item.Name, item.WeeklyAvailableUnits, "StandardCalendar")).ToList();
         var adjustments = _data.KnownEvents.Where(item => item.Status != "Closed").Select(item => new BaselineTemporaryAdjustment(
             item.EventId, item.Name, item.Window, item.AppliesTo, item.Status)).ToList();
         var ddmrpSizingItems = planningInputs.Skus.Select(item =>
@@ -90,8 +98,10 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
                 : "Sequenced upstream capacity-protection evidence is missing."),
             new("SupplyRisk", supplier.Count > 0 ? "Complete" : "EvidenceMissing", "Supplier commitments are frozen independently from protection buffers.")
         };
+        var reconciliation = CurrentBaselineReconciliation.Build(facts);
+        var reconciliationSection = ReconciliationSection(asOf, reconciliation);
         var payload = new CurrentBaselinePayload(
-            _data.Inventory,
+            baselineInventory,
             inTransit,
             backlog,
             wip,
@@ -101,7 +111,8 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             _data.MasterSettings,
             planningInputs,
             kpis,
-            analysisAvailability);
+            analysisAvailability,
+            reconciliation);
         var sections = new List<BaselineEvidenceSection>
         {
             Section("CURRENT_KPIS", "Meeting snapshot KPIs", kpis.SourceAuthority, asOf, 7,
@@ -127,6 +138,7 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             Section("CAPACITY_PROTECTION", "Upstream capacity-protection evidence", "DDAE Demo Planning Snapshot", asOf,
                 capacityProtectionCount, missingReason: "Sequenced upstream capacity-protection evidence is missing.")
         };
+        sections.Add(reconciliationSection);
         sections.Add(DdmrpSizingSection(asOf, ddmrpSizingItems));
         sections.AddRange(timeBufferEvidence.Sections);
         return new CurrentBaselineCandidate("BASE-CANDIDATE-DEMO-20260630", asOf, "DEMO-MS-2026-06", sections, payload, "DemoFixture");
@@ -135,6 +147,67 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             item.Scope == scope && item.BlocksFreeze)
             ? "EvidenceMissing"
             : "Complete";
+    }
+
+    private static IReadOnlyList<BaselineWipItem> AllocateWorkInProcess(
+        decimal target,
+        IReadOnlyList<ResourceRouting> routings)
+    {
+        var weightedRoutings = routings
+            .Where(route => route.CapacityPerUnit > 0m)
+            .OrderBy(route => route.ResourceCode, StringComparer.Ordinal)
+            .ThenBy(route => route.Sku, StringComparer.Ordinal)
+            .ThenBy(route => route.OperationSequence)
+            .ToList();
+        var totalWeight = weightedRoutings.Sum(route => route.CapacityPerUnit);
+        if (weightedRoutings.Count == 0 || totalWeight <= 0m)
+        {
+            return Array.Empty<BaselineWipItem>();
+        }
+
+        var allocated = new List<BaselineWipItem>();
+        var allocatedTotal = 0m;
+        for (var index = 0; index < weightedRoutings.Count; index++)
+        {
+            var route = weightedRoutings[index];
+            var quantity = index == weightedRoutings.Count - 1
+                ? target - allocatedTotal
+                : decimal.Round(target * route.CapacityPerUnit / totalWeight, 2, MidpointRounding.AwayFromZero);
+            allocated.Add(new BaselineWipItem(route.ResourceCode, route.Sku, quantity, "DemoObserved"));
+            allocatedTotal += quantity;
+        }
+
+        return allocated;
+    }
+
+    private static BaselineEvidenceSection ReconciliationSection(
+        string asOf,
+        CurrentBaselineHistoryReconciliation reconciliation)
+    {
+        var items = reconciliation.Lines.Select(line =>
+        {
+            var complete = line.EvidenceStatus == "Complete" && Math.Abs(line.Difference) <= 0.01m;
+            return new BaselineEvidenceItem(
+                $"{line.MetricCode}/{line.ItemKey}",
+                $"{line.MetricCode} {line.ItemKey}",
+                "Fresh",
+                complete ? "Complete" : "EvidenceMissing",
+                !complete,
+                complete ? null : line.DifferenceReason ?? $"Difference={line.Difference}");
+        }).ToList();
+        var complete = items.Count > 0 && items.All(item => item.CompletenessStatus == "Complete");
+        return new BaselineEvidenceSection(
+            "HISTORY_RECONCILIATION",
+            "历史期末到当前基线余额对账",
+            "DDAE Internal Operating Fact Set",
+            asOf,
+            "Fresh",
+            complete ? "Complete" : "EvidenceMissing",
+            items.Count,
+            "DemoFixture",
+            true,
+            complete ? null : "至少一项历史期末与当前基线余额未对平。",
+            items);
     }
 
     private static BaselineEvidenceSection DdmrpSizingSection(

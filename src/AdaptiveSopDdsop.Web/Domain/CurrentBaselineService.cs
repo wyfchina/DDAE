@@ -59,7 +59,8 @@ public sealed record CurrentBaselinePayload(
     IReadOnlyList<MasterSetting> MasterSettings,
     ScenarioWorkspaceDataSet? PlanningInputs = null,
     BaselineKpiSnapshot? Kpis = null,
-    IReadOnlyList<BaselineAnalysisAvailability>? AnalysisAvailability = null);
+    IReadOnlyList<BaselineAnalysisAvailability>? AnalysisAvailability = null,
+    CurrentBaselineHistoryReconciliation? HistoryReconciliation = null);
 
 public sealed record CurrentBaselineCandidate(
     string CandidateId,
@@ -133,6 +134,13 @@ public sealed class CurrentBaselineService
         }
 
         var candidate = _dataSource.GetCandidate();
+        var reconciliationIssues = CurrentBaselineReconciliation.Validate(candidate.Payload.HistoryReconciliation);
+        if (reconciliationIssues.Count > 0)
+        {
+            throw new ArgumentException(
+                $"历史期末与当前基线对账失败：{string.Join("; ", reconciliationIssues)}。",
+                nameof(request));
+        }
         var blockingEvidence = FindEvidenceIssues(candidate.Sections, blockingOnly: true);
         if (blockingEvidence.Count > 0)
         {

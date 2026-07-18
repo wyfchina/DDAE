@@ -21,7 +21,11 @@ builder.Services.AddSingleton<IHistoryOperatingFactSource>(sp =>
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<HistoryReviewWorkspaceService>();
 builder.Services.AddSingleton<DdmrpStandardReferenceService>();
-builder.Services.AddSingleton<ICurrentBaselineDataSource, SeedCurrentBaselineDataSource>();
+builder.Services.AddSingleton<ICurrentBaselineDataSource>(sp =>
+    new SeedCurrentBaselineDataSource(
+        sp.GetRequiredService<ValidationData>(),
+        sp.GetRequiredService<IScenarioWorkspaceDataSource>(),
+        sp.GetRequiredService<IInternalDemoOperatingFactSource>()));
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
 builder.Services.AddSingleton<DdsopConfigInboundContractService>();
 builder.Services.AddSingleton<DdsopFeedbackInboundLedger>();
