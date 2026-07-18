@@ -45,7 +45,8 @@ public sealed record CapacityProtectionProjectionPoint(
     decimal? ConsumedProtection,
     decimal? RemainingProtection,
     string Status,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    CapacityProtectionMeasure? Measure = null);
 
 public sealed record ProtectionScopeAnalysis<TPoint>(
     IReadOnlyList<TPoint> Projection,
@@ -379,29 +380,47 @@ public sealed class CapacityBufferProtectionAnalyzer : ICapacityBufferProtection
                 .Where(item => item.ResourceCode == definition.UpstreamResourceCode && item.Week >= 1 && item.Week <= horizon)
                 .GroupBy(item => item.Week)
                 .ToDictionary(group => group.Key, group => group.ToList());
-            var evidenceComplete = definition.EvidenceStatus == "Complete" &&
-                definition.ReservePercent > 0m &&
-                affectedProducts.Count > 0 &&
-                Enumerable.Range(1, horizon).All(week =>
-                    cellsByWeek.TryGetValue(week, out var cells) && cells.Count == 1);
-
-            if (!evidenceComplete)
-            {
-                foreach (var week in Enumerable.Range(1, horizon))
+            var hasLaterProtectedCcrRouting =
+                definition.EvidenceStatus == "Complete" &&
+                affectedProducts.Count > 0;
+            var definitionProjection = Enumerable.Range(1, horizon)
+                .Select(week =>
                 {
-                    projection.Add(new CapacityProtectionProjectionPoint(
+                    var hasSingleCell = cellsByWeek.TryGetValue(week, out var cells) && cells.Count == 1;
+                    var cell = hasSingleCell ? cells![0] : null;
+                    var plannedAvailable = cell?.ConstrainedAvailable;
+                    var committedLoad = cell?.UnconstrainedRequired;
+                    var measure = CapacityProtectionMath.CalculateUpstream(
+                        plannedAvailable,
+                        committedLoad,
+                        hasLaterProtectedCcrRouting,
+                        definition.EvidenceStatus);
+                    var legacyStatus = measure.EvidenceStatus != "Complete"
+                        ? "EvidenceMissing"
+                        : measure.RemainingProtection <= 0m
+                            ? "Red"
+                            : measure.ConsumedProtection > 0m
+                                ? "Yellow"
+                                : "Green";
+                    return new CapacityProtectionProjectionPoint(
                         definition.ProtectionId,
                         definition.UpstreamResourceCode,
                         definition.ProtectedCcrResourceCode,
                         week,
-                        null,
-                        null,
-                        null,
-                        null,
-                        null,
-                        "EvidenceMissing",
-                        "EvidenceMissing"));
-                }
+                        measure.EvidenceStatus == "Complete" ? plannedAvailable : null,
+                        measure.EvidenceStatus == "Complete" ? committedLoad : null,
+                        measure.ProtectionCapacity,
+                        measure.ConsumedProtection,
+                        measure.RemainingProtection,
+                        legacyStatus,
+                        measure.EvidenceStatus,
+                        measure);
+                })
+                .ToList();
+            projection.AddRange(definitionProjection);
+
+            if (definitionProjection.Any(item => item.EvidenceStatus != "Complete"))
+            {
                 breaches.Add(new ProtectionBreachResult(
                     "CapacityBuffer",
                     definition.UpstreamResourceCode,
@@ -410,46 +429,12 @@ public sealed class CapacityBufferProtectionAnalyzer : ICapacityBufferProtection
                     0,
                     null,
                     false,
-                    Array.Empty<string>(),
+                    affectedProducts,
                     "能力保护定义、顺序或周度能力证据缺失，未按零处理",
                     Unit: "capacity",
                     EvidenceStatus: "EvidenceMissing"));
                 continue;
             }
-
-            var reservePercent = Math.Clamp(definition.ReservePercent, 0m, 100m);
-            var definitionProjection = Enumerable.Range(1, horizon)
-                .Select(week =>
-                {
-                    var cell = cellsByWeek[week][0];
-                    var plannedAvailable = Math.Max(0m, cell.ConstrainedAvailable);
-                    var committedLoad = Math.Max(0m, cell.UnconstrainedRequired);
-                    var protectionCapacity = decimal.Round(plannedAvailable * reservePercent / 100m, 1);
-                    var protectionStart = plannedAvailable - protectionCapacity;
-                    var consumedProtection = decimal.Round(
-                        Math.Clamp(committedLoad - protectionStart, 0m, protectionCapacity),
-                        1);
-                    var remainingProtection = decimal.Round(protectionCapacity - consumedProtection, 1);
-                    var status = remainingProtection <= 0m
-                        ? "Red"
-                        : consumedProtection > 0m
-                            ? "Yellow"
-                            : "Green";
-                    return new CapacityProtectionProjectionPoint(
-                        definition.ProtectionId,
-                        definition.UpstreamResourceCode,
-                        definition.ProtectedCcrResourceCode,
-                        week,
-                        plannedAvailable,
-                        committedLoad,
-                        protectionCapacity,
-                        consumedProtection,
-                        remainingProtection,
-                        status,
-                        "Complete");
-                })
-                .ToList();
-            projection.AddRange(definitionProjection);
 
             var maximumPenetration = definitionProjection.Max(item =>
                 item.ProtectionCapacity > 0m
@@ -471,10 +456,18 @@ public sealed class CapacityBufferProtectionAnalyzer : ICapacityBufferProtection
             breaches);
     }
 
-    private static IReadOnlyList<string> FindProtectedProducts(
+    internal static IReadOnlyList<string> FindProtectedProducts(
         IReadOnlyList<ResourceRouting> routings,
         CapacityProtectionDefinition definition)
     {
+        if (string.Equals(
+            definition.UpstreamResourceCode,
+            definition.ProtectedCcrResourceCode,
+            StringComparison.Ordinal))
+        {
+            return Array.Empty<string>();
+        }
+
         return routings
             .Where(item =>
                 item.ResourceCode == definition.UpstreamResourceCode &&
@@ -528,7 +521,7 @@ internal static class StatusSeriesBreachCalculator
         string evidenceStatus = "Complete")
     {
         var series = values.OrderBy(item => item.Week).ToList();
-        var firstRedIndex = series.FindIndex(item => item.Status == "Red");
+        var firstRedIndex = series.FindIndex(item => IsRiskStatus(item.Status));
         if (firstRedIndex < 0)
         {
             return new ProtectionBreachResult(
@@ -551,7 +544,7 @@ internal static class StatusSeriesBreachCalculator
         var currentDuration = 0;
         foreach (var point in series)
         {
-            if (point.Status == "Red")
+            if (IsRiskStatus(point.Status))
             {
                 currentDuration++;
                 maximumDuration = Math.Max(maximumDuration, currentDuration);
@@ -562,7 +555,7 @@ internal static class StatusSeriesBreachCalculator
             }
         }
 
-        var lastRedIndex = series.FindLastIndex(item => item.Status == "Red");
+        var lastRedIndex = series.FindLastIndex(item => IsRiskStatus(item.Status));
         var recoveryIndex = lastRedIndex + 1;
         var recoveryWeek = recoveryIndex < series.Count ? series[recoveryIndex].Week : (int?)null;
         return new ProtectionBreachResult(
@@ -580,4 +573,7 @@ internal static class StatusSeriesBreachCalculator
             unit,
             evidenceStatus);
     }
+
+    private static bool IsRiskStatus(string status) =>
+        status is "Red" or "DeepRed";
 }

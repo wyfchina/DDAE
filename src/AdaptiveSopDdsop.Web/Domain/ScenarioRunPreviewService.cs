@@ -268,12 +268,14 @@ public sealed class ScenarioRunPreviewService
             prebuildCampaigns,
             supplierCapacityLimits,
             baselineSnapshotId);
-        var capacityLoads = DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
+        var capacityLoads = AttachCapacityProtectionMeasures(
+            data,
+            DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
             bufferRun.ReplenishmentOrders,
             data.ResourceRoutings,
             data.Resources,
             data.Request.HorizonWeeks,
-            capacityAdjustments);
+            capacityAdjustments));
         var supplyRequirements = DemandDrivenPlanningEngine.ProjectSupplyRequirements(
             bufferRun.ReplenishmentOrders,
             data.SupplierItemSources);
@@ -321,6 +323,77 @@ public sealed class ScenarioRunPreviewService
             budget,
             inventoryFlow,
             BuildMetricEvidence(inventoryFlow, caseId, baselineSnapshotId));
+    }
+
+    private static IReadOnlyList<CapacityLoadProjection> AttachCapacityProtectionMeasures(
+        ScenarioWorkspaceDataSet data,
+        IReadOnlyList<CapacityLoadProjection> capacityLoads)
+    {
+        var definitions = data.CapacityProtections ?? Array.Empty<CapacityProtectionDefinition>();
+        var relationships = definitions
+            .Select(definition => new
+            {
+                Definition = definition,
+                ProtectedProducts = CapacityBufferProtectionAnalyzer.FindProtectedProducts(
+                    data.ResourceRoutings,
+                    definition)
+            })
+            .ToList();
+        var completeRelationships = relationships
+            .Where(item =>
+                item.Definition.EvidenceStatus == "Complete" &&
+                item.Definition.UpstreamResourceCode != item.Definition.ProtectedCcrResourceCode &&
+                item.ProtectedProducts.Count > 0)
+            .ToList();
+        var protectedCcrCodes = completeRelationships
+            .Select(item => item.Definition.ProtectedCcrResourceCode)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return capacityLoads.Select(load =>
+        {
+            if (protectedCcrCodes.Contains(load.ResourceCode))
+            {
+                return load with
+                {
+                    RelationshipRole = "CcrUtilization",
+                    CapacityProtectionMeasure = CapacityProtectionMath.CalculateCcrReference(
+                        load.AvailableCapacity,
+                        load.RequiredCapacity,
+                        "Complete")
+                };
+            }
+
+            var upstreamRelationships = relationships
+                .Where(item => item.Definition.UpstreamResourceCode == load.ResourceCode)
+                .ToList();
+            if (upstreamRelationships.Count == 0)
+            {
+                return load;
+            }
+
+            var completeUpstreamRelationships = upstreamRelationships
+                .Where(item => completeRelationships.Contains(item))
+                .ToList();
+            var selected = completeUpstreamRelationships.Count == 1
+                ? completeUpstreamRelationships[0]
+                : upstreamRelationships.Count == 1
+                    ? upstreamRelationships[0]
+                    : null;
+            var protectedCcrResourceCode = selected?.Definition.ProtectedCcrResourceCode;
+            var hasCompleteLaterCcrRouting = selected is not null &&
+                completeUpstreamRelationships.Count == 1;
+            var evidenceStatus = selected?.Definition.EvidenceStatus ?? "EvidenceMissing";
+            return load with
+            {
+                RelationshipRole = "UpstreamProtection",
+                ProtectedCcrResourceCode = protectedCcrResourceCode,
+                CapacityProtectionMeasure = CapacityProtectionMath.CalculateUpstream(
+                    load.AvailableCapacity,
+                    load.RequiredCapacity,
+                    hasCompleteLaterCcrRouting,
+                    evidenceStatus)
+            };
+        }).ToList();
     }
 
     private static ScenarioRunParameterSet MergeTemplateParameters(

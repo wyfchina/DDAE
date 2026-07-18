@@ -240,6 +240,17 @@
                         <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
                     </div>
                 </div>
+                <section class="history-visual-card history-capacity-overview">
+                    <div class="panel-heading compact-heading"><div><span class="panel-kicker">上下游关系</span><h2>上游能力保护与 CCR 参照</h2></div></div>
+                    <div id="history-capacity-protection-pair" class="history-capacity-pair" aria-label="上游能力保护与 CCR 利用率配对">
+                        <article id="history-capacity-upstream-card" class="history-capacity-role-card is-upstream" aria-live="polite"></article>
+                        <article id="history-capacity-ccr-card" class="history-capacity-role-card is-ccr" aria-live="polite"></article>
+                    </div>
+                    <div id="history-capacity-band-distribution" class="history-capacity-distribution-frame">
+                        <div class="history-chart-heading"><strong>期间上游负荷分布</strong><span>全部合格上游观测</span></div>
+                        <div id="history-capacity-utilization-distribution" class="history-capacity-distribution" aria-label="期间上游负荷四色分布" aria-live="polite"></div>
+                    </div>
+                </section>
                 <div class="history-buffer-layout">
                     <aside class="history-object-options">
                         <section class="history-visual-card">
@@ -892,9 +903,10 @@
                     <div id="rccp-kpis" class="rccp-kpis" aria-label="RCCP 关键指标"></div>
                     <p class="muted-note rccp-load-note">RCCP 负荷按预计补货订单在释放周折算；补货订单释放周压力，不等于设备持续利用率。</p>
                     <div class="future-capacity-separation">
-                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">上游保护资源</span><h2>负荷与保护消耗</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>上游资源</th><th>保护 CCR</th><th>周</th><th>计划可用</th><th>承诺负荷</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>状态</th></tr></thead><tbody id="future-capacity-protection-body"></tbody></table></div></section>
-                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">CCR 单列</span><h2>CCR 释放负荷</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>CCR</th><th>平均释放负荷</th><th>补货释放峰值</th><th>状态</th></tr></thead><tbody id="future-ccr-utilization-body"></tbody></table></div></section>
+                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">上游保护资源</span><h2>负荷与保护消耗</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>上游资源</th><th>保护 CCR</th><th>周</th><th>计划可用</th><th>承诺负荷</th><th>利用率</th><th>保护起点</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>超载</th><th>负荷区</th></tr></thead><tbody id="future-capacity-protection-body"></tbody></table></div></section>
+                        <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">CCR 单列</span><h2>CCR 利用率参照</h2></div></div><div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>CCR</th><th>周</th><th>计划可用</th><th>承诺负荷</th><th>利用率参照</th><th>负荷区</th></tr></thead><tbody id="future-ccr-utilization-body"></tbody></table></div></section>
                     </div>
+                    <section class="stage-card"><div class="panel-heading compact-heading"><div><span class="panel-kicker">期间分布</span><h2>上游负荷四色分布</h2></div></div><div id="future-capacity-utilization-distribution" class="history-capacity-distribution" aria-label="未来场景上游负荷四色分布"></div></section>
                     <div class="rccp-workbench">
                         <section class="rccp-block">
                             <div class="panel-heading compact-heading">

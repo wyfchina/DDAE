@@ -601,23 +601,15 @@ public static class HistoryReviewProjectionBuilder
                     relationshipEvidenceComplete))
                 .ToList();
             var distributionCodes = points
-                .Where(item => item.EvidenceStatus == Complete && item.PlannedAvailableCapacity is > 0m && item.CommittedLoad.HasValue)
-                .Select(item =>
-                {
-                    var ratio = item.CommittedLoad!.Value * 100m / item.PlannedAvailableCapacity!.Value;
-                    return ratio <= 60m
-                        ? "Safe"
-                        : ratio <= 80m
-                            ? "High"
-                            : ratio <= 100m ? "NearLimit" : "Overload";
-                });
+                .Where(item => item.Measure?.EvidenceStatus == Complete)
+                .Select(item => item.Measure!.UtilizationBand);
             var distribution = BuildBuckets(
                 new[]
                 {
-                    (Code: "Safe", Label: "安全"),
-                    (Code: "High", Label: "高负荷"),
-                    (Code: "NearLimit", Label: "接近上限"),
-                    (Code: "Overload", Label: "超负荷"),
+                    (Code: "Green", Label: "绿区（0–60%）"),
+                    (Code: "Yellow", Label: "黄区（>60–80%）"),
+                    (Code: "Red", Label: "红区（>80–100%）"),
+                    (Code: "DeepRed", Label: "深红区（>100%）"),
                 },
                 distributionCodes);
             var evidenceStatus = protectionFacts.Count > 0 &&
@@ -659,7 +651,10 @@ public static class HistoryReviewProjectionBuilder
                 null,
                 null,
                 null,
-                EvidenceMissing);
+                EvidenceMissing,
+                relationshipRole == "UpstreamProtection"
+                    ? CapacityProtectionMath.CalculateUpstream(null, null, relationshipEvidenceComplete, EvidenceMissing)
+                    : CapacityProtectionMath.CalculateCcrReference(null, null, EvidenceMissing));
         }
 
         var fact = matchingFacts[0];
@@ -669,10 +664,6 @@ public static class HistoryReviewProjectionBuilder
             fact.DemonstratedCapacity is >= 0m &&
             fact.PlannedAvailableCapacity is > 0m &&
             fact.CommittedLoad is >= 0m;
-        decimal? protectionStart = null;
-        decimal? protective = null;
-        decimal? consumed = null;
-        decimal? remaining = null;
         var protectionComplete = relationshipEvidenceComplete;
 
         if (relationshipRole == "UpstreamProtection")
@@ -685,15 +676,19 @@ public static class HistoryReviewProjectionBuilder
                     weekOffset <= item.EffectiveThroughWeekOffset)
                 .ToList();
             protectionComplete = effectiveProtection.Count == 1;
-            if (capacityComplete && protectionComplete)
-            {
-                var planned = fact.PlannedAvailableCapacity!.Value;
-                protective = planned * effectiveProtection[0].ReservePercent / 100m;
-                protectionStart = planned - protective.Value;
-                consumed = Math.Clamp(fact.CommittedLoad!.Value - protectionStart.Value, 0m, protective.Value);
-                remaining = protective.Value - consumed.Value;
-            }
         }
+
+        var measureEvidenceStatus = capacityComplete && protectionComplete ? Complete : EvidenceMissing;
+        var measure = relationshipRole == "UpstreamProtection"
+            ? CapacityProtectionMath.CalculateUpstream(
+                fact.PlannedAvailableCapacity,
+                fact.CommittedLoad,
+                protectionComplete,
+                measureEvidenceStatus)
+            : CapacityProtectionMath.CalculateCcrReference(
+                fact.PlannedAvailableCapacity,
+                fact.CommittedLoad,
+                capacityComplete && relationshipEvidenceComplete ? Complete : EvidenceMissing);
 
         return new HistoryCapacityPoint(
             weekOffset,
@@ -703,11 +698,12 @@ public static class HistoryReviewProjectionBuilder
             fact.DemonstratedCapacity,
             fact.PlannedAvailableCapacity,
             fact.CommittedLoad,
-            protectionStart,
-            protective,
-            consumed,
-            remaining,
-            capacityComplete && protectionComplete ? Complete : EvidenceMissing);
+            measure.ProtectionStart,
+            measure.ProtectionCapacity,
+            measure.ConsumedProtection,
+            measure.RemainingProtection,
+            measure.EvidenceStatus,
+            measure);
     }
 
     private static bool HasValidProtectionStructure(HistoricalCapacityProtectionFact fact) =>
@@ -715,7 +711,6 @@ public static class HistoryReviewProjectionBuilder
         !string.Equals(fact.UpstreamResourceCode, fact.ProtectedCcrResourceCode, StringComparison.Ordinal) &&
         fact.UpstreamOperationSequence > 0 &&
         fact.CcrOperationSequence > fact.UpstreamOperationSequence &&
-        fact.ReservePercent is > 0m and <= 100m &&
         fact.EffectiveFromWeekOffset <= fact.EffectiveThroughWeekOffset &&
         fact.EffectiveFromWeekOffset < 0 &&
         fact.EffectiveThroughWeekOffset < 0;

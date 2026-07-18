@@ -45,7 +45,8 @@ public sealed record HistoryCapacityPoint(
     decimal? PlannedAvailableCapacity, decimal? CommittedLoad,
     decimal? ProtectionStart, decimal? ProtectiveCapacity,
     decimal? ConsumedProtection, decimal? RemainingProtection,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    CapacityProtectionMeasure? Measure = null);
 
 public sealed record HistoryCapacityBufferView(
     string ResourceCode, string ResourceName, string? ProtectedCcrResourceCode,

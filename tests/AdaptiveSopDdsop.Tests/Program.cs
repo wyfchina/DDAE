@@ -21,6 +21,16 @@ var tests = new (string Name, Action Run)[]
     ("Capacity protection requires sequenced upstream evidence", TestCapacityProtectionRequiresSequencedUpstreamEvidence),
     ("Capacity protection is not inferred without sequence evidence", TestCapacityProtectionDoesNotInferWithoutSequenceEvidence),
     ("Scenario capacity protection excludes FPGA-only sequence evidence", TestScenarioCapacityProtectionExcludesFpgaSequenceEvidence),
+    ("Capacity protection math uses 80 percent start", TestCapacityProtectionStartsAtEightyPercent),
+    ("Capacity protection bands honor exact boundaries", TestCapacityProtectionBandsHonorBoundaries),
+    ("Capacity protection separates consumption and overload", TestCapacityProtectionSeparatesConsumptionAndOverload),
+    ("Reserve percent remains informational for fixed capacity protection", TestReservePercentDoesNotDriveCapacityProtection),
+    ("Capacity protection requires upstream CCR evidence", TestCapacityProtectionRequiresUpstreamEvidence),
+    ("CCR utilization is reference only", TestCcrUtilizationIsReferenceOnly),
+    ("FPGA is excluded from capacity and time protection", TestFpgaIsInventoryOnlyControlPoint),
+    ("History and future capacity measures agree", TestCapacityMeasuresAgreeAcrossViews),
+    ("Capacity A layout pairs AIT upstream with HARNESS CCR", TestCapacityALayoutPairsUpstreamAndCcr),
+    ("Deep red capacity remains in the red breach streak", TestDeepRedCapacityContinuesBreachStreak),
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
@@ -646,6 +656,363 @@ static void TestScenarioCapacityProtectionExcludesFpgaSequenceEvidence()
     AssertEqual(1, mixedProtections.Count, "eligible mixed routing capacity-protection count");
     AssertEqual("RES-AIT", mixedProtections.Single().UpstreamResourceCode, "eligible mixed routing upstream resource");
     AssertEqual("RES-HARNESS", mixedProtections.Single().ProtectedCcrResourceCode, "eligible mixed routing protected CCR");
+}
+
+static void TestCapacityProtectionStartsAtEightyPercent()
+{
+    var measure = InvokeCapacityProtectionMath("CalculateUpstream", 100m, 85m, true, "Complete");
+
+    AssertEqual<decimal?>(85m, CapacityMeasureValue<decimal?>(measure, "UtilizationPercent"), "upstream utilization percent");
+    AssertEqual<decimal?>(80m, CapacityMeasureValue<decimal?>(measure, "ProtectionStart"), "protection start at eighty percent");
+    AssertEqual<decimal?>(20m, CapacityMeasureValue<decimal?>(measure, "ProtectionCapacity"), "twenty percent protection capacity");
+    AssertEqual<decimal?>(5m, CapacityMeasureValue<decimal?>(measure, "ConsumedProtection"), "consumed protection above eighty percent");
+    AssertEqual<decimal?>(15m, CapacityMeasureValue<decimal?>(measure, "RemainingProtection"), "remaining protection");
+}
+
+static void TestCapacityProtectionBandsHonorBoundaries()
+{
+    AssertEqual("Green", CapacityMeasureValue<string>(InvokeCapacityProtectionMath("CalculateUpstream", 100m, 60m, true, "Complete"), "UtilizationBand"), "sixty percent band");
+    AssertEqual("Yellow", CapacityMeasureValue<string>(InvokeCapacityProtectionMath("CalculateUpstream", 100m, 80m, true, "Complete"), "UtilizationBand"), "eighty percent band");
+    AssertEqual("Red", CapacityMeasureValue<string>(InvokeCapacityProtectionMath("CalculateUpstream", 100m, 100m, true, "Complete"), "UtilizationBand"), "one-hundred percent band");
+    AssertEqual("DeepRed", CapacityMeasureValue<string>(InvokeCapacityProtectionMath("CalculateUpstream", 100m, 100.1m, true, "Complete"), "UtilizationBand"), "over one-hundred percent band");
+}
+
+static void TestCapacityProtectionSeparatesConsumptionAndOverload()
+{
+    var measure = InvokeCapacityProtectionMath("CalculateUpstream", 100m, 112m, true, "Complete");
+
+    AssertEqual<decimal?>(20m, CapacityMeasureValue<decimal?>(measure, "ConsumedProtection"), "protection consumption is capped at protection capacity");
+    AssertEqual<decimal?>(0m, CapacityMeasureValue<decimal?>(measure, "RemainingProtection"), "exhausted protection has zero remaining");
+    AssertEqual<decimal?>(12m, CapacityMeasureValue<decimal?>(measure, "Overload"), "overload is separated from consumed protection");
+    AssertEqual("DeepRed", CapacityMeasureValue<string>(measure, "UtilizationBand"), "overload band");
+}
+
+static void TestReservePercentDoesNotDriveCapacityProtection()
+{
+    const int horizonWeeks = 1;
+    var seed = SeedData.Create();
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed))
+        .Preview(new ScenarioRunPreviewRequest(horizonWeeks));
+    var constraints = preview.Scenario.Constraints with
+    {
+        CapacityCells = preview.Scenario.Constraints.CapacityCells
+            .Select(item => item.ResourceCode == "RES-AIT"
+                ? item with { ConstrainedAvailable = 100m, UnconstrainedRequired = 85m }
+                : item)
+            .ToList()
+    };
+    var futureData = LoadTask5ProtectionData(horizonWeeks) with
+    {
+        CapacityProtections = LoadTask5ProtectionData(horizonWeeks).CapacityProtections!
+            .Select(item => item with { ReservePercent = 99m })
+            .ToList()
+    };
+    var futurePoint = new CapacityBufferProtectionAnalyzer()
+        .Analyze(futureData, preview.Scenario with { Constraints = constraints }, horizonWeeks)
+        .Projection.Single(item => item.UpstreamResourceCode == "RES-AIT");
+    var futureMeasure = CapacityMeasureFrom(futurePoint);
+
+    AssertEqual<decimal?>(80m, CapacityMeasureValue<decimal?>(futureMeasure, "ProtectionStart"), "future start ignores informational reserve percent");
+    AssertEqual<decimal?>(20m, CapacityMeasureValue<decimal?>(futureMeasure, "ProtectionCapacity"), "future capacity ignores informational reserve percent");
+
+    foreach (var reservePercent in new[] { 0m, 99m })
+    {
+        var historySource = new CapacityProtectionTransformingHistoryOperatingFactSource(
+            new SeedHistoryOperatingFactSource(seed),
+            existing => existing.Select(item => item with { ReservePercent = reservePercent }).ToList());
+        var history = new HistoryReviewWorkspaceService(
+            historySource,
+            new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+        var historyPoint = (history.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+            .Single(item => item.ResourceCode == "RES-AIT")
+            .Points.First(item => item.PlannedAvailableCapacity is > 0m);
+        var historyMeasure = CapacityMeasureFrom(historyPoint);
+        var expectedStart = historyPoint.PlannedAvailableCapacity * 0.80m;
+        var expectedCapacity = historyPoint.PlannedAvailableCapacity - expectedStart;
+
+        AssertEqual("Complete", CapacityMeasureValue<string>(historyMeasure, "EvidenceStatus"), $"history reserve {reservePercent} remains informational");
+        AssertEqual(expectedStart, CapacityMeasureValue<decimal?>(historyMeasure, "ProtectionStart"), $"history reserve {reservePercent} fixed start");
+        AssertEqual(expectedCapacity, CapacityMeasureValue<decimal?>(historyMeasure, "ProtectionCapacity"), $"history reserve {reservePercent} fixed capacity");
+    }
+}
+
+static void TestCapacityProtectionRequiresUpstreamEvidence()
+{
+    foreach (var measure in new[]
+    {
+        InvokeCapacityProtectionMath("CalculateUpstream", 100m, 85m, false, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", 0m, 0m, true, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", -1m, 0m, true, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", null, 85m, true, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", 100m, null, true, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", 100m, -1m, true, "Complete"),
+        InvokeCapacityProtectionMath("CalculateUpstream", 100m, 85m, true, "EvidenceMissing"),
+    })
+    {
+        AssertEqual("EvidenceMissing", CapacityMeasureValue<string>(measure, "EvidenceStatus"), "missing upstream evidence status");
+        AssertEqual("EvidenceMissing", CapacityMeasureValue<string>(measure, "UtilizationBand"), "missing upstream evidence band");
+        AssertTrue(CapacityMeasureValue<object?>(measure, "UtilizationPercent") is null, "missing evidence must not backfill utilization with zero");
+        AssertTrue(CapacityMeasureValue<object?>(measure, "ProtectionCapacity") is null, "missing evidence must not backfill protection with zero");
+        AssertTrue(CapacityMeasureValue<object?>(measure, "Overload") is null, "missing evidence must not backfill overload with zero");
+        AssertTrue(!string.IsNullOrWhiteSpace(CapacityMeasureValue<string?>(measure, "EvidenceIssue")), "missing evidence must explain the issue");
+    }
+
+    var frozenData = LoadTask5ProtectionData(1);
+    var definition = frozenData.CapacityProtections!.Single() with
+    {
+        UpstreamResourceCode = "RES-AIT",
+        ProtectedCcrResourceCode = "RES-AIT"
+    };
+    var selfReferentialData = frozenData with
+    {
+        CapacityProtections = new[] { definition },
+        ResourceRoutings = new[]
+        {
+            new ResourceRouting("TC-MLI-301", "RES-AIT", 1m, 1, "RES-AIT", "Complete"),
+            new ResourceRouting("TC-MLI-301", "RES-AIT", 1m, 2, null, "Complete")
+        }
+    };
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(1));
+    var selfReferential = new CapacityBufferProtectionAnalyzer()
+        .Analyze(selfReferentialData, preview.Scenario, 1);
+    AssertEqual("EvidenceMissing", selfReferential.Projection.Single().EvidenceStatus, "self-referential CCR routing must not calculate upstream protection");
+    AssertTrue(selfReferential.Projection.Single().Measure?.ProtectionCapacity is null, "self-referential CCR routing must leave derived protection nullable");
+}
+
+static void TestCcrUtilizationIsReferenceOnly()
+{
+    var measure = InvokeCapacityProtectionMath("CalculateCcrReference", 100m, 85m, "Complete");
+
+    AssertEqual<decimal?>(85m, CapacityMeasureValue<decimal?>(measure, "UtilizationPercent"), "CCR utilization reference");
+    AssertEqual("Red", CapacityMeasureValue<string>(measure, "UtilizationBand"), "CCR utilization reference band");
+    AssertTrue(CapacityMeasureValue<object?>(measure, "ProtectionStart") is null, "CCR protection start is not applicable");
+    AssertTrue(CapacityMeasureValue<object?>(measure, "ProtectionCapacity") is null, "CCR protection capacity is not applicable");
+    AssertTrue(CapacityMeasureValue<object?>(measure, "ConsumedProtection") is null, "CCR protection consumption is not applicable");
+    AssertTrue(CapacityMeasureValue<object?>(measure, "RemainingProtection") is null, "CCR remaining protection is not applicable");
+    AssertTrue(CapacityMeasureValue<object?>(measure, "Overload") is null, "CCR protection overload is not applicable");
+}
+
+static void TestFpgaIsInventoryOnlyControlPoint()
+{
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(12));
+    var frozenData = LoadTask5ProtectionData(12);
+    var analysis = ProtectionBreachAnalyzer.Analyze(
+        frozenData,
+        new ExternalScenarioDefinition("EXT-NONE", "无外部扰动"),
+        null,
+        preview.Scenario,
+        12);
+    var history = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(SeedData.Create()),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+
+    AssertTrue(preview.Scenario.BufferTrend.WeeklyCells.Any(item => item.Sku == "AV-FPGA-203"), "FPGA must remain in inventory projection");
+    AssertTrue(analysis.TimeBufferProjection.All(item => !item.ControlPoint.Contains("FPGA", StringComparison.OrdinalIgnoreCase)), "FPGA must stay out of time protection");
+    AssertTrue(analysis.CapacityProtectionProjection.All(item => !item.UpstreamResourceCode.Contains("FPGA", StringComparison.OrdinalIgnoreCase)), "FPGA must stay out of future capacity protection");
+    AssertTrue((history.CapacityBuffers ?? Array.Empty<HistoryCapacityBufferView>()).All(item =>
+        !string.Join(" ", item.ResourceCode, item.ResourceName, item.ProtectedCcrResourceCode).Contains("FPGA", StringComparison.OrdinalIgnoreCase)), "FPGA must stay out of historical capacity protection");
+}
+
+static void TestCapacityMeasuresAgreeAcrossViews()
+{
+    var seed = SeedData.Create();
+    var history = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(seed),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+    var historyPoint = (history.CapacityBuffers ?? throw new InvalidOperationException("historical capacity projection is missing"))
+        .Single(item => item.ResourceCode == "RES-AIT")
+        .Points
+        .First(item => item.EvidenceStatus == "Complete");
+    var historyMeasure = CapacityMeasureFrom(historyPoint);
+
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed))
+        .Preview(new ScenarioRunPreviewRequest(1));
+    var upstreamLoad = preview.Scenario.Plan.CapacityLoads.Single(item => item.ResourceCode == "RES-AIT" && item.Week == 1);
+    var ccrLoad = preview.Scenario.Plan.CapacityLoads.Single(item => item.ResourceCode == "RES-HARNESS" && item.Week == 1);
+    AssertEqual("UpstreamProtection", MappedValue<string>(upstreamLoad, "RelationshipRole"), "scenario AIT relationship role");
+    AssertEqual("RES-HARNESS", MappedValue<string>(upstreamLoad, "ProtectedCcrResourceCode"), "scenario AIT protected CCR");
+    AssertTrue(MappedValue<object?>(upstreamLoad, "CapacityProtectionMeasure") is not null, "scenario AIT must carry the backend measure");
+    AssertEqual("CcrUtilization", MappedValue<string>(ccrLoad, "RelationshipRole"), "scenario HARNESS relationship role");
+    var ccrMeasure = MappedValue<object?>(ccrLoad, "CapacityProtectionMeasure")
+        ?? throw new InvalidOperationException("scenario HARNESS CCR measure is missing");
+    AssertTrue(CapacityMeasureValue<object?>(ccrMeasure, "ProtectionCapacity") is null, "scenario HARNESS must remain utilization reference only");
+    var constraints = preview.Scenario.Constraints with
+    {
+        CapacityCells = preview.Scenario.Constraints.CapacityCells
+            .Select(item => item.ResourceCode == "RES-AIT" && item.Week == 1
+                ? item with
+                {
+                    ConstrainedAvailable = historyPoint.PlannedAvailableCapacity!.Value,
+                    UnconstrainedRequired = historyPoint.CommittedLoad!.Value
+                }
+                : item)
+            .ToList()
+    };
+    var futurePoint = new CapacityBufferProtectionAnalyzer()
+        .Analyze(LoadTask5ProtectionData(1), preview.Scenario with { Constraints = constraints }, 1)
+        .Projection.Single(item => item.UpstreamResourceCode == "RES-AIT" && item.Week == 1);
+    var futureMeasure = CapacityMeasureFrom(futurePoint);
+
+    AssertEqual(JsonSerializer.Serialize(historyMeasure), JsonSerializer.Serialize(futureMeasure), "history and future shared capacity measure");
+    AssertEqual(historyPoint.ProtectionStart, CapacityMeasureValue<decimal?>(futureMeasure, "ProtectionStart"), "history and future protection-start mapping");
+    AssertEqual(historyPoint.ProtectiveCapacity, futurePoint.ProtectionCapacity, "history and future legacy protection-capacity mapping");
+    AssertEqual(historyPoint.ConsumedProtection, futurePoint.ConsumedProtection, "history and future legacy consumed-protection mapping");
+    AssertEqual(historyPoint.RemainingProtection, futurePoint.RemainingProtection, "history and future legacy remaining-protection mapping");
+
+    var legacyHistoryJson = JsonNode.Parse(JsonSerializer.Serialize(historyPoint))!.AsObject();
+    legacyHistoryJson.Remove("Measure");
+    var legacyHistory = JsonSerializer.Deserialize<HistoryCapacityPoint>(legacyHistoryJson.ToJsonString());
+    AssertTrue(legacyHistory is not null && legacyHistory.Measure is null, "legacy history JSON without the appended measure remains readable");
+    var legacyFutureJson = JsonNode.Parse(JsonSerializer.Serialize(futurePoint))!.AsObject();
+    legacyFutureJson.Remove("Measure");
+    var legacyFuture = JsonSerializer.Deserialize<CapacityProtectionProjectionPoint>(legacyFutureJson.ToJsonString());
+    AssertTrue(legacyFuture is not null && legacyFuture.Measure is null, "legacy future JSON without the appended measure remains readable");
+    var legacyLoadJson = JsonNode.Parse(JsonSerializer.Serialize(upstreamLoad))!.AsObject();
+    legacyLoadJson.Remove("RelationshipRole");
+    legacyLoadJson.Remove("ProtectedCcrResourceCode");
+    legacyLoadJson.Remove("CapacityProtectionMeasure");
+    var legacyLoad = JsonSerializer.Deserialize<CapacityLoadProjection>(legacyLoadJson.ToJsonString());
+    AssertTrue(
+        legacyLoad is not null &&
+        legacyLoad.RelationshipRole is null &&
+        legacyLoad.ProtectedCcrResourceCode is null &&
+        legacyLoad.CapacityProtectionMeasure is null,
+        "legacy capacity-load JSON without appended relationship fields remains readable");
+}
+
+static void TestCapacityALayoutPairsUpstreamAndCcr()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    AssertTrue(page.Contains("id=\"history-capacity-protection-pair\"", StringComparison.Ordinal), "capacity A layout needs a paired upstream and CCR host");
+    AssertTrue(page.Contains("id=\"history-capacity-band-distribution\"", StringComparison.Ordinal), "capacity A layout needs all-period upstream distribution host");
+    AssertTrue(page.Contains("id=\"history-capacity-upstream-card\"", StringComparison.Ordinal), "capacity A layout needs the upstream role card");
+    AssertTrue(page.Contains("id=\"history-capacity-ccr-card\"", StringComparison.Ordinal), "capacity A layout needs the CCR reference card");
+    AssertTrue(script.Contains("candidate.relationshipRole === \"UpstreamProtection\"", StringComparison.Ordinal), "capacity A layout must discover the eligible upstream role from backend data");
+    AssertTrue(script.Contains("candidate.resourceCode === upstream.protectedCcrResourceCode", StringComparison.Ordinal), "capacity A layout must pair the named downstream CCR from backend data");
+    AssertTrue(script.Contains("measure.utilizationBand", StringComparison.Ordinal), "capacity A layout must use the backend utilization band");
+    var pairBody = SourceFunctionBody(script, "renderHistoryCapacityProtectionPair");
+    AssertTrue(pairBody.Contains("upstreamMeasure?.protectionStart", StringComparison.Ordinal), "upstream A card must show the backend eighty-percent protection start");
+    var ccrCardStart = pairBody.IndexOf("history-capacity-ccr-card", StringComparison.Ordinal);
+    var ccrCardEnd = pairBody.IndexOf("const observations", ccrCardStart, StringComparison.Ordinal);
+    AssertTrue(ccrCardStart >= 0 && ccrCardEnd > ccrCardStart, "CCR A card source boundaries");
+    var ccrCardBody = pairBody[ccrCardStart..ccrCardEnd];
+    AssertTrue(
+        !ccrCardBody.Contains("保护能力", StringComparison.Ordinal) &&
+        !ccrCardBody.Contains("已消耗保护", StringComparison.Ordinal) &&
+        !ccrCardBody.Contains("剩余保护", StringComparison.Ordinal) &&
+        !ccrCardBody.Contains("超载保护", StringComparison.Ordinal),
+        "CCR A card must not render protection fields, including not-applicable placeholders");
+    AssertTrue(!page.Contains("<th>保护消耗</th>", StringComparison.Ordinal), "future CCR reference table must not expose a protection-consumption column");
+    AssertTrue(!SourceFunctionBody(script, "renderHistoryCapacityBuffer").Contains("<= 60", StringComparison.Ordinal), "history renderer must not recalculate capacity thresholds");
+    AssertTrue(!SourceFunctionBody(script, "renderFutureCapacityProtection").Contains("<= 60", StringComparison.Ordinal), "future renderer must not recalculate capacity thresholds");
+}
+
+static void TestDeepRedCapacityContinuesBreachStreak()
+{
+    const int horizonWeeks = 4;
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()))
+        .Preview(new ScenarioRunPreviewRequest(horizonWeeks));
+    var constraints = preview.Scenario.Constraints with
+    {
+        CapacityCells = preview.Scenario.Constraints.CapacityCells
+            .Select(item => item.ResourceCode == "RES-AIT"
+                ? item with
+                {
+                    ConstrainedAvailable = 100m,
+                    UnconstrainedRequired = item.Week switch
+                    {
+                        1 => 70m,
+                        2 => 100m,
+                        3 => 110m,
+                        _ => 70m
+                    }
+                }
+                : item)
+            .ToList()
+    };
+    var analysis = new CapacityBufferProtectionAnalyzer().Analyze(
+        LoadTask5ProtectionData(horizonWeeks),
+        preview.Scenario with { Constraints = constraints },
+        horizonWeeks);
+    var breach = analysis.Breaches.Single(item => item.Target == "RES-AIT");
+
+    AssertEqual("Red", analysis.Projection.Single(item => item.Week == 2).Status, "capacity at exactly one hundred percent");
+    var overloadedPoint = analysis.Projection.Single(item => item.Week == 3);
+    AssertEqual("Red", overloadedPoint.Status, "legacy protection status stays exhausted red above one hundred percent");
+    AssertEqual("DeepRed", CapacityMeasureValue<string>(CapacityMeasureFrom(overloadedPoint), "UtilizationBand"), "backend utilization band above one hundred percent");
+    AssertEqual(2, breach.EarliestRedWeek, "mixed red/deep-red earliest week");
+    AssertEqual(2, breach.ConsecutiveRiskWeeks, "deep red must continue an existing red streak");
+    AssertEqual(4, breach.RecoveryWeek, "mixed red/deep-red recovery week");
+
+    var calculatorType = typeof(DdmrpCalculator).Assembly.GetType("AdaptiveSopDdsop.Web.Domain.StatusSeriesBreachCalculator");
+    var calculate = calculatorType?.GetMethod("Calculate", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+    AssertTrue(calculate is not null, "status-series breach calculator is missing");
+    ProtectionBreachResult CalculateStatusSeries(IReadOnlyList<(int Week, string Status)> values) =>
+        (ProtectionBreachResult)(calculate!.Invoke(null, new object?[]
+        {
+            "CapacityBuffer",
+            "RES-AIT",
+            values,
+            new[] { "TC-MLI-301" },
+            "上游能力保护耗尽",
+            null,
+            null,
+            "capacity",
+            "Complete"
+        }) ?? throw new InvalidOperationException("status-series breach calculation returned null"));
+    var mixedStatusSeries = CalculateStatusSeries(new[]
+    {
+        (1, "Red"),
+        (2, "DeepRed"),
+        (3, "Red"),
+        (4, "Green")
+    });
+    AssertEqual(3, mixedStatusSeries.ConsecutiveRiskWeeks, "red deep-red red must remain one risk streak");
+    AssertEqual(4, mixedStatusSeries.RecoveryWeek, "red deep-red red recovery week");
+    var endingDeepRed = CalculateStatusSeries(new[]
+    {
+        (1, "Green"),
+        (2, "Red"),
+        (3, "DeepRed")
+    });
+    AssertTrue(endingDeepRed.IsUnrecovered && endingDeepRed.RecoveryWeek is null, "ending deep red must remain unrecovered");
+}
+
+static object InvokeCapacityProtectionMath(string methodName, params object?[] arguments)
+{
+    var type = typeof(DdmrpCalculator).Assembly.GetType("AdaptiveSopDdsop.Web.Domain.CapacityProtectionMath");
+    AssertTrue(type is not null, "shared CapacityProtectionMath backend type is missing");
+    var method = type!.GetMethod(methodName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+    AssertTrue(method is not null, $"CapacityProtectionMath.{methodName} is missing");
+    return method!.Invoke(null, arguments) ?? throw new InvalidOperationException($"CapacityProtectionMath.{methodName} returned null");
+}
+
+static object CapacityMeasureFrom(object mappedPoint)
+{
+    var property = mappedPoint.GetType().GetProperty("Measure");
+    AssertTrue(property is not null, $"{mappedPoint.GetType().Name} must append the shared Measure DTO field");
+    return property!.GetValue(mappedPoint) ?? throw new InvalidOperationException($"{mappedPoint.GetType().Name}.Measure is missing");
+}
+
+static T CapacityMeasureValue<T>(object measure, string propertyName)
+{
+    var property = measure.GetType().GetProperty(propertyName);
+    AssertTrue(property is not null, $"CapacityProtectionMeasure.{propertyName} is missing");
+    var value = property!.GetValue(measure);
+    return value is null ? default! : (T)value;
+}
+
+static T MappedValue<T>(object mappedObject, string propertyName)
+{
+    var property = mappedObject.GetType().GetProperty(propertyName);
+    AssertTrue(property is not null, $"{mappedObject.GetType().Name}.{propertyName} is missing");
+    var value = property!.GetValue(mappedObject);
+    return value is null ? default! : (T)value;
 }
 
 static void TestConsolidatedRequirementsDataCoverage()
@@ -1398,7 +1765,7 @@ static void TestHistoryReviewProjectsExplicitBufferViews()
     AssertEqual("CcrUtilization", ccr.RelationshipRole, "CCR must expose utilization reference rather than self-protection");
     AssertTrue(ccr.Points.All(item => item.ProtectiveCapacity is null && item.ConsumedProtection is null && item.RemainingProtection is null), "CCR must not calculate self-protection");
     AssertTrue(
-        capacity.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Safe", "High", "NearLimit", "Overload" }, StringComparer.Ordinal) &&
+        capacity.All(item => item.Distribution.Select(bucket => bucket.Code).SequenceEqual(new[] { "Green", "Yellow", "Red", "DeepRed" }, StringComparer.Ordinal) &&
             Math.Abs(item.Distribution.Sum(bucket => bucket.Percent) - 100m) <= 0.2m),
         "capacity distributions must use committed-load ratios and total 100 percent");
 

@@ -135,7 +135,10 @@ public sealed record CapacityLoadProjection(
     decimal RequiredCapacity,
     decimal AvailableCapacity,
     decimal LoadPercent,
-    string Status);
+    string Status,
+    string? RelationshipRole = null,
+    string? ProtectedCcrResourceCode = null,
+    CapacityProtectionMeasure? CapacityProtectionMeasure = null);
 
 public sealed record DemandDrivenPlanResult(
     IReadOnlyList<BufferProjectionPoint> BufferProjections,

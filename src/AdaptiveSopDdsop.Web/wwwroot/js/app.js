@@ -661,6 +661,7 @@ function statusClass(status) {
     green: "is-valid",
     yellow: "is-warning",
     red: "is-invalid",
+    deepred: "is-critical",
     healthy: "is-valid",
     warning: "is-warning",
     blocked: "is-invalid",
@@ -673,6 +674,7 @@ function statusLabel(status) {
     Green: "绿色",
     Yellow: "黄色",
     Red: "红色",
+    DeepRed: "深红色",
     Blue: "超绿",
     Healthy: "健康",
     Warning: "预警",
@@ -4535,6 +4537,51 @@ function renderHistoryInventoryBuffer(history) {
   renderHistoryInventoryVolatilityChart(history, item, weekScale);
 }
 
+function capacityUtilizationBandClass(band) {
+  return ({
+    Green: "is-green",
+    Yellow: "is-yellow",
+    Red: "is-red",
+    DeepRed: "is-deep-red",
+  })[band] || "is-evidence-missing";
+}
+
+function capacityUtilizationBandLabel(band) {
+  return ({
+    Green: "绿区（0–60%）",
+    Yellow: "黄区（>60–80%）",
+    Red: "红区（>80–100%）",
+    DeepRed: "深红区（>100%）",
+    EvidenceMissing: "证据缺失",
+  })[band] || "证据缺失";
+}
+
+function capacityUtilizationBandChip(measure) {
+  const band = measure?.utilizationBand || "EvidenceMissing";
+  return `<span class="capacity-band-chip ${capacityUtilizationBandClass(band)}">${escapeHtml(capacityUtilizationBandLabel(band))}</span>`;
+}
+
+function renderCapacityBandDistribution(hostId, observations) {
+  const host = byId(hostId);
+  if (!host) return;
+  const bands = ["Green", "Yellow", "Red", "DeepRed"];
+  const counts = Object.fromEntries(bands.map(band => [band, 0]));
+  observations.forEach(observation => {
+    if (Object.hasOwn(counts, observation.band)) counts[observation.band] += Number(observation.count || 0);
+  });
+  const total = bands.reduce((sum, band) => sum + counts[band], 0);
+  if (!total) {
+    host.innerHTML = `<div class="table-empty"><strong>没有完整的上游能力观测证据</strong></div>`;
+    return;
+  }
+  const segments = bands.map(band => {
+    const share = counts[band] * 100 / total;
+    return `<span class="capacity-distribution-segment ${capacityUtilizationBandClass(band)}" style="width:${share}%" title="${escapeHtml(capacityUtilizationBandLabel(band))} · ${number(counts[band])} 个观测"></span>`;
+  }).join("");
+  const legend = bands.map(band => `<span><i class="${capacityUtilizationBandClass(band)}"></i>${escapeHtml(capacityUtilizationBandLabel(band))}<strong>${number(counts[band])}</strong></span>`).join("");
+  host.innerHTML = `<div class="capacity-distribution-bar">${segments}</div><div class="capacity-distribution-legend">${legend}</div>`;
+}
+
 function historyWeekXScale(points, width = 920, left = 58, right = 20) {
   const coordinates = points.map((point, index) => ({
     weekOffset: point.weekOffset,
@@ -4986,7 +5033,60 @@ function renderHistoryTimeCostStrip(history, item) {
   host.innerHTML = `${heading}<div class="history-cost-event-grid">${cards}</div>`;
 }
 
+function renderHistoryCapacityProtectionPair(history) {
+  const views = history.capacityBuffers || [];
+  const selected = views.find(item => item.resourceCode === state.selectedHistoryCapacityResource);
+  const upstream = selected?.relationshipRole === "UpstreamProtection"
+    ? selected
+    : selected?.relationshipRole === "CcrUtilization"
+      ? views.find(candidate => candidate.relationshipRole === "UpstreamProtection" && candidate.protectedCcrResourceCode === selected.resourceCode)
+      : views.find(candidate => candidate.relationshipRole === "UpstreamProtection");
+  const ccr = upstream
+    ? views.find(candidate => candidate.relationshipRole === "CcrUtilization" && candidate.resourceCode === upstream.protectedCcrResourceCode)
+    : null;
+  const summaryByCode = new Map((history.capacityProtection || []).map(item => [item.resourceCode, item]));
+  const latestPoint = view => [...(view?.points || [])]
+    .reverse()
+    .find(point => point.measure?.evidenceStatus === "Complete") || null;
+  const upstreamPoint = latestPoint(upstream);
+  const ccrPoint = latestPoint(ccr);
+  const upstreamMeasure = upstreamPoint?.measure;
+  const ccrMeasure = ccrPoint?.measure;
+  const upstreamSummary = upstream ? summaryByCode.get(upstream.resourceCode) : null;
+  const cardFacts = facts => `<dl class="capacity-role-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
+
+  byId("history-capacity-upstream-card").innerHTML = upstream && upstreamPoint
+    ? `<div class="capacity-role-heading"><div><span>上游保护资源</span><strong>${escapeHtml(upstream.resourceName)} · ${escapeHtml(upstream.resourceCode)}</strong><small>保护 CCR：${escapeHtml(ccr?.resourceName || upstream.protectedCcrResourceCode || "证据缺失")} · ${escapeHtml(upstream.protectedCcrResourceCode || "证据缺失")}</small></div>${capacityUtilizationBandChip(upstreamMeasure)}</div>${cardFacts([
+        ["期间", escapeHtml(upstreamPoint.periodStartDate)],
+        ["计划可用", metricOrEvidenceMissing(upstreamPoint.plannedAvailableCapacity)],
+        ["保护起点", metricOrEvidenceMissing(upstreamMeasure?.protectionStart)],
+        ["承诺负荷", metricOrEvidenceMissing(upstreamPoint.committedLoad)],
+        ["利用率", metricOrEvidenceMissing(upstreamMeasure?.utilizationPercent, percent)],
+        ["保护能力", metricOrEvidenceMissing(upstreamMeasure?.protectionCapacity)],
+        ["已消耗", metricOrEvidenceMissing(upstreamMeasure?.consumedProtection)],
+        ["剩余保护", metricOrEvidenceMissing(upstreamMeasure?.remainingProtection)],
+        ["超载", metricOrEvidenceMissing(upstreamMeasure?.overload)],
+        ["损失原因", escapeHtml(businessEvidenceLabel(upstreamSummary?.lossReason))],
+      ])}`
+    : `<div class="history-chart-empty"><strong>上游保护证据缺失</strong><span>需要完整的后序 CCR 路由与周度能力证据</span></div>`;
+
+  byId("history-capacity-ccr-card").innerHTML = ccr && ccrPoint
+    ? `<div class="capacity-role-heading"><div><span>CCR 利用率参照</span><strong>${escapeHtml(ccr.resourceName)} · ${escapeHtml(ccr.resourceCode)}</strong><small>仅观察 CCR 负荷，不计算保护消耗</small></div>${capacityUtilizationBandChip(ccrMeasure)}</div>${cardFacts([
+        ["期间", escapeHtml(ccrPoint.periodStartDate)],
+        ["计划可用", metricOrEvidenceMissing(ccrPoint.plannedAvailableCapacity)],
+        ["承诺负荷", metricOrEvidenceMissing(ccrPoint.committedLoad)],
+        ["利用率参照", metricOrEvidenceMissing(ccrMeasure?.utilizationPercent, percent)],
+      ])}`
+    : `<div class="history-chart-empty"><strong>CCR 参照证据缺失</strong><span>没有找到与所选上游资源配对的 CCR</span></div>`;
+
+  const observations = views
+    .filter(item => item.relationshipRole === "UpstreamProtection")
+    .flatMap(item => (item.distribution || []).map(bucket => ({ band: bucket.code, count: bucket.count })));
+  renderCapacityBandDistribution("history-capacity-utilization-distribution", observations);
+}
+
 function renderHistoryCapacityBuffer(history) {
+  renderHistoryCapacityProtectionPair(history);
   const item = (history.capacityBuffers || []).find(candidate => candidate.resourceCode === state.selectedHistoryCapacityResource);
   if (!item || !item.points?.length) {
     renderHistoryMissing("history-capacity-buffer-chart");
@@ -5045,14 +5145,25 @@ function renderHistoryCapacityBuffer(history) {
     ["bar load", "承诺负荷"],
     ...lineSeries.map(([label, cssClass]) => [`line ${cssClass}`, label]),
   ].map(([cssClass, label]) => `<span><i class="${cssClass}"></i>${escapeHtml(label)}</span>`).join("");
-  const evidenceRows = points.map(point => row([
+  const capacitySummary = (history.capacityProtection || []).find(candidate => candidate.resourceCode === item.resourceCode);
+  const evidenceRows = points.map(point => {
+    const measure = point.measure;
+    return row([
     escapeHtml(point.periodStartDate),
-    metricOrEvidenceMissing(point.committedLoad),
+    metricOrEvidenceMissing(point.theoreticalCapacity),
+    metricOrEvidenceMissing(point.standardCapacity),
+    metricOrEvidenceMissing(point.demonstratedCapacity),
     metricOrEvidenceMissing(point.plannedAvailableCapacity),
-    metricOrEvidenceMissing(point.protectionStart),
-    isUpstreamProtection ? metricOrEvidenceMissing(point.consumedProtection) : "不适用",
-    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
-  ])).join("");
+    metricOrEvidenceMissing(point.committedLoad),
+    metricOrEvidenceMissing(measure?.utilizationPercent, percent),
+    isUpstreamProtection ? metricOrEvidenceMissing(measure?.protectionCapacity) : "不适用",
+    isUpstreamProtection ? metricOrEvidenceMissing(measure?.consumedProtection) : "不适用",
+    isUpstreamProtection ? metricOrEvidenceMissing(measure?.remainingProtection) : "不适用",
+    isUpstreamProtection ? metricOrEvidenceMissing(measure?.overload) : "不适用",
+    escapeHtml(businessEvidenceLabel(capacitySummary?.lossReason)),
+    capacityUtilizationBandChip(measure),
+  ]);
+  }).join("");
 
   byId("history-capacity-buffer-chart").innerHTML = `
     <div class="history-chart-heading"><strong>${escapeHtml(item.resourceName)} · ${escapeHtml(item.resourceCode)}</strong><span>${escapeHtml(roleLabel)}</span></div>
@@ -5061,7 +5172,7 @@ function renderHistoryCapacityBuffer(history) {
       ${loadBars}${paths}${periodLabels}
     </svg>
     <div class="history-chart-legend">${legend}</div>
-    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>承诺负荷</th><th>计划可用</th><th>保护起点</th><th>保护消耗</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>理论</th><th>标准</th><th>经验证</th><th>计划可用</th><th>承诺负荷</th><th>利用率</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>超载</th><th>损失原因</th><th>负荷区</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
 }
 
 function renderHistoryReview(history) {
@@ -5715,20 +5826,40 @@ function renderFutureCapacityProtection(result) {
   const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
   const projectionRows = cases.flatMap(item => (item.capacityProtectionProjection || []).map(point => ({ caseName: item.name, ...point })));
   byId("future-capacity-protection-body").innerHTML = projectionRows.length
-    ? projectionRows.map(item => row([
+    ? projectionRows.map(item => {
+      const measure = item.measure;
+      return row([
       escapeHtml(item.caseName), escapeHtml(item.upstreamResourceCode), escapeHtml(item.protectedCcrResourceCode), `第 ${number(item.week)} 周`,
       metricOrEvidenceMissing(item.plannedAvailableCapacity, number), metricOrEvidenceMissing(item.committedLoad, number),
-      metricOrEvidenceMissing(item.protectionCapacity, number), metricOrEvidenceMissing(item.consumedProtection, number),
-      metricOrEvidenceMissing(item.remainingProtection, number), `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`,
-    ])).join("")
-    : emptyRow("没有上游能力保护证据", 10);
-  const protectedCcrCodes = new Set(projectionRows.map(item => item.protectedCcrResourceCode).filter(Boolean));
-  const ccrRows = cases.flatMap(item => (item.preview?.scenario?.rccp?.resourceSummaries || [])
-    .filter(resource => protectedCcrCodes.has(resource.resourceCode))
+      metricOrEvidenceMissing(measure?.utilizationPercent, percent), metricOrEvidenceMissing(measure?.protectionStart, number),
+      metricOrEvidenceMissing(measure?.protectionCapacity, number), metricOrEvidenceMissing(measure?.consumedProtection, number),
+      metricOrEvidenceMissing(measure?.remainingProtection, number), metricOrEvidenceMissing(measure?.overload, number),
+      capacityUtilizationBandChip(measure),
+    ]);
+    }).join("")
+    : emptyRow("没有上游能力保护证据", 13);
+  const ccrRows = cases.flatMap(item => (item.preview?.scenario?.plan?.capacityLoads || [])
+    .filter(resource => resource.relationshipRole === "CcrUtilization")
     .map(resource => ({ caseName: item.name, ...resource })));
   byId("future-ccr-utilization-body").innerHTML = ccrRows.length
-    ? ccrRows.map(item => row([escapeHtml(item.caseName), escapeHtml(item.resourceName), percent(item.averageLoadPercent), percent(item.peakLoadPercent), `<span class="${statusClass(item.status)}">${statusLabel(item.status)}</span>`])).join("")
-    : emptyRow("没有 CCR 利用率证据", 5);
+    ? ccrRows.map(item => {
+      const measure = item.capacityProtectionMeasure;
+      return row([
+        escapeHtml(item.caseName),
+        `${escapeHtml(item.resourceName)}<small>${escapeHtml(item.resourceCode)}</small>`,
+        `第 ${number(item.week)} 周`,
+        metricOrEvidenceMissing(item.availableCapacity, number),
+        metricOrEvidenceMissing(item.requiredCapacity, number),
+        metricOrEvidenceMissing(measure?.utilizationPercent, percent),
+        capacityUtilizationBandChip(measure),
+      ]);
+    }).join("")
+    : emptyRow("没有 CCR 利用率证据", 7);
+  renderCapacityBandDistribution(
+    "future-capacity-utilization-distribution",
+    projectionRows
+      .filter(item => item.measure?.evidenceStatus === "Complete")
+      .map(item => ({ band: item.measure.utilizationBand, count: 1 })));
 }
 
 function futureComparisonKey(responseId) {
