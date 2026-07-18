@@ -345,15 +345,45 @@ function historyReconciliationRendersAndClientMirrorBlocksPoisonedLineage(source
   assert.equal(runtime.elements.get("freeze-current-baseline").disabled, false);
   assert.ok(runtime.elements.get("current-baseline-kpis").innerHTML.includes("截至会前的 52 周滚动实际"));
 
-  const difference = structuredClone(complete);
-  difference.payload.historyReconciliation.lines[0].difference = 1;
-  const differenceRuntime = renderCandidate(source, difference);
-  assert.equal(differenceRuntime.elements.get("freeze-current-baseline").disabled, true);
+  const poisonedLineages = [
+    ["missing lineage", item => { item.payload.historyReconciliation = null; }],
+    ["root evidence missing", item => { item.payload.historyReconciliation.evidenceStatus = "EvidenceMissing"; }],
+    ["line evidence missing", item => { item.payload.historyReconciliation.lines[0].evidenceStatus = "EvidenceMissing"; }],
+    ["null difference", item => { item.payload.historyReconciliation.lines[0].difference = null; }],
+    ["nonfinite difference", item => { item.payload.historyReconciliation.lines[0].difference = "NaN"; }],
+    ["invalid cutoff", item => { item.payload.historyReconciliation.historyThroughUtc = "not-a-timestamp"; }],
+    ["reversed cutoff", item => { item.payload.historyReconciliation.historyThroughUtc = "2026-06-30T09:00:00Z"; }],
+  ];
+  for (const [name, poison] of poisonedLineages) {
+    const poisoned = structuredClone(complete);
+    poison(poisoned);
+    assert.equal(renderCandidate(source, poisoned).elements.get("freeze-current-baseline").disabled, true,
+      `${name} must disable the candidate freeze action`);
+  }
+}
 
-  const reversedCutoff = structuredClone(complete);
-  reversedCutoff.payload.historyReconciliation.historyThroughUtc = "2026-06-30T09:00:00Z";
-  const reversedCutoffRuntime = renderCandidate(source, reversedCutoff);
-  assert.equal(reversedCutoffRuntime.elements.get("freeze-current-baseline").disabled, true);
+function frozenHistoryReconciliationExposesSafeLineDetails(source) {
+  const runtime = createRuntime(source);
+  const snapshot = candidate(completePlanningInputs());
+  snapshot.snapshotNumber = "BASE-FROZEN-001";
+  snapshot.status = "Frozen";
+  snapshot.payload.historyReconciliation.lines[0].differenceReason = "<script>alert(1)</script>";
+  runtime.context.__frozenFixture = snapshot;
+  vm.runInContext(
+    "__frozenHistory = renderBaselineHistoryReconciliation(__frozenFixture, 'Frozen', false);",
+    runtime.context,
+  );
+  const sections = runtime.context.__frozenHistory.drawerSections;
+  assert.equal(sections.length, 2, "frozen history drawer should include summary and line detail sections");
+  const detail = sections[1].items.flat().join(" ");
+  assert.ok(detail.includes("历史期末 10"));
+  assert.ok(detail.includes("增加 5"));
+  assert.ok(detail.includes("减少 3"));
+  assert.ok(detail.includes("调整 0"));
+  assert.ok(detail.includes("基线 12"));
+  assert.ok(detail.includes("差异 0"));
+  assert.ok(detail.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+  assert.ok(!detail.includes("<script>alert(1)</script>"));
 }
 
 function frozenLegacyHistoryReconciliationStaysExplicit(source) {
@@ -367,7 +397,9 @@ function frozenLegacyHistoryReconciliationStaysExplicit(source) {
     "__frozenHistory = renderBaselineHistoryReconciliation(__frozenFixture, 'Frozen', false);",
     runtime.context,
   );
-  assert.ok(runtime.context.__frozenHistory.drawerSection.items[0][1].includes("旧版本未保存历史衔接证据"));
+  const sections = runtime.context.__frozenHistory.drawerSections;
+  assert.equal(sections.length, 1, "legacy frozen history should keep one explicit immutable section");
+  assert.ok(sections[0].items[0][1].includes("旧版本未保存历史衔接证据"));
 }
 
 export async function runBaselinePlanningEvidenceFixtures(scriptPath = defaultScriptPath) {
@@ -380,6 +412,7 @@ export async function runBaselinePlanningEvidenceFixtures(scriptPath = defaultSc
     ["explicit zero rows remain zero", explicitZeroRowsRemainZero],
     ["missing fields explain absence without zero", missingFieldsExplainAbsenceWithoutZero],
     ["history reconciliation renders and client mirror blocks poisoned lineage", historyReconciliationRendersAndClientMirrorBlocksPoisonedLineage],
+    ["frozen history reconciliation exposes safe line details", frozenHistoryReconciliationExposesSafeLineDetails],
     ["frozen legacy history reconciliation stays explicit", frozenLegacyHistoryReconciliationStaysExplicit],
   ];
   const failures = [];

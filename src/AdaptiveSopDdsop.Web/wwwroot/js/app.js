@@ -5501,7 +5501,7 @@ function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", u
       byId("baseline-history-reconciliation-summary").innerHTML = `<span>${escapeHtml(message)}</span>`;
       byId("baseline-history-reconciliation-body").innerHTML = `<tr><td class="empty-cell" colspan="9">${escapeHtml(message)}</td></tr>`;
     }
-    return { drawerSection: { title: "历史衔接", items: [["历史衔接", message]] } };
+    return { drawerSections: [{ title: "历史衔接", items: [["历史衔接", message]] }] };
   }
 
   const summaryItems = [
@@ -5514,6 +5514,15 @@ function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", u
   ];
   const summaryHtml = summaryItems.map(([label, value]) => `<span><strong>${escapeHtml(label)}</strong>${value}</span>`).join("");
   const lines = Array.isArray(reconciliation.lines) ? reconciliation.lines : [];
+  const drawerLineItems = lines.length ? lines.map(line => {
+    const reason = line?.differenceReason === null || line?.differenceReason === undefined || line?.differenceReason === ""
+      ? ""
+      : ` · 原因 ${escapeHtml(businessEvidenceLabel(line.differenceReason))}`;
+    return [
+      `${baselineEvidenceValue(line?.metricCode, "后端未提供指标")} / ${baselineEvidenceValue(line?.itemKey, "后端未提供对象")}`,
+      `历史期末 ${baselineReconciliationNumber(line?.historyClosingBalance, "后端未提供历史期末余额")} · 增加 ${baselineReconciliationNumber(line?.intervalIncrease, "后端未提供增加值")} · 减少 ${baselineReconciliationNumber(line?.intervalDecrease, "后端未提供减少值")} · 调整 ${baselineReconciliationNumber(line?.adjustment, "后端未提供调整值")} · 基线 ${baselineReconciliationNumber(line?.baselineBalance, "后端未提供基线余额")} · 差异 ${baselineReconciliationNumber(line?.difference, "后端未提供有效差异")} · 状态 ${baselineEvidenceStatus(line?.evidenceStatus, "后端未提供对账行证据状态")}${reason}`,
+    ];
+  }) : [["对账行", baselineEvidenceMissing("后端未提供历史衔接对账行")]];
   const rows = lines.length ? lines.map(line => {
     const difference = baselineReconciliationNumber(line?.difference, "后端未提供有效差异");
     const reason = line?.differenceReason === null || line?.differenceReason === undefined || line?.differenceReason === ""
@@ -5536,7 +5545,12 @@ function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", u
     byId("baseline-history-reconciliation-summary").innerHTML = summaryHtml;
     byId("baseline-history-reconciliation-body").innerHTML = rows;
   }
-  return { drawerSection: { title: "历史衔接", items: summaryItems } };
+  return {
+    drawerSections: [
+      { title: "历史衔接", items: summaryItems },
+      { title: "对账行明细", items: drawerLineItems },
+    ],
+  };
 }
 
 function confirmedReceiptTypeLabel(type) {
@@ -5836,7 +5850,7 @@ async function openBaselineSnapshotDetail(snapshotId) {
       ? "旧版本缺少提前期因子；该快照保持只读，不能用于重算"
       : `提前期因子 ${number(item.leadTimeFactor)} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}`,
   ]);
-  openWorkspaceDrawer("冻结基线证据", [...planningEvidence.drawerSections, historyReconciliation.drawerSection, {
+  openWorkspaceDrawer("冻结基线证据", [...planningEvidence.drawerSections, ...historyReconciliation.drawerSections, {
     title: `${snapshot.snapshotNumber} · ${baselineStatusLabel(snapshot.status)}`,
     items: items.length ? items : [["定容证据", "旧版本未保存 DDMRP 参数明细"]],
   }]);
