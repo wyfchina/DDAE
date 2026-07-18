@@ -196,15 +196,6 @@
                         <button class="button secondary" type="button" data-history-range-months="12" aria-pressed="false">近十二个月</button>
                     </div>
                 </div>
-                <section class="history-visual-card history-standard-reference" aria-label="后端标准定容算例">
-                    <div class="panel-heading compact-heading">
-                        <div><span class="panel-kicker">后端计算</span><h2>标准算例</h2></div>
-                    </div>
-                    <div class="history-standard-reference-grid">
-                        <div id="history-standard-ddmrp-input-summary" class="metadata-list" aria-label="标准算例输入"></div>
-                        <div id="history-standard-ddmrp-zone-chart" class="history-standard-zone" aria-label="标准算例红黄绿定容结果" aria-live="polite"></div>
-                    </div>
-                </section>
                 <div class="history-buffer-layout">
                     <aside class="history-object-options" aria-label="历史定容选择">
                         <section class="history-visual-card">
@@ -1009,6 +1000,25 @@
                 </section>
 
             <section id="saved-scenarios-panel" class="workspace-route-host" hidden>
+                <details id="ddmrp-standard-reference-panel" class="ddmrp-standard-reference-panel">
+                    <summary>
+                        <span><span class="panel-kicker">白盒计算参考</span><strong>缓冲计算参考</strong></span>
+                        <span class="ddmrp-standard-reference-label">计算参考，非当前物料</span>
+                    </summary>
+                    <div class="ddmrp-standard-reference-body">
+                        <div id="ddmrp-standard-reference-status" class="ddmrp-standard-reference-status" aria-live="polite">首次展开时读取后端参考</div>
+                        <div class="ddmrp-standard-reference-grid">
+                            <div id="ddmrp-standard-reference-inputs" class="metadata-list" aria-label="标准缓冲计算输入"></div>
+                            <div id="ddmrp-standard-reference-zones" class="history-standard-zone" aria-label="标准缓冲红黄绿区结果" aria-live="polite"></div>
+                        </div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead><tr><th>组成</th><th>公式</th><th>后端结果</th><th>说明</th></tr></thead>
+                                <tbody id="ddmrp-standard-reference-derivation-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
                 <section id="trace-panel" class="schedule-panel" data-tab-panel hidden>
                     <div class="panel-heading"><div><span class="panel-kicker">计算追踪</span><h2>白盒解释</h2></div></div>
                     <div class="diagnostics-list" id="trace-list"></div>

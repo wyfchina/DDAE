@@ -13,6 +13,7 @@ builder.Services.AddSingleton<IHistoryOperatingFactSource>(sp =>
     new SeedHistoryOperatingFactSource(sp.GetRequiredService<ValidationData>()));
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<HistoryReviewWorkspaceService>();
+builder.Services.AddSingleton<DdmrpStandardReferenceService>();
 builder.Services.AddSingleton<ICurrentBaselineDataSource, SeedCurrentBaselineDataSource>();
 builder.Services.AddSingleton<ProductFamilyDashboardService>();
 builder.Services.AddSingleton<DdsopConfigInboundContractService>();
@@ -297,6 +298,11 @@ app.MapGet("/api/supplier-collaboration-workspace", (int? horizonWeeks, Supplier
 app.MapGet("/api/history-review", (int? trendMonths, HistoryReviewWorkspaceService service) =>
 {
     return Results.Ok(service.GetReview(trendMonths.GetValueOrDefault(6)));
+});
+
+app.MapGet("/api/ddmrp-standard-reference", (DdmrpStandardReferenceService service) =>
+{
+    return Results.Ok(service.GetReference());
 });
 
 app.MapGet("/api/current-baselines/candidate", (CurrentBaselineService service) =>

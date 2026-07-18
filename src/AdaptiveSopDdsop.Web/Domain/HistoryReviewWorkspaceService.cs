@@ -146,8 +146,7 @@ public sealed class HistoryReviewWorkspaceService
             projection.InventoryBuffers,
             projection.DdmrpSizingSnapshots,
             projection.TimeBuffers,
-            projection.CapacityBuffers,
-            BuildStandardDdmrpReference(asOfDate));
+            projection.CapacityBuffers);
     }
 
     private static HistoryFactSet SliceAnnualHistory(HistoryFactSet annual, int requestedWeeks)
@@ -184,47 +183,6 @@ public sealed class HistoryReviewWorkspaceService
                 .Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset))
                 .ToList(),
         };
-    }
-
-    private static HistoryDdmrpSizingSnapshotView BuildStandardDdmrpReference(DateOnly asOfDate)
-    {
-        const string sourceAuthority = "DDAE 后端标准定容算例";
-        var setting = new SkuBufferSetting(
-            "DDMRP-EXAMPLE",
-            "标准定容算例",
-            "标准算例",
-            10m,
-            12,
-            0.33m,
-            7,
-            50m,
-            1m,
-            100m,
-            DecouplingPoint: "标准定容参考",
-            BufferProfile: "标准定容算例",
-            AduSource: sourceAuthority,
-            DltSource: sourceAuthority,
-            DemandAdjustmentFactor: 1m,
-            ZoneAdjustmentFactor: 1m,
-            LeadTimeFactor: 0.5m,
-            ParameterSnapshotId: "DDMRP-EXAMPLE-V1",
-            ParameterEvidenceStatus: Complete);
-        var sizing = DdmrpCalculator.CalculateSizing(setting);
-
-        return new HistoryDdmrpSizingSnapshotView(
-            setting.ParameterSnapshotId,
-            setting.DecouplingPoint,
-            setting.Sku,
-            setting.Name,
-            0,
-            0,
-            setting,
-            sizing,
-            DdmrpSizingExplanation.Build(sizing),
-            null,
-            sourceAuthority,
-            asOfDate.ToString("yyyy-MM-dd"),
-            Complete);
     }
 
     private static HistoryOperatingOutcomes BuildOperatingOutcomes(

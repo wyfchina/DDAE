@@ -148,7 +148,7 @@ function clickHistorySelector(runtime, selector, dataset) {
   });
 }
 
-function createStandaloneHistoryReview(weeks = 26, alternateStandard = false) {
+function createStandaloneHistoryReview(weeks = 26) {
   const periodStartDate = weekOffset => {
     const date = new Date(Date.UTC(2026, 5, 1));
     date.setUTCDate(date.getUTCDate() + weekOffset * 7);
@@ -266,19 +266,6 @@ function createStandaloneHistoryReview(weeks = 26, alternateStandard = false) {
       evidenceStatus: "Complete",
     };
   });
-  const standardZones = alternateStandard
-    ? { red: 96, yellow: 156, green: 84, topOfRed: 96, topOfYellow: 252, topOfGreen: 336 }
-    : { red: 80, yellow: 120, green: 70, topOfRed: 80, topOfYellow: 200, topOfGreen: 270 };
-  const standardSetting = {
-    adu: alternateStandard ? 13 : 10,
-    decoupledLeadTimeDays: 12,
-    leadTimeFactor: 0.5,
-    variabilityFactor: 0.33,
-    orderCycleDays: 7,
-    minimumOrderQuantity: 50,
-    demandAdjustmentFactor: 1,
-    zoneAdjustmentFactor: 1,
-  };
   const inventoryBuffers = [
     { controlPoint: "星载电子半成品库存控制点", sku: "AV-COM-201", name: "星载通信机", detailWindowWeeks: 3, points: makeInventoryPoints(1, "HIST-AV-COM-201-V2"), distribution: [], evidenceStatus: "Complete" },
     { controlPoint: "关键进口 FPGA 库存控制点", sku: "AV-FPGA-203", name: "抗辐照 FPGA", detailWindowWeeks: 3, points: makeInventoryPoints(0.24, "HIST-AV-FPGA-203-V2"), distribution: [], evidenceStatus: "Complete" },
@@ -305,19 +292,7 @@ function createStandaloneHistoryReview(weeks = 26, alternateStandard = false) {
       { resourceCode: "RES-AIT", resourceName: "AIT 总装集成大厅", protectedCcrResourceCode: "RES-TVAC", relationshipRole: "UpstreamProtection", points: makeCapacityPoints(true), distribution: [], evidenceStatus: "Complete" },
       { resourceCode: "RES-HARNESS", resourceName: "线束集成工位", protectedCcrResourceCode: null, relationshipRole: "CcrUtilization", points: makeCapacityPoints(false), distribution: [], evidenceStatus: "Complete" },
     ],
-    standardDdmrpReference: {
-      snapshotId: alternateStandard ? "DDMRP-EXAMPLE-V2" : "DDMRP-EXAMPLE-V1",
-      controlPoint: "标准定容参考",
-      sku: "DDMRP-EXAMPLE",
-      name: "标准定容算例",
-      setting: standardSetting,
-      sizing: { zones: standardZones, greenDriver: "OrderCycle", evidenceStatus: "Complete" },
-      sizingLines: [],
-      averageOnHand: null,
-      sourceAuthority: "DDAE 后端标准定容算例",
-      asOfUtc: "2026-06-01",
-      evidenceStatus: "Complete",
-    },
+    standardDdmrpReference: null,
   };
 }
 
@@ -342,7 +317,6 @@ function rendererFixtureWithInventoryGap(historyReview) {
 
 export async function runHistoryBufferRendererFixtures(
   historyReview,
-  alternateHistoryReview,
   annualHistoryReview,
   scriptPath = defaultScriptPath,
 ) {
@@ -360,6 +334,9 @@ export async function runHistoryBufferRendererFixtures(
   const source = await readFile(scriptPath, "utf8");
   new vm.Script(source, { filename: scriptPath });
   console.log("PASS app.js syntax compiles");
+  assert.ok(!source.includes("function renderHistoryStandardDdmrpReference("),
+    "history app code should not retain the old standard-reference renderer");
+  console.log("PASS history renderer no longer owns standard reference");
 
   const positionRendererSource = source.slice(
     source.indexOf("function renderHistoryInventoryPositionChart"),
@@ -379,8 +356,6 @@ export async function runHistoryBufferRendererFixtures(
   fixture.inventoryBuffers[0].points[0].actualDemand = 0;
   runtime.context.__historyFixture = fixture;
   vm.runInContext("renderHistoryReview(__historyFixture)", runtime.context);
-  const standardInput = runtime.elements.get("history-standard-ddmrp-input-summary").innerHTML;
-  const standardChart = runtime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
   const historicalInput = runtime.elements.get("history-ddmrp-input-summary").innerHTML;
   const sizingTable = runtime.elements.get("history-ddmrp-sizing-body").innerHTML;
   const zoneChart = runtime.elements.get("history-ddmrp-zone-chart").innerHTML;
@@ -389,10 +364,6 @@ export async function runHistoryBufferRendererFixtures(
   const timeStatusChart = runtime.elements.get("history-time-status-chart").innerHTML;
   const timeCostStrip = runtime.elements.get("history-time-cost-strip").innerHTML;
   const capacityChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
-  assert.ok(standardInput.includes("ADU") && standardInput.includes("10") && standardInput.includes("DLT") && standardInput.includes("12"));
-  assert.ok(standardInput.includes("后端计算") && standardInput.includes("DDAE 后端标准定容算例"));
-  assert.ok(standardChart.includes("红区 80") && standardChart.includes("黄区 120") && standardChart.includes("绿区 70"));
-  assert.ok(standardChart.includes("订货周期驱动"));
   assert.ok(historicalInput.includes("登记校验证据"), "historical source should localize registered validation evidence");
   assert.ok(!historicalInput.includes("registered validation data"), "historical source must not expose ordinary English wording");
   assert.ok(sizingTable.includes("生效") || zoneChart.includes("生效周段"), "historical snapshot evidence should remain visible");
@@ -492,26 +463,13 @@ export async function runHistoryBufferRendererFixtures(
   assert.equal(JSON.stringify(gapSegments), "[[1],[2]]");
   console.log("PASS backend sizing, gaps, five time bands, and capacity layers render");
 
-  assert.ok(alternateHistoryReview?.standardDdmrpReference?.sizing?.zones,
-    "alternate history DTO should include backend sizing evidence");
-  const baseZones = historyReview.standardDdmrpReference.sizing.zones;
-  const alternateZones = alternateHistoryReview.standardDdmrpReference.sizing.zones;
-  assert.notDeepEqual(
-    [alternateZones.red, alternateZones.yellow, alternateZones.green],
-    [baseZones.red, baseZones.yellow, baseZones.green],
-    "alternate backend sizing must differ from the standard 80/120/70 reference");
-  const alternateRuntime = createRuntime(source);
-  alternateRuntime.context.__historyFixture = structuredClone(alternateHistoryReview);
-  vm.runInContext("renderHistoryReview(__historyFixture)", alternateRuntime.context);
-  const alternateInput = alternateRuntime.elements.get("history-standard-ddmrp-input-summary").innerHTML;
-  const alternateChart = alternateRuntime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
-  assert.ok(alternateInput.includes(`>${alternateHistoryReview.standardDdmrpReference.setting.adu}<`),
-    "standard input should follow the alternate backend ADU");
-  assert.ok(alternateChart.includes(`红区 ${alternateZones.red}`));
-  assert.ok(alternateChart.includes(`黄区 ${alternateZones.yellow}`));
-  assert.ok(alternateChart.includes(`绿区 ${alternateZones.green}`));
-  assert.ok(!alternateChart.includes(`红区 ${baseZones.red}`), "alternate chart must not retain the base red-zone result");
-  console.log("PASS alternate backend sizing drives standard renderer");
+  assert.equal(historyReview.standardDdmrpReference ?? null, null,
+    "legacy history standard-reference field should remain empty");
+  assert.equal(runtime.elements.has("history-standard-ddmrp-input-summary"), false,
+    "rendering history should not touch the removed standard-reference input host");
+  assert.equal(runtime.elements.has("history-standard-ddmrp-zone-chart"), false,
+    "rendering history should not touch the removed standard-reference chart host");
+  console.log("PASS history DTO keeps its legacy standard reference empty");
 
   const annualRuntime = createRuntime(source);
   annualRuntime.context.__historyFixture = structuredClone(annualHistoryReview);
@@ -562,17 +520,6 @@ export async function runHistoryBufferRendererFixtures(
   assert.ok(!unsafeCostStrip.includes("<编号&") && !unsafeCostStrip.includes("<值&") && !unsafeCostStrip.includes("<类型&"),
     "cost cards must not emit raw dynamic markup");
   console.log("PASS history ranges, global cost cards, empty evidence, and escaping render");
-
-  const missingStandardRuntime = createRuntime(source);
-  const missingStandardFixture = structuredClone(historyReview);
-  missingStandardFixture.standardDdmrpReference.sizing.zones.red = null;
-  missingStandardRuntime.context.__historyFixture = missingStandardFixture;
-  vm.runInContext("renderHistoryReview(__historyFixture)", missingStandardRuntime.context);
-  const missingStandardChart = missingStandardRuntime.elements.get("history-standard-ddmrp-zone-chart").innerHTML;
-  assert.ok(missingStandardChart.includes("证据缺失"), "partial standard sizing must render missing evidence");
-  assert.ok(!missingStandardChart.includes("红区 0"), "missing standard sizing must not render a zero substitute");
-  assert.ok(!missingStandardChart.includes("history-standard-zone-stack"), "partial standard sizing must not render a valid zone stack");
-  console.log("PASS partial standard sizing stays missing instead of zero");
 
   clickHistorySelector(runtime, "[data-history-control-point]", { historyControlPoint: "关键进口 FPGA 库存控制点" });
   const fpgaSelection = vm.runInContext("({ controlPoint: state.selectedHistoryControlPoint, sku: state.selectedHistoryInventorySku, snapshot: state.selectedHistorySizingSnapshot })", runtime.context);
@@ -799,16 +746,12 @@ export async function runHistoryBufferRendererFixtures(
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dtoPath = process.argv[2];
-  const alternateDtoPath = process.argv[3];
-  const annualDtoPath = process.argv[4];
+  const annualDtoPath = process.argv[3];
   const historyReview = dtoPath
     ? JSON.parse(await readFile(dtoPath, "utf8"))
     : createStandaloneHistoryReview(26);
-  const alternateHistoryReview = alternateDtoPath
-    ? JSON.parse(await readFile(alternateDtoPath, "utf8"))
-    : createStandaloneHistoryReview(26, true);
   const annualHistoryReview = annualDtoPath
     ? JSON.parse(await readFile(annualDtoPath, "utf8"))
     : createStandaloneHistoryReview(52);
-  await runHistoryBufferRendererFixtures(historyReview, alternateHistoryReview, annualHistoryReview);
+  await runHistoryBufferRendererFixtures(historyReview, annualHistoryReview);
 }

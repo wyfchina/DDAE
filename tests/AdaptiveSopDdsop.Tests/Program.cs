@@ -7,6 +7,9 @@ using System.Text.Json.Nodes;
 var tests = new (string Name, Action Run)[]
 {
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
+    ("Standard DDMRP reference is calculated by an internal backend service", TestDdmrpStandardReferenceIsBackendCalculated),
+    ("History review no longer owns the standard DDMRP reference", TestHistoryReviewNoLongerOwnsStandardDdmrpReference),
+    ("Standard DDMRP reference API is internal and ordered outside protected integrations", TestDdmrpStandardReferenceApiIsInternalAndOrdered),
     ("DDMRP sizing rejects missing or illegal lead-time factors", TestDdmrpSizingRejectsIllegalLeadTimeFactor),
     ("Net flow position adds on hand and open supply then subtracts qualified demand", TestNetFlow),
     ("Planning recommendation replenishes to top of green at review time when net flow is at or below top of yellow", TestPlanningRecommendation),
@@ -113,6 +116,7 @@ var tests = new (string Name, Action Run)[]
     ("History review exposes four selectable visualization workspaces", TestHistoryReviewExposesSelectableVisualizationWorkspaces),
     ("History review retains range and selection state", TestHistoryReviewRetainsRangeAndSelectionState),
     ("History review request race fixture runs in the standard harness", TestHistoryReviewRequestRaceFixtureRunsInStandardHarness),
+    ("DDMRP standard reference disclosure lazy loads in the standard harness", TestDdmrpStandardReferenceFixtureRunsInStandardHarness),
     ("History visual renderers use backend evidence without frontend formulas", TestHistoryVisualRenderersUseBackendEvidence),
     ("Future buffer charts use backend sizing and separate volatility", TestFutureBufferChartsUseBackendSizingAndSeparateVolatility),
     ("Future inventory flow charts separate NFP physical stock and volatility", TestFutureInventoryFlowChartsSeparatePhysicalEvidence),
@@ -273,6 +277,84 @@ static void TestStandardDdmrpSizingReturns80_120_70()
     AssertEqual(80m, sizing.Zones.TopOfRed, "top of red");
     AssertEqual(200m, sizing.Zones.TopOfYellow, "top of yellow");
     AssertEqual(270m, sizing.Zones.TopOfGreen, "top of green");
+}
+
+static void TestDdmrpStandardReferenceIsBackendCalculated()
+{
+    var reference = new DdmrpStandardReferenceService().GetReference();
+
+    AssertEqual(10m, reference.Inputs.Adu, "standard reference ADU");
+    AssertEqual(12, reference.Inputs.DecoupledLeadTimeDays, "standard reference DLT");
+    AssertEqual(0.5m, reference.Inputs.LeadTimeFactor, "standard reference lead-time factor");
+    AssertEqual(0.33m, reference.Inputs.VariabilityFactor, "standard reference variability factor");
+    AssertEqual(50m, reference.Inputs.MinimumOrderQuantity, "standard reference MOQ");
+    AssertEqual(7, reference.Inputs.OrderCycleDays, "standard reference order cycle");
+    AssertEqual(1m, reference.Inputs.DemandAdjustmentFactor, "standard reference DAF");
+    AssertEqual(1m, reference.Inputs.ZoneAdjustmentFactor, "standard reference zone adjustment");
+    AssertEqual(60m, reference.RedBase, "standard reference red base");
+    AssertEqual(19.8m, reference.RedSafety, "standard reference red safety");
+    AssertEqual(80m, reference.Zones.Red, "standard reference red zone");
+    AssertEqual(120m, reference.Zones.Yellow, "standard reference yellow zone");
+    AssertEqual(70m, reference.Zones.Green, "standard reference green zone");
+    AssertEqual(270m, reference.TotalBuffer, "standard reference total buffer");
+    AssertEqual("OrderCycle", reference.GreenDriver, "standard reference green driver");
+    AssertEqual("DDAE 后端标准定容算例", reference.SourceAuthority, "standard reference source");
+    AssertEqual("Complete", reference.EvidenceStatus, "standard reference evidence");
+    AssertTrue(reference.Derivations.Count >= 10, "standard reference should expose backend derivation evidence");
+}
+
+static void TestHistoryReviewNoLongerOwnsStandardDdmrpReference()
+{
+    var result = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+
+    AssertTrue(result.StandardDdmrpReference is null, "history review should not load the standard reference");
+    var constructorParameter = typeof(HistoryReviewWorkspace)
+        .GetConstructors()
+        .Single()
+        .GetParameters()
+        .Last();
+    AssertEqual("StandardDdmrpReference", constructorParameter.Name, "legacy field remains the final record parameter");
+    AssertEqual(typeof(HistoryDdmrpSizingSnapshotView), constructorParameter.ParameterType, "legacy field type remains compatible");
+    AssertTrue(constructorParameter.HasDefaultValue && constructorParameter.DefaultValue is null, "legacy field remains optional");
+
+    var legacySnapshot = result.DdmrpSizingSnapshots!.First();
+    var legacyJson = JsonSerializer.Serialize(
+        result with { StandardDdmrpReference = legacySnapshot },
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var legacyRoundTrip = JsonSerializer.Deserialize<HistoryReviewWorkspace>(
+        legacyJson,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    AssertEqual(legacySnapshot.SnapshotId, legacyRoundTrip!.StandardDdmrpReference!.SnapshotId, "legacy non-null reference JSON remains readable");
+}
+
+static void TestDdmrpStandardReferenceApiIsInternalAndOrdered()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var service = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "DdmrpStandardReferenceService.cs"));
+    var historyIndex = program.IndexOf("app.MapGet(\"/api/history-review\"", StringComparison.Ordinal);
+    var referenceIndex = program.IndexOf("app.MapGet(\"/api/ddmrp-standard-reference\"", StringComparison.Ordinal);
+    var baselineIndex = program.IndexOf("app.MapGet(\"/api/current-baselines/candidate\"", StringComparison.Ordinal);
+
+    AssertTrue(program.Contains("AddSingleton<DdmrpStandardReferenceService>()", StringComparison.Ordinal), "standard reference service should be registered");
+    AssertTrue(historyIndex >= 0 && referenceIndex > historyIndex && baselineIndex > referenceIndex,
+        "standard reference endpoint should follow history and precede current baseline");
+    foreach (var protectedToken in new[]
+    {
+        "DdsopConfigInboundContract",
+        "DdsopRuntimePlanningInputContract",
+        "SdbrExecutionObjectEvidenceContract",
+        "PublicDemoGoldenLoopService",
+        "NetworkScore",
+        "network-scoring",
+        "SDBR payload",
+    })
+    {
+        AssertTrue(!service.Contains(protectedToken, StringComparison.Ordinal),
+            $"standard reference service must not reference protected token '{protectedToken}'");
+    }
 }
 
 static void TestDdmrpSizingRejectsIllegalLeadTimeFactor()
@@ -1063,11 +1145,7 @@ static void TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence()
         result,
         new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
     var standardReference = serializedReview["standardDdmrpReference"];
-    AssertTrue(standardReference is not null, "history review should expose an independent backend standard DDMRP reference");
-    AssertEqual(80m, standardReference!["sizing"]!["zones"]!["red"]!.GetValue<decimal>(), "standard reference red zone");
-    AssertEqual(120m, standardReference["sizing"]!["zones"]!["yellow"]!.GetValue<decimal>(), "standard reference yellow zone");
-    AssertEqual(70m, standardReference["sizing"]!["zones"]!["green"]!.GetValue<decimal>(), "standard reference green zone");
-    AssertEqual("OrderCycle", standardReference["sizing"]!["greenDriver"]!.GetValue<string>(), "standard reference green driver");
+    AssertTrue(standardReference is null, "history review should keep the legacy standard reference field empty");
     AssertEqual(3, result.InventoryBuffers!.Select(item => item.ControlPoint).Distinct(StringComparer.Ordinal).Count(), "historical inventory control points should remain exactly three");
     AssertTrue(result.DdmrpSizingSnapshots!.All(item => item.SnapshotId != "DDMRP-EXAMPLE-V1"), "standard reference must not become a historical control-point snapshot");
     AssertTrue(detailWindowWeeks < result.ObservedTrendWeeks, "cumulative lead time must not truncate the 26-week operating trend");
@@ -5750,8 +5828,6 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
         "history-ddmrp-input-summary",
         "history-ddmrp-sizing-body",
         "history-ddmrp-zone-chart",
-        "history-standard-ddmrp-input-summary",
-        "history-standard-ddmrp-zone-chart",
         "history-capacity-resource-options",
         "history-capacity-buffer-chart",
         "buffer-volatility-chart"
@@ -5873,7 +5949,6 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "renderHistoryInventoryPositionChart",
         "renderHistoryInventoryVolatilityChart",
         "renderHistoryDdmrpSizingTrace",
-        "renderHistoryStandardDdmrpReference",
         "renderHistoryTimeBuffer",
         "renderHistoryTimeStatusChart",
         "renderHistoryTimeCostStrip",
@@ -5946,24 +6021,9 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         AssertTrue(!sizingBody.Contains(forbidden, StringComparison.Ordinal), $"historical DDMRP renderer must not contain {forbidden}");
     }
 
-    var standardBody = SourceFunctionBody(script, "renderHistoryStandardDdmrpReference");
-    foreach (var backendField in new[]
-    {
-        "history.standardDdmrpReference",
-        "item.setting.adu",
-        "item.setting.decoupledLeadTimeDays",
-        "item.setting.leadTimeFactor",
-        "item.setting.variabilityFactor",
-        "item.setting.orderCycleDays",
-        "item.setting.minimumOrderQuantity",
-        "item.sizing.zones.red",
-        "item.sizing.zones.yellow",
-        "item.sizing.zones.green",
-        "item.sizing.greenDriver"
-    })
-    {
-        AssertTrue(standardBody.Contains(backendField, StringComparison.Ordinal), $"standard DDMRP reference must read backend {backendField}");
-    }
+    AssertTrue(!script.Contains("function renderHistoryStandardDdmrpReference(", StringComparison.Ordinal)
+        && !historyReviewBody.Contains("standardDdmrpReference", StringComparison.Ordinal),
+        "history renderer should not own the independent standard reference");
 
     var zoneBody = SourceFunctionBody(script, "renderHistoryDdmrpZoneSvg");
     foreach (var backendField in new[] { "item.sizing.zones.red", "item.sizing.zones.yellow", "item.sizing.zones.green", "item.averageOnHand", "item.effectiveFromWeekOffset", "item.effectiveThroughWeekOffset", "item.asOfUtc", "item.sizing.greenDriver" })
@@ -6052,23 +6112,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         new SeedScenarioWorkspaceDataSource(seed));
     var history = historyService.GetReview(6);
     var annualHistory = historyService.GetReview(12);
-    var alternateSetting = history.StandardDdmrpReference!.Setting with
-    {
-        Adu = 13m,
-        ParameterSnapshotId = "DDMRP-EXAMPLE-V2",
-    };
-    var alternateSizing = DdmrpCalculator.CalculateSizing(alternateSetting);
-    var alternateHistory = history with
-    {
-        StandardDdmrpReference = history.StandardDdmrpReference with
-        {
-            SnapshotId = alternateSetting.ParameterSnapshotId,
-            Setting = alternateSetting,
-            Sizing = alternateSizing,
-            SizingLines = DdmrpSizingExplanation.Build(alternateSizing),
-        },
-    };
-    RunHistoryBufferRendererFixture(root, history, alternateHistory, annualHistory);
+    RunHistoryBufferRendererFixture(root, history, annualHistory);
 }
 
 static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
@@ -6234,19 +6278,14 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
 static void RunHistoryBufferRendererFixture(
     string root,
     HistoryReviewWorkspace history,
-    HistoryReviewWorkspace alternateHistory,
     HistoryReviewWorkspace annualHistory)
 {
     var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs");
     var dtoPath = Path.Combine(Path.GetTempPath(), $"history-review-{Guid.NewGuid():N}.json");
-    var alternateDtoPath = Path.Combine(Path.GetTempPath(), $"history-review-alternate-{Guid.NewGuid():N}.json");
     var annualDtoPath = Path.Combine(Path.GetTempPath(), $"history-review-annual-{Guid.NewGuid():N}.json");
     File.WriteAllText(
         dtoPath,
         JsonSerializer.Serialize(history, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-    File.WriteAllText(
-        alternateDtoPath,
-        JsonSerializer.Serialize(alternateHistory, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     File.WriteAllText(
         annualDtoPath,
         JsonSerializer.Serialize(annualHistory, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -6267,7 +6306,6 @@ static void RunHistoryBufferRendererFixture(
         };
         process.StartInfo.ArgumentList.Add(fixturePath);
         process.StartInfo.ArgumentList.Add(dtoPath);
-        process.StartInfo.ArgumentList.Add(alternateDtoPath);
         process.StartInfo.ArgumentList.Add(annualDtoPath);
         process.Start();
         var standardOutput = process.StandardOutput.ReadToEndAsync();
@@ -6286,13 +6324,12 @@ static void RunHistoryBufferRendererFixture(
         }
         AssertTrue(output.Contains("renderer fixture groups passed", StringComparison.Ordinal),
             $"Node renderer fixture did not report completion: {output}");
-        AssertTrue(output.Contains("alternate backend sizing drives standard renderer", StringComparison.Ordinal),
-            $"Node renderer fixture did not prove backend-driven alternate sizing: {output}");
+        AssertTrue(output.Contains("history renderer no longer owns standard reference", StringComparison.Ordinal),
+            $"Node renderer fixture did not prove the standard reference moved out of history: {output}");
     }
     finally
     {
         File.Delete(dtoPath);
-        File.Delete(alternateDtoPath);
         File.Delete(annualDtoPath);
     }
 }
@@ -6429,6 +6466,44 @@ static void TestHistoryReviewRequestRaceFixtureRunsInStandardHarness()
     }
     AssertTrue(output.Contains("history request race fixture groups passed", StringComparison.Ordinal),
         $"Node history request race fixture did not report completion: {output}");
+}
+
+static void TestDdmrpStandardReferenceFixtureRunsInStandardHarness()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "ddmrp-standard-reference.fixture.mjs");
+
+    using var process = new Process
+    {
+        StartInfo = new ProcessStartInfo
+        {
+            FileName = FindNodeExecutable(),
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        },
+    };
+    process.StartInfo.ArgumentList.Add(fixturePath);
+    process.Start();
+    var standardOutput = process.StandardOutput.ReadToEndAsync();
+    var standardError = process.StandardError.ReadToEndAsync();
+    if (!process.WaitForExit(30_000))
+    {
+        process.Kill(entireProcessTree: true);
+        throw new InvalidOperationException("Node DDMRP standard reference fixture timed out after 30 seconds");
+    }
+    Task.WaitAll(standardOutput, standardError);
+    var output = standardOutput.Result;
+    var error = standardError.Result;
+    if (process.ExitCode != 0)
+    {
+        throw new InvalidOperationException(
+            $"Node DDMRP standard reference fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+    }
+    AssertTrue(output.Contains("6/6 DDMRP standard reference fixture groups passed", StringComparison.Ordinal),
+        $"Node DDMRP standard reference fixture did not report completion: {output}");
 }
 
 static string FindNodeExecutable()
