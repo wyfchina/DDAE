@@ -2314,7 +2314,14 @@ function renderBufferTrendChart(detail) {
       ? [baselineItem(point).endNetFlowBeforeReplenishment, baselineItem(point).endNetFlowAfterReplenishment]
       : []),
     ...chartDomain.flatMap(point => point.item
-      ? [point.item.topOfRed, point.item.topOfYellow, point.item.topOfGreen, point.item.physicalPosition?.endingOnHand]
+      ? [
+        point.item.topOfRed,
+        point.item.topOfYellow,
+        point.item.topOfGreen,
+        point.item.physicalPosition?.evidenceStatus === "Complete"
+          ? point.item.physicalPosition.endingOnHand
+          : null,
+      ]
       : []),
     0,
   ].filter(isFiniteChartValue).map(Number);

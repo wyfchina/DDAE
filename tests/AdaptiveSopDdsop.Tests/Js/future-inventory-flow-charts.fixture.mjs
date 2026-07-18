@@ -483,6 +483,29 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(volatilityMarkup.includes("buffer-demand-area") && volatilityMarkup.includes('data-case-id="scenario"'),
     "third panel should retain independent scenario volatility");
 
+  const baselineUpperAxisY = nfpMarkup.match(/<text class="axis-label" x="54" y="([^"]+)">/)?.[1];
+  assert.ok(baselineUpperAxisY, "upper chart should expose a stable zone-axis geometry marker");
+  const missingScaleEvidence = structuredClone(preview);
+  const selectedScaleSku = missingScaleEvidence.scenario.bufferTrend.selectedSku;
+  for (const series of [
+    missingScaleEvidence.scenario.bufferTrend.series,
+    ...missingScaleEvidence.scenario.bufferTrend.skuDetails.map(detail => detail.series),
+  ]) {
+    series.filter(point => point.sku === selectedScaleSku && point.week === 1).forEach(point => {
+      point.physicalPosition = {
+        ...point.physicalPosition,
+        endingOnHand: 1000000,
+        evidenceStatus: "EvidenceMissing",
+      };
+    });
+  }
+  runPreview(runtime, missingScaleEvidence);
+  const missingScaleMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
+  const missingScaleAxisY = missingScaleMarkup.match(/<text class="axis-label" x="54" y="([^"]+)">/)?.[1];
+  assert.equal(missingScaleAxisY, baselineUpperAxisY,
+    "an EvidenceMissing on-hand value must not expand or rescale the upper chart axis");
+  runPreview(runtime, preview);
+
   const rangeScopedPhysicalEvidence = structuredClone(preview);
   const scopedTrend = rangeScopedPhysicalEvidence.scenario.bufferTrend;
   for (const series of [scopedTrend.series, ...scopedTrend.skuDetails.map(detail => detail.series)]) {
