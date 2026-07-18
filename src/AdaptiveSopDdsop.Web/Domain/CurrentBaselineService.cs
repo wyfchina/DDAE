@@ -167,6 +167,13 @@ public sealed class CurrentBaselineService
                 $"关键基线计划证据验证失败：{string.Join("; ", planningEvidenceBlockers)}。",
                 nameof(request));
         }
+        var candidateBindingIssues = ValidateHistoryReconciliationCandidateBinding(candidate);
+        if (candidateBindingIssues.Count > 0)
+        {
+            throw new ArgumentException(
+                $"历史期末与当前基线对账失败：{string.Join("; ", candidateBindingIssues)}。",
+                nameof(request));
+        }
 
         var now = DateTimeOffset.UtcNow.ToString("O");
         var snapshotId = Guid.NewGuid().ToString("N");
@@ -266,7 +273,15 @@ public sealed class CurrentBaselineService
             return issues;
         }
 
-        var expectedKeys = reconciliation.Lines
+        var lines = reconciliation.Lines
+            .Where(line => line is not null)
+            .ToList();
+        if (lines.Count != reconciliation.Lines.Count)
+        {
+            issues.Add("HISTORY_RECONCILIATION 对账行包含空元素");
+        }
+
+        var expectedKeys = lines
             .Select(line => $"{line.MetricCode}/{line.ItemKey}")
             .ToHashSet(StringComparer.Ordinal);
         var actualKeys = section.Items
@@ -293,6 +308,96 @@ public sealed class CurrentBaselineService
         }
 
         return issues;
+    }
+
+    private static IReadOnlyList<string> ValidateHistoryReconciliationCandidateBinding(
+        CurrentBaselineCandidate candidate)
+    {
+        var issues = new List<string>();
+        var reconciliation = candidate.Payload.HistoryReconciliation;
+        var planningInputs = candidate.Payload.PlanningInputs;
+        if (reconciliation is null || planningInputs is null || reconciliation.Lines is null)
+        {
+            return issues;
+        }
+
+        if (!string.Equals(reconciliation.FactSetId, planningInputs.FactSetId, StringComparison.Ordinal))
+        {
+            issues.Add("对账事实集标识与计划输入不一致");
+        }
+        AddInstantMismatch(
+            reconciliation.HistoryThroughUtc,
+            planningInputs.HistoryThroughUtc,
+            "对账历史截止时间与计划输入不一致");
+        AddInstantMismatch(
+            reconciliation.BaselineAsOfUtc,
+            planningInputs.BaselineAsOfUtc,
+            "对账基线时点与计划输入不一致");
+        AddInstantMismatch(
+            reconciliation.BaselineAsOfUtc,
+            candidate.AsOfUtc,
+            "对账基线时点与候选基线时点不一致");
+
+        var expectedBalances = new Dictionary<(string MetricCode, string ItemKey), decimal>();
+        foreach (var inventory in candidate.Payload.Inventory)
+        {
+            expectedBalances[("ON_HAND", inventory.Sku)] = inventory.OnHand;
+        }
+
+        var costGroups = planningInputs.Skus
+            .GroupBy(item => item.Sku, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+        decimal inventoryValue = 0m;
+        var inventoryValueIsComplete = true;
+        foreach (var inventory in candidate.Payload.Inventory)
+        {
+            if (!costGroups.TryGetValue(inventory.Sku, out var costRows) ||
+                costRows.Count != 1 ||
+                costRows[0].UnitCost <= 0m)
+            {
+                issues.Add($"INVENTORY_VALUE/{inventory.Sku} 缺少唯一有效的内部主数据单位成本");
+                inventoryValueIsComplete = false;
+                continue;
+            }
+
+            inventoryValue += inventory.OnHand * costRows[0].UnitCost;
+        }
+        if (inventoryValueIsComplete)
+        {
+            expectedBalances[("INVENTORY_VALUE", "ALL")] = decimal.Round(inventoryValue, 2);
+        }
+
+        expectedBalances[("WORK_IN_PROCESS", "ALL")] = candidate.Payload.WorkInProcess.Sum(item => item.Quantity);
+        expectedBalances[("BACKLOG", "ALL")] = candidate.Payload.Backlog.Sum(item => item.Quantity);
+        foreach (var resource in candidate.Payload.ResourceAvailability)
+        {
+            expectedBalances[("RESOURCE_AVAILABLE_CAPACITY", resource.ResourceCode)] = resource.AvailableCapacity;
+        }
+
+        foreach (var line in reconciliation.Lines.Where(line => line is not null))
+        {
+            var key = (line.MetricCode, line.ItemKey);
+            if (!expectedBalances.TryGetValue(key, out var expectedBalance))
+            {
+                continue;
+            }
+            if (Math.Abs(decimal.Round(line.BaselineBalance - expectedBalance, 2)) > 0.01m)
+            {
+                issues.Add($"{line.MetricCode}/{line.ItemKey} 对账余额 {line.BaselineBalance} 与候选载荷 {expectedBalance} 不一致");
+            }
+        }
+
+        return issues;
+
+        void AddInstantMismatch(string reconciliationValue, string candidateValue, string message)
+        {
+            if (!DateTimeOffset.TryParse(reconciliationValue, out var reconciliationInstant) ||
+                !DateTimeOffset.TryParse(candidateValue, out var candidateInstant) ||
+                reconciliationInstant.ToUniversalTime() != candidateInstant.ToUniversalTime())
+            {
+                issues.Add(message);
+            }
+        }
     }
 
     public IReadOnlyList<CurrentBaselineSummary> List(int limit)

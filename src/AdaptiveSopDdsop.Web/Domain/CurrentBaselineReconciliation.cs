@@ -91,14 +91,22 @@ public static class CurrentBaselineReconciliation
             return issues;
         }
 
-        foreach (var duplicate in reconciliation.Lines
+        var lines = reconciliation.Lines
+            .Where(line => line is not null)
+            .ToList();
+        if (lines.Count != reconciliation.Lines.Count)
+        {
+            issues.Add("对账行包含空元素");
+        }
+
+        foreach (var duplicate in lines
                      .GroupBy(line => (line.MetricCode, line.ItemKey))
                      .Where(group => group.Count() > 1))
         {
             issues.Add($"重复对账行：{duplicate.Key.MetricCode}/{duplicate.Key.ItemKey}");
         }
 
-        foreach (var line in reconciliation.Lines)
+        foreach (var line in lines)
         {
             var expected = line.HistoryClosingBalance + line.IntervalIncrease
                 - line.IntervalDecrease + line.Adjustment;
@@ -131,6 +139,10 @@ public static class CurrentBaselineReconciliation
             return issues;
         }
 
+        var lines = reconciliation.Lines
+            .Where(line => line is not null)
+            .ToList();
+
         var skuKeys = expectedSkuKeys
             .Where(key => !string.IsNullOrWhiteSpace(key))
             .ToList();
@@ -157,7 +169,7 @@ public static class CurrentBaselineReconciliation
             .Append((MetricCode: "BACKLOG", ItemKey: "ALL"))
             .Concat(resourceCodes.Select(code => (MetricCode: "RESOURCE_AVAILABLE_CAPACITY", ItemKey: code)))
             .ToHashSet();
-        var actualKeys = reconciliation.Lines
+        var actualKeys = lines
             .Select(line => (MetricCode: line.MetricCode, ItemKey: line.ItemKey))
             .ToHashSet();
         foreach (var missing in expectedKeys.Except(actualKeys))
@@ -168,7 +180,7 @@ public static class CurrentBaselineReconciliation
         {
             issues.Add($"存在非预期对账键：{unexpected.MetricCode}/{unexpected.ItemKey}");
         }
-        if (reconciliation.Lines.Count(line => line.MetricCode == "ON_HAND") != 12)
+        if (lines.Count(line => line.MetricCode == "ON_HAND") != 12)
         {
             issues.Add("ON_HAND 对账行必须恰好为 12 行");
         }

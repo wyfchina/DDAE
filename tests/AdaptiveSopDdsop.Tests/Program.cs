@@ -84,7 +84,10 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline blocks incomplete reconciliation key coverage", TestCurrentBaselineBlocksIncompleteReconciliationKeyCoverage),
     ("Current baseline requires exact history reconciliation evidence section", TestCurrentBaselineRequiresExactHistoryReconciliationEvidenceSection),
     ("Current baseline recomputes reconciliation difference during freeze", TestCurrentBaselineRecomputesHistoryReconciliationDifference),
+    ("Current baseline binds reconciliation balances to candidate payload", TestCurrentBaselineBindsReconciliationBalancesToCandidatePayload),
+    ("Current baseline binds reconciliation lineage to candidate planning inputs", TestCurrentBaselineBindsReconciliationLineageToCandidatePlanningInputs),
     ("Current baseline blocks null reconciliation lines", TestCurrentBaselineBlocksNullHistoryReconciliationLines),
+    ("Current baseline blocks null reconciliation line elements", TestCurrentBaselineBlocksNullHistoryReconciliationLineElements),
     ("Current baseline blocks non-complete reconciliation lineage", TestCurrentBaselineBlocksNonCompleteHistoryReconciliation),
     ("Current baseline blocks duplicate reconciliation keys", TestCurrentBaselineBlocksDuplicateHistoryReconciliationKey),
     ("Current baseline blocks unexpected reconciliation keys", TestCurrentBaselineBlocksUnexpectedHistoryReconciliationKey),
@@ -2887,6 +2890,145 @@ static void TestCurrentBaselineRecomputesHistoryReconciliationDifference()
     }
 }
 
+static void TestCurrentBaselineBindsReconciliationBalancesToCandidatePayload()
+{
+    var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+    var inventorySku = complete.Payload.Inventory[0].Sku;
+    var resourceCode = complete.Payload.ResourceAvailability[0].ResourceCode;
+    var cases = new List<(string Name, CurrentBaselineCandidate Candidate)>
+    {
+        ("ON_HAND", complete with
+        {
+            Payload = complete.Payload with
+            {
+                Inventory = complete.Payload.Inventory
+                    .Select(item => item.Sku == inventorySku ? item with { OnHand = item.OnHand + 1m } : item)
+                    .ToList()
+            }
+        }),
+        ("INVENTORY_VALUE", complete with
+        {
+            Payload = complete.Payload with
+            {
+                PlanningInputs = complete.Payload.PlanningInputs! with
+                {
+                    Skus = complete.Payload.PlanningInputs!.Skus
+                        .Select((item, index) => index == 0 ? item with { UnitCost = item.UnitCost + 1m } : item)
+                        .ToList()
+                }
+            }
+        }),
+        ("WORK_IN_PROCESS", complete with
+        {
+            Payload = complete.Payload with
+            {
+                WorkInProcess = complete.Payload.WorkInProcess
+                    .Select((item, index) => index == 0 ? item with { Quantity = item.Quantity + 1m } : item)
+                    .ToList()
+            }
+        }),
+        ("BACKLOG", complete with
+        {
+            Payload = complete.Payload with
+            {
+                Backlog = complete.Payload.Backlog
+                    .Select((item, index) => index == 0 ? item with { Quantity = item.Quantity + 1m } : item)
+                    .ToList()
+            }
+        }),
+        ("RESOURCE_AVAILABLE_CAPACITY", complete with
+        {
+            Payload = complete.Payload with
+            {
+                ResourceAvailability = complete.Payload.ResourceAvailability
+                    .Select(item => item.ResourceCode == resourceCode
+                        ? item with { AvailableCapacity = item.AvailableCapacity + 1m }
+                        : item)
+                    .ToList()
+            }
+        })
+    };
+
+    foreach (var (name, candidate) in cases)
+    {
+        AssertHistoryReconciliationFreezeIsBlocked(candidate, $"candidate payload {name} mismatch", name);
+    }
+}
+
+static void TestCurrentBaselineBindsReconciliationLineageToCandidatePlanningInputs()
+{
+    var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+    var reconciliation = complete.Payload.HistoryReconciliation!;
+    var historyThrough = DateTimeOffset.Parse(reconciliation.HistoryThroughUtc);
+    var baselineAsOf = DateTimeOffset.Parse(reconciliation.BaselineAsOfUtc);
+    var cases = new List<(string Name, string ExpectedIssue, CurrentBaselineCandidate Candidate)>
+    {
+        ("reconciliation fact set", "事实集标识", complete with
+        {
+            Payload = complete.Payload with
+            {
+                HistoryReconciliation = reconciliation with { FactSetId = $"{reconciliation.FactSetId}-TAMPERED" }
+            }
+        }),
+        ("reconciliation history cutoff", "历史截止时间", complete with
+        {
+            Payload = complete.Payload with
+            {
+                HistoryReconciliation = reconciliation with
+                {
+                    HistoryThroughUtc = historyThrough.AddMinutes(-1).ToString("O")
+                }
+            }
+        }),
+        ("reconciliation baseline cutoff", "基线时点", complete with
+        {
+            Payload = complete.Payload with
+            {
+                HistoryReconciliation = reconciliation with
+                {
+                    BaselineAsOfUtc = baselineAsOf.AddMinutes(1).ToString("O")
+                }
+            }
+        }),
+        ("candidate as-of cutoff", "候选基线时点", complete with { AsOfUtc = baselineAsOf.AddMinutes(1).ToString("O") }),
+        ("planning fact set", "事实集标识", complete with
+        {
+            Payload = complete.Payload with
+            {
+                PlanningInputs = complete.Payload.PlanningInputs! with
+                {
+                    FactSetId = $"{complete.Payload.PlanningInputs!.FactSetId}-TAMPERED"
+                }
+            }
+        }),
+        ("planning history cutoff", "历史截止时间", complete with
+        {
+            Payload = complete.Payload with
+            {
+                PlanningInputs = complete.Payload.PlanningInputs! with
+                {
+                    HistoryThroughUtc = historyThrough.AddMinutes(-1).ToString("O")
+                }
+            }
+        }),
+        ("planning baseline cutoff", "基线时点", complete with
+        {
+            Payload = complete.Payload with
+            {
+                PlanningInputs = complete.Payload.PlanningInputs! with
+                {
+                    BaselineAsOfUtc = baselineAsOf.AddMinutes(1).ToString("O")
+                }
+            }
+        })
+    };
+
+    foreach (var (name, expectedIssue, candidate) in cases)
+    {
+        AssertHistoryReconciliationFreezeIsBlocked(candidate, $"candidate lineage {name} mismatch", expectedIssue);
+    }
+}
+
 static void TestCurrentBaselineBlocksNullHistoryReconciliationLines()
 {
     var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
@@ -2898,6 +3040,22 @@ static void TestCurrentBaselineBlocksNullHistoryReconciliationLines()
         }
     };
     AssertHistoryReconciliationFreezeIsBlocked(candidate, "null reconciliation lines");
+}
+
+static void TestCurrentBaselineBlocksNullHistoryReconciliationLineElements()
+{
+    var complete = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+    var reconciliation = complete.Payload.HistoryReconciliation!;
+    var linesWithNullElement = reconciliation.Lines.Append(null!).ToList();
+    var candidate = complete with
+    {
+        Payload = complete.Payload with
+        {
+            HistoryReconciliation = reconciliation with { Lines = linesWithNullElement }
+        }
+    };
+
+    AssertHistoryReconciliationFreezeIsBlocked(candidate, "null reconciliation line element", "对账行包含空元素");
 }
 
 static void TestCurrentBaselineBlocksNonCompleteHistoryReconciliation()
@@ -2949,7 +3107,10 @@ static void TestCurrentBaselineBlocksUnexpectedHistoryReconciliationKey()
     AssertHistoryReconciliationFreezeIsBlocked(candidate, "unexpected reconciliation key");
 }
 
-static void AssertHistoryReconciliationFreezeIsBlocked(CurrentBaselineCandidate candidate, string caseName)
+static void AssertHistoryReconciliationFreezeIsBlocked(
+    CurrentBaselineCandidate candidate,
+    string caseName,
+    string? expectedIssue = null)
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-baseline-reconciliation-{Guid.NewGuid():N}.db");
     try
@@ -2962,7 +3123,8 @@ static void AssertHistoryReconciliationFreezeIsBlocked(CurrentBaselineCandidate 
         }
         catch (ArgumentException ex)
         {
-            rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal);
+            rejected = ex.Message.Contains("历史期末与当前基线对账失败", StringComparison.Ordinal) &&
+                (expectedIssue is null || ex.Message.Contains(expectedIssue, StringComparison.Ordinal));
         }
 
         AssertTrue(rejected, $"{caseName} should reject freezing with the reconciliation validation error");
@@ -5100,11 +5262,36 @@ static void TestScenarioComparisonUsesFrozenSnapshotValues()
         var candidate = new SeedCurrentBaselineDataSource(validationData).GetCandidate();
         var target = candidate.Payload.Inventory.First();
         var frozenPosition = target with { OnHand = target.OnHand + 10_000m };
+        var inventoryDelta = frozenPosition.OnHand - target.OnHand;
+        var unitCost = candidate.Payload.PlanningInputs!.Skus.Single(item => item.Sku == target.Sku).UnitCost;
+        var inventoryValueDelta = inventoryDelta * unitCost;
+        var reconciliation = candidate.Payload.HistoryReconciliation! with
+        {
+            Lines = candidate.Payload.HistoryReconciliation!.Lines.Select(line =>
+                line.MetricCode == "ON_HAND" && line.ItemKey == target.Sku
+                    ? line with
+                    {
+                        IntervalIncrease = line.IntervalIncrease + inventoryDelta,
+                        BaselineBalance = line.BaselineBalance + inventoryDelta
+                    }
+                    : line.MetricCode == "INVENTORY_VALUE" && line.ItemKey == "ALL"
+                        ? line with
+                        {
+                            IntervalIncrease = line.IntervalIncrease + inventoryValueDelta,
+                            BaselineBalance = line.BaselineBalance + inventoryValueDelta
+                        }
+                        : line).ToList()
+        };
         var frozenCandidate = candidate with
         {
             Payload = candidate.Payload with
             {
-                Inventory = candidate.Payload.Inventory.Select(item => item.Sku == target.Sku ? frozenPosition : item).ToList()
+                Inventory = candidate.Payload.Inventory.Select(item => item.Sku == target.Sku ? frozenPosition : item).ToList(),
+                Kpis = candidate.Payload.Kpis! with
+                {
+                    InventoryValue = candidate.Payload.Kpis!.InventoryValue + inventoryValueDelta
+                },
+                HistoryReconciliation = reconciliation
             }
         };
         var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(frozenCandidate), databasePath);
