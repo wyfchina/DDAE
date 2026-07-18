@@ -467,6 +467,12 @@ static void TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints(
         Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "ScenarioWorkspaceData.cs"),
         Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedData.cs"),
         Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Data", "SeedScenarioWorkspaceDataSource.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "PlanningEvidenceModels.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "PlanningEvidenceValidator.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "InventoryFlowProjectionModels.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "InventoryFlowProjectionService.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "CapacityProtectionMath.cs"),
+        Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "DdmrpStandardReferenceService.cs"),
     };
     var protectedTokens = new[]
     {
@@ -488,6 +494,43 @@ static void TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints(
             AssertTrue(!text.Contains(token, StringComparison.Ordinal), $"{Path.GetFileName(file)} must not reference protected token '{token}'");
         }
     }
+
+    var webProgram = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    const string historyEndpointMarker = "app.MapGet(\"/api/history-review\"";
+    const string referenceEndpointMarker = "app.MapGet(\"/api/ddmrp-standard-reference\"";
+    const string integrationStartMarker = "app.MapGet(\"/api/integration-contracts/ddsop-config-inbound-v1\"";
+    var historyEndpointIndex = webProgram.IndexOf(historyEndpointMarker, StringComparison.Ordinal);
+    var referenceEndpointIndex = webProgram.IndexOf(referenceEndpointMarker, StringComparison.Ordinal);
+    var integrationStartIndex = webProgram.IndexOf(integrationStartMarker, StringComparison.Ordinal);
+    AssertEqual(1, CountExactOccurrences(webProgram, referenceEndpointMarker), "standard reference GET endpoint count");
+    AssertTrue(integrationStartIndex >= 0 && historyEndpointIndex > integrationStartIndex,
+        "integration-contract endpoint block should end at the history endpoint marker");
+    var integrationContractBlock = webProgram.Substring(integrationStartIndex, historyEndpointIndex - integrationStartIndex);
+    AssertTrue(referenceEndpointIndex > historyEndpointIndex,
+        "standard reference endpoint should follow the history endpoint marker");
+    AssertTrue(!integrationContractBlock.Contains("/api/ddmrp-standard-reference", StringComparison.Ordinal),
+        "standard reference endpoint must remain outside the integration-contract endpoint block");
+    foreach (var forbiddenVerb in new[] { "MapPost", "MapPut", "MapPatch", "MapDelete", "MapMethods" })
+    {
+        AssertTrue(!webProgram.Contains($"app.{forbiddenVerb}(\"/api/ddmrp-standard-reference\"", StringComparison.Ordinal),
+            $"standard reference endpoint must not use {forbiddenVerb}");
+    }
+
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var businessStart = page.IndexOf("<section id=\"history-review-panel\"", StringComparison.Ordinal);
+    var validationStart = page.IndexOf("id=\"saved-scenarios-panel\"", businessStart, StringComparison.Ordinal);
+    AssertTrue(businessStart >= 0 && validationStart > businessStart,
+        "five-stage visible-text region should precede validation pages");
+    var businessMarkup = page.Substring(businessStart, validationStart - businessStart);
+    var visibleBusinessText = System.Net.WebUtility.HtmlDecode(
+        System.Text.RegularExpressions.Regex.Replace(businessMarkup, "<[^>]+>", " "));
+    foreach (var internalCode in new[] { "DemoFixture", "Open", "InProgress", "Escalated", "Completed" })
+    {
+        AssertTrue(!visibleBusinessText.Contains(internalCode, StringComparison.Ordinal),
+            $"five-stage visible text must localize internal code {internalCode} without changing HTML values");
+    }
+    AssertTrue(businessMarkup.Contains("value=\"DemoFixture\"", StringComparison.Ordinal),
+        "internal demo source value must remain unchanged in the form contract");
 }
 
 static void TestSeedScaleMatchesSatelliteManufacturingDemo()
