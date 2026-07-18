@@ -40,11 +40,15 @@ var tests = new (string Name, Action Run)[]
     ("History capacity protection rejects self-referential resource evidence", TestHistoryCapacityProtectionRejectsSelfReference),
     ("Historical CCR role wins when a resource is also upstream", TestHistoricalCcrRoleWinsOverUpstreamRole),
     ("History review uses the effective historical parameter snapshot for every point", TestHistoryReviewUsesEffectiveParameterSnapshot),
+    ("History inventory projection sizes weekly zones from rolling SKU demand", TestHistoryInventoryProjectionUsesRollingSkuDemand),
+    ("History review preserves annual rolling context across range views", TestHistoryReviewPreservesAnnualRollingContextAcrossRanges),
+    ("History time buffer projects only fully matched abnormal cost events", TestHistoryTimeBufferProjectsOnlyFullyMatchedCostEvents),
     ("History review exposes missing evidence instead of zero or current-parameter backfill", TestHistoryReviewDoesNotBackfillMissingEvidence),
     ("History facts expose versioned inventory time and capacity evidence", TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence),
     ("History time-buffer costs exclude FPGA event evidence", TestHistoryTimeBufferCostsExcludeFpgaEventEvidence),
     ("History capacity protection excludes FPGA routing evidence", TestHistoryCapacityProtectionExcludesFpgaRoutingEvidence),
     ("Historical outcomes use explicit facts and traceable costs", TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts),
+    ("Historical outcome costs use annual valid-event rules", TestHistoricalOutcomeCostsUseAnnualValidEventRules),
     ("Current baseline exposes meeting snapshot KPIs with source and as-of evidence", TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf),
     ("Current baseline rejects missing KPI evidence instead of freezing zero substitutes", TestCurrentBaselineRejectsMissingSnapshotKpiEvidence),
     ("Current baseline applies required evidence rules when section items are null or empty", TestCurrentBaselineAppliesRequiredRulesForEmptySectionItems),
@@ -1506,6 +1510,8 @@ static void TestHistoricalCcrRoleWinsOverUpstreamRole()
 static void TestHistoryReviewUsesEffectiveParameterSnapshot()
 {
     const string sku = "AV-COM-201";
+    var facts = new SeedHistoryOperatingFactSource()
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
     var service = new HistoryReviewWorkspaceService(
         new SeedHistoryOperatingFactSource(),
         new SeedScenarioWorkspaceDataSource(SeedData.Create()));
@@ -1532,10 +1538,15 @@ static void TestHistoryReviewUsesEffectiveParameterSnapshot()
     AssertEqual($"HIST-{sku}-V2", snapshots[1].SnapshotId, "current sizing snapshot ID");
     var priorSizing = snapshots[0].Sizing ?? throw new InvalidOperationException("prior sizing evidence is missing");
     var currentSizing = snapshots[1].Sizing ?? throw new InvalidOperationException("current sizing evidence is missing");
-    AssertEqual<decimal?>(priorSizing.Zones.TopOfRed, priorPoint.TopOfRed, "week -27 top of red from prior sizing");
-    AssertEqual<decimal?>(currentSizing.Zones.TopOfRed, currentPoint.TopOfRed, "week -26 top of red from current sizing");
-    AssertEqual<decimal?>(priorSizing.Zones.TopOfGreen, priorPoint.TopOfGreen, "week -27 top of green from prior sizing");
-    AssertEqual<decimal?>(currentSizing.Zones.TopOfGreen, currentPoint.TopOfGreen, "week -26 top of green from current sizing");
+    var expectedPrior = ExpectedRollingHistorySizing(facts, sku, -27);
+    var expectedCurrent = ExpectedRollingHistorySizing(facts, sku, -26);
+    AssertEqual<decimal?>(expectedPrior.Zones.TopOfRed, priorPoint.TopOfRed, "week -27 rolling top of red from prior snapshot");
+    AssertEqual<decimal?>(expectedCurrent.Zones.TopOfRed, currentPoint.TopOfRed, "week -26 rolling top of red from current snapshot");
+    AssertEqual<decimal?>(expectedPrior.Zones.TopOfGreen, priorPoint.TopOfGreen, "week -27 rolling top of green from prior snapshot");
+    AssertEqual<decimal?>(expectedCurrent.Zones.TopOfGreen, currentPoint.TopOfGreen, "week -26 rolling top of green from current snapshot");
+    AssertTrue(
+        priorPoint.TopOfGreen != priorSizing.Zones.TopOfGreen || currentPoint.TopOfGreen != currentSizing.Zones.TopOfGreen,
+        "weekly historical zones must not stay flat at the registered V1/V2 snapshot ADU");
 
     var recent = service.GetReview(6);
     var invalidParameterReview = new HistoryReviewWorkspaceService(
@@ -1664,8 +1675,9 @@ static void TestHistoryReviewDoesNotBackfillMissingEvidence()
         invalidInventoryPoint.TopOfRed is null &&
         invalidInventoryPoint.TopOfYellow is null &&
         invalidInventoryPoint.TopOfGreen is null &&
+        invalidInventoryPoint.TargetNetFlowPosition is null &&
         invalidInventoryPoint.EvidenceStatus == "EvidenceMissing",
-        "an unreconciled inventory point must not expose zone tops from an otherwise valid snapshot");
+        "an unreconciled inventory point must not expose zone tops or target NFP from an otherwise valid snapshot");
 }
 
 static void TestHistoryFactsExposeVersionedInventoryTimeAndCapacityEvidence()
@@ -1866,6 +1878,29 @@ static void TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts()
     }
 
     AssertTrue(failures.Count == 0, string.Join("; ", failures));
+}
+
+static void TestHistoricalOutcomeCostsUseAnnualValidEventRules()
+{
+    var seed = SeedData.Create();
+    var service = new HistoryReviewWorkspaceService(
+        new InvalidAbnormalCostLedgerHistoryOperatingFactSource(new SeedHistoryOperatingFactSource(seed)),
+        new SeedScenarioWorkspaceDataSource(seed));
+    var recent = service.GetReview(6);
+    var annual = service.GetReview(12);
+
+    AssertEqual<decimal?>(
+        50_000m,
+        recent.OperatingOutcomes.ExpediteCost,
+        "six-month cost excludes annual duplicate IDs, non-positive values, missing metadata and incomplete evidence");
+    AssertEqual<decimal?>(
+        50_000m,
+        annual.OperatingOutcomes.ExpediteCost,
+        "annual cost excludes duplicate IDs, non-positive values, missing metadata and incomplete evidence");
+    AssertEqual(
+        annual.OperatingOutcomes.ExpediteCost,
+        recent.OperatingOutcomes.ExpediteCost,
+        "overlapping six-month and annual valid-event cost basis");
 }
 
 static void TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf()
@@ -2167,6 +2202,335 @@ static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
     AssertTrue(
         !renderRule.Contains("item.isRequired &&", StringComparison.Ordinal),
         "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
+}
+
+static void TestHistoryInventoryProjectionUsesRollingSkuDemand()
+{
+    const string sku = "AV-COM-201";
+    var seed = SeedData.Create();
+    var facts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var definitions = new SeedScenarioWorkspaceDataSource(seed)
+        .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
+    var projection = HistoryReviewProjectionBuilder.Build(facts, definitions, 3);
+    var view = projection.InventoryBuffers.Single(item => item.Sku == sku);
+    var sourceByWeek = facts.BufferFacts
+        .Where(item => item.Sku == sku)
+        .ToDictionary(item => item.WeekOffset);
+
+    AssertEqual(52, view.Points.Count, "annual rolling inventory point count");
+    foreach (var point in view.Points)
+    {
+        var source = sourceByWeek[point.WeekOffset];
+        var expected = ExpectedRollingHistorySizing(facts, sku, point.WeekOffset);
+        AssertEqual(source.QualifiedDemand, point.ActualDemand, $"week {point.WeekOffset} actual demand projection");
+        AssertEqual(source.DemandSpikeThreshold, point.DemandSpikeThreshold, $"week {point.WeekOffset} demand threshold projection");
+        AssertEqual<decimal?>(expected.Zones.TopOfRed, point.TopOfRed, $"week {point.WeekOffset} rolling top of red");
+        AssertEqual<decimal?>(expected.Zones.TopOfYellow, point.TopOfYellow, $"week {point.WeekOffset} rolling top of yellow");
+        AssertEqual<decimal?>(expected.Zones.TopOfGreen, point.TopOfGreen, $"week {point.WeekOffset} rolling top of green");
+        AssertEqual<decimal?>(
+            decimal.Round((expected.Zones.TopOfYellow + expected.Zones.TopOfGreen) / 2m, 2),
+            point.TargetNetFlowPosition,
+            $"week {point.WeekOffset} rolling target NFP");
+    }
+
+    var distinctZoneHeights = view.Points
+        .Select(point => (point.TopOfRed, point.TopOfYellow, point.TopOfGreen))
+        .Distinct()
+        .Count();
+    AssertTrue(distinctZoneHeights >= 3, "52-week history must contain at least three traceable weekly zone-height sets");
+    var recentFacts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
+    var recentView = HistoryReviewProjectionBuilder.Build(recentFacts, definitions, 3)
+        .InventoryBuffers.Single(item => item.Sku == sku);
+    AssertTrue(
+        recentView.Points
+            .Select(point => (point.TopOfRed, point.TopOfYellow, point.TopOfGreen))
+            .Distinct()
+            .Count() >= 3,
+        "26-week history must contain at least three traceable weekly zone-height sets");
+
+    var poisonedOperatingFacts = facts with
+    {
+        OperatingFacts = facts.OperatingFacts
+            .Select(item => item with { ActualDemand = 999_999m, DemandSpikeThreshold = 1m, TargetNetFlowPosition = 1m })
+            .ToList()
+    };
+    var poisonedProjection = HistoryReviewProjectionBuilder.Build(poisonedOperatingFacts, definitions, 3);
+    AssertEqual(
+        JsonSerializer.Serialize(projection.InventoryBuffers),
+        JsonSerializer.Serialize(poisonedProjection.InventoryBuffers),
+        "per-SKU history projection must not read global weekly operating facts");
+
+    var zeroDemandFacts = facts with
+    {
+        BufferFacts = facts.BufferFacts
+            .Select(item => item.Sku == sku && item.WeekOffset == -5
+                ? item with
+                {
+                    QualifiedDemand = 0m,
+                    EndingNetFlow = item.EndingOnHand + item.OpenSupply
+                }
+                : item)
+            .ToList()
+    };
+    var zeroDemandPoint = HistoryReviewProjectionBuilder.Build(zeroDemandFacts, definitions, 3)
+        .InventoryBuffers.Single(item => item.Sku == sku)
+        .Points.Single(item => item.WeekOffset == -5);
+    AssertEqual<decimal?>(0m, zeroDemandPoint.ActualDemand, "explicit zero weekly demand evidence");
+    AssertTrue(
+        zeroDemandPoint.TopOfGreen is > 0m && zeroDemandPoint.EvidenceStatus == "Complete",
+        "an explicit zero-demand week must remain valid rolling evidence rather than becoming a gap");
+}
+
+static void TestHistoryReviewPreservesAnnualRollingContextAcrossRanges()
+{
+    var seed = SeedData.Create();
+    var service = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(seed),
+        new SeedScenarioWorkspaceDataSource(seed));
+    var recent = service.GetReview(6);
+    var annual = service.GetReview(12);
+    var recentViews = recent.InventoryBuffers ?? throw new InvalidOperationException("six-month inventory projection is missing");
+    var annualViews = (annual.InventoryBuffers ?? throw new InvalidOperationException("annual inventory projection is missing"))
+        .ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    AssertTrue(recentViews.Count > 0, "six-month inventory projection must contain at least one SKU");
+    AssertEqual(annualViews.Count, recentViews.Count, "six-month and annual inventory SKU count");
+
+    foreach (var recentView in recentViews)
+    {
+        AssertEqual(26, recentView.Points.Count, $"{recentView.Sku} six-month point count");
+        var annualView = annualViews[recentView.Sku];
+        AssertEqual(52, annualView.Points.Count, $"{recentView.Sku} annual point count");
+        var annualByWeek = annualView.Points.ToDictionary(item => item.WeekOffset);
+        foreach (var recentPoint in recentView.Points)
+        {
+            var annualPoint = annualByWeek[recentPoint.WeekOffset];
+            AssertEqual(annualPoint.TopOfRed, recentPoint.TopOfRed, $"{recentView.Sku} week {recentPoint.WeekOffset} top of red across views");
+            AssertEqual(annualPoint.TopOfYellow, recentPoint.TopOfYellow, $"{recentView.Sku} week {recentPoint.WeekOffset} top of yellow across views");
+            AssertEqual(annualPoint.TopOfGreen, recentPoint.TopOfGreen, $"{recentView.Sku} week {recentPoint.WeekOffset} top of green across views");
+            AssertEqual(annualPoint.TargetNetFlowPosition, recentPoint.TargetNetFlowPosition, $"{recentView.Sku} week {recentPoint.WeekOffset} target NFP across views");
+            AssertEqual(annualPoint.ActualDemand, recentPoint.ActualDemand, $"{recentView.Sku} week {recentPoint.WeekOffset} actual demand across views");
+            AssertEqual(annualPoint.DemandSpikeThreshold, recentPoint.DemandSpikeThreshold, $"{recentView.Sku} week {recentPoint.WeekOffset} demand threshold across views");
+        }
+
+    }
+
+    var representativeView = recentViews.Single(item => item.Sku == "AV-COM-201");
+    AssertTrue(
+        representativeView.Points
+            .Select(point => (point.TopOfRed, point.TopOfYellow, point.TopOfGreen))
+            .Distinct()
+            .Count() >= 3,
+        "the representative six-month inventory view must retain at least three rolling zone-height sets");
+}
+
+static void TestHistoryTimeBufferProjectsOnlyFullyMatchedCostEvents()
+{
+    var seed = SeedData.Create();
+    var facts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
+    var definitions = new SeedScenarioWorkspaceDataSource(seed)
+        .Load(new ScenarioWorkspaceDataRequest(26, new DateOnly(2026, 6, 1)));
+    var projected = HistoryReviewProjectionBuilder.Build(facts, definitions, 3).TimeBuffers.Single();
+    var costEvent = projected.AbnormalCostEvents?.Single()
+        ?? throw new InvalidOperationException("fully matched time-buffer cost event is missing");
+
+    AssertEqual("HAC-2026-002", costEvent.EventId, "time-buffer event ID");
+    AssertEqual(-16, costEvent.WeekOffset, "time-buffer event week");
+    AssertEqual("2026-02-09", costEvent.PeriodStartDate, "time-buffer event date");
+    AssertEqual(420_000m, costEvent.CostAmount, "time-buffer event amount");
+    AssertEqual("返工费用", costEvent.CostType, "time-buffer event cost type");
+    AssertEqual("返工", costEvent.Cause, "time-buffer event reason");
+    AssertEqual("时间缓冲", costEvent.TargetType, "time-buffer event target type");
+    AssertEqual("MS-TB-001", costEvent.TargetId, "time-buffer event target");
+    AssertEqual("热真空试验准备控制点", costEvent.ControlPoint, "time-buffer event control point");
+    AssertEqual("DDAE 演示历史事实台账", costEvent.SourceAuthority, "time-buffer event source");
+    AssertEqual("Complete", costEvent.EvidenceStatus, "time-buffer event evidence status");
+
+    var annualFacts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var annualView = HistoryReviewProjectionBuilder.Build(annualFacts, definitions, 3).TimeBuffers.Single();
+    var annualEvents = (annualView.AbnormalCostEvents ?? throw new InvalidOperationException("annual cost-event strip is missing"))
+        .ToDictionary(item => item.EventId, StringComparer.Ordinal);
+    AssertEqual(4, annualEvents.Count, "annual global abnormal-cost event count");
+    AssertEqual(("需求对象", "星载电子", "星载电子需求控制点"),
+        (annualEvents["HAC-2025-004"].TargetType, annualEvents["HAC-2025-004"].TargetId, annualEvents["HAC-2025-004"].ControlPoint),
+        "demand event ownership");
+    AssertEqual(("库存控制点", "AV-FPGA-203", "关键进口 FPGA 库存控制点"),
+        (annualEvents["HAC-2025-003"].TargetType, annualEvents["HAC-2025-003"].TargetId, annualEvents["HAC-2025-003"].ControlPoint),
+        "inventory event ownership");
+    AssertEqual(("能力对象", "RES-AIT", "AIT 总装集成大厅"),
+        (annualEvents["HAC-2026-001"].TargetType, annualEvents["HAC-2026-001"].TargetId, annualEvents["HAC-2026-001"].ControlPoint),
+        "capacity event ownership");
+    AssertEqual(("时间缓冲", "MS-TB-001", "热真空试验准备控制点"),
+        (annualEvents["HAC-2026-002"].TargetType, annualEvents["HAC-2026-002"].TargetId, annualEvents["HAC-2026-002"].ControlPoint),
+        "time event ownership");
+    var annualCostPoints = annualView.Points
+        .Where(point => point.AbnormalCost.HasValue)
+        .ToList();
+    AssertEqual(
+        1,
+        annualCostPoints.Count,
+        "global abnormal-cost events must not be attached to unrelated time-status points");
+    AssertEqual(-16, annualCostPoints.Single().WeekOffset, "fully matched time cost point week");
+    AssertEqual<decimal?>(420_000m, annualCostPoints.Single().AbnormalCost, "fully matched time cost point amount");
+
+    var legacyView = new HistoryTimeBufferView(
+        "LEGACY-TB",
+        "旧控制点",
+        "旧保护活动",
+        Array.Empty<HistoryTimeBufferPoint>(),
+        Array.Empty<HistoryDistributionBucket>(),
+        "Complete");
+    AssertTrue(legacyView.AbnormalCostEvents is null, "legacy time-buffer construction must retain a null optional event collection");
+
+    var noCostFacts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(5, new DateOnly(2026, 6, 1)));
+    var noCostView = HistoryReviewProjectionBuilder.Build(noCostFacts, definitions, 3).TimeBuffers.Single();
+    AssertTrue(
+        noCostView.EvidenceStatus == "Complete" &&
+        noCostView.AbnormalCostEvents is { Count: 0 },
+        "a complete period without abnormal costs must return an empty event collection");
+
+    var mismatched = facts with
+    {
+        AbnormalCosts = facts.AbnormalCosts
+            .Select(item => item.EventId == "HAC-2026-002" ? item with { TargetId = "OTHER-BUFFER" } : item)
+            .ToList()
+    };
+    var mismatchedView = HistoryReviewProjectionBuilder.Build(mismatched, definitions, 3).TimeBuffers.Single();
+    AssertEqual(1, mismatchedView.AbnormalCostEvents?.Count ?? 0, "object-mismatched global cost event count");
+    AssertEqual("OTHER-BUFFER", mismatchedView.AbnormalCostEvents!.Single().TargetId, "object-mismatched global event ownership");
+    AssertEqual(
+        "EvidenceMissing",
+        mismatchedView.Points.Single(item => item.WeekOffset == -16).EvidenceStatus,
+        "object-mismatched time-buffer event evidence");
+    AssertEqual<decimal?>(
+        null,
+        mismatchedView.Points.Single(item => item.WeekOffset == -16).AbnormalCost,
+        "object-mismatched time-buffer event amount");
+
+    var linkedEvent = facts.AbnormalCosts.Single(item => item.EventId == "HAC-2026-002");
+    var invalidLinks = new (string Label, HistoryFactSet Facts, int ExpectedEventCount)[]
+    {
+        ("duplicate event ID", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Append(linkedEvent with { WeekOffset = -15 }).ToList()
+        }, 0),
+        ("wrong event week", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { WeekOffset = -15 }
+                : item).ToList()
+        }, 1),
+        ("wrong event amount", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { CostAmount = item.CostAmount + 1m }
+                : item).ToList()
+        }, 1),
+        ("wrong event control point", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { ControlPoint = "OTHER-CONTROL-POINT" }
+                : item).ToList()
+        }, 1),
+        ("wrong event cause", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { Cause = "原因冲突" }
+                : item).ToList()
+        }, 1),
+        ("wrong weekly-fact control point", facts with
+        {
+            TimeBufferFacts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+                .Select(item => item.WeekOffset == -16
+                    ? item with { ControlPoint = "OTHER-CONTROL-POINT" }
+                    : item)
+                .ToList()
+        }, 1),
+        ("missing event metadata", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { SourceAuthority = null }
+                : item).ToList()
+        }, 0),
+        ("missing event cost type", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { CostType = string.Empty }
+                : item).ToList()
+        }, 0),
+        ("missing event cause", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { Cause = string.Empty }
+                : item).ToList()
+        }, 0),
+        ("missing event target type", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { TargetType = null }
+                : item).ToList()
+        }, 0),
+        ("missing event target", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { TargetId = null }
+                : item).ToList()
+        }, 0),
+        ("missing event control point", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { ControlPoint = null }
+                : item).ToList()
+        }, 0),
+        ("non-positive event amount", facts with
+        {
+            AbnormalCosts = facts.AbnormalCosts.Select(item => item.EventId == linkedEvent.EventId
+                ? item with { CostAmount = -1m }
+                : item).ToList(),
+            TimeBufferFacts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+                .Select(item => item.WeekOffset == -16
+                    ? item with { AbnormalCost = -1m }
+                    : item)
+                .ToList()
+        }, 0),
+    };
+    foreach (var invalid in invalidLinks)
+    {
+        var invalidView = HistoryReviewProjectionBuilder.Build(invalid.Facts, definitions, 3).TimeBuffers.Single();
+        AssertEqual(invalid.ExpectedEventCount, invalidView.AbnormalCostEvents?.Count ?? 0, $"{invalid.Label} event count");
+        AssertEqual(
+            "EvidenceMissing",
+            invalidView.Points.Single(item => item.WeekOffset == -16).EvidenceStatus,
+            $"{invalid.Label} point evidence");
+        AssertEqual<decimal?>(
+            null,
+            invalidView.Points.Single(item => item.WeekOffset == -16).AbnormalCost,
+            $"{invalid.Label} point abnormal cost");
+    }
+}
+
+static DdmrpSizingResult ExpectedRollingHistorySizing(HistoryFactSet facts, string sku, int weekOffset)
+{
+    var weeklyDemand = facts.BufferFacts
+        .Where(item =>
+            item.Sku == sku &&
+            item.WeekOffset <= weekOffset &&
+            item.WeekOffset >= weekOffset - 12 &&
+            item.EvidenceStatus == "Complete" &&
+            item.QualifiedDemand.HasValue)
+        .OrderBy(item => item.WeekOffset)
+        .Select(item => item.QualifiedDemand!.Value)
+        .ToList();
+    var historicalAdu = decimal.Round(weeklyDemand.Average() / 7m, 2, MidpointRounding.AwayFromZero);
+    var parameter = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>()).Single(item =>
+        item.Sku == sku &&
+        item.EffectiveFromWeekOffset <= weekOffset &&
+        weekOffset <= item.EffectiveThroughWeekOffset);
+    return DdmrpCalculator.CalculateSizing(parameter.Setting with { Adu = historicalAdu });
 }
 
 static void TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill()
@@ -5006,8 +5370,12 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
         "history-inventory-control-point-options",
         "history-inventory-sku-options",
         "history-inventory-chart",
+        "history-inventory-position-chart",
+        "history-inventory-volatility-chart",
         "history-time-buffer-options",
         "history-time-buffer-chart",
+        "history-time-status-chart",
+        "history-time-cost-strip",
         "history-sizing-trace-view",
         "history-sizing-control-point-options",
         "history-sizing-sku-options",
@@ -5029,6 +5397,8 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
 
     AssertEqual(4, CountExactOccurrences(page, "data-history-range-months=\"6\""), "each history view should expose the six-month range");
     AssertEqual(4, CountExactOccurrences(page, "data-history-range-months=\"12\""), "each history view should expose the twelve-month range");
+    AssertTrue(page.Contains("26 周/52 周历史", StringComparison.Ordinal),
+        "history buffer headings should distinguish the trend range from the selected-object detail window");
     var historySelectionStart = css.IndexOf(".history-selector-group .inventory-option:hover", StringComparison.Ordinal);
     var historySelectionEnd = historySelectionStart < 0 ? -1 : css.IndexOf('}', historySelectionStart);
     AssertTrue(historySelectionStart >= 0 && historySelectionEnd > historySelectionStart,
@@ -5133,14 +5503,20 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     {
         "renderHistoryBufferOverview",
         "renderHistoryInventoryBuffer",
+        "renderHistoryInventoryPositionChart",
+        "renderHistoryInventoryVolatilityChart",
         "renderHistoryDdmrpSizingTrace",
         "renderHistoryStandardDdmrpReference",
         "renderHistoryTimeBuffer",
+        "renderHistoryTimeStatusChart",
+        "renderHistoryTimeCostStrip",
         "renderHistoryCapacityBuffer",
         "renderHistoryDdmrpZoneSvg",
         "historyControlPointLabel",
+        "historyWeekXScale",
         "contiguousEvidenceSegments",
-        "buildLinearAreaPath"
+        "buildMonotonePath",
+        "buildMonotoneAreaPath"
     })
     {
         AssertTrue(script.Contains($"function {renderer}(", StringComparison.Ordinal), $"history UI should expose {renderer}");
@@ -5160,12 +5536,38 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     }
 
     var inventoryBody = SourceFunctionBody(script, "renderHistoryInventoryBuffer");
-    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow" })
+    AssertTrue(inventoryBody.Contains("historyWeekXScale", StringComparison.Ordinal)
+        && inventoryBody.Contains("renderHistoryInventoryPositionChart", StringComparison.Ordinal)
+        && inventoryBody.Contains("renderHistoryInventoryVolatilityChart", StringComparison.Ordinal),
+        "inventory history should pass one shared weekly x mapping to its position and volatility charts");
+
+    var inventoryPositionBody = SourceFunctionBody(script, "renderHistoryInventoryPositionChart");
+    foreach (var backendField in new[] { "point.topOfRed", "point.topOfYellow", "point.topOfGreen", "point.endingOnHand", "point.netFlow", "point.targetNetFlowPosition" })
     {
-        AssertTrue(inventoryBody.Contains(backendField, StringComparison.Ordinal), $"inventory history must read backend {backendField}");
+        AssertTrue(inventoryPositionBody.Contains(backendField, StringComparison.Ordinal), $"inventory position history must read backend {backendField}");
     }
-    AssertTrue(inventoryBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal),
-        "inventory history should split paths at evidence gaps");
+    AssertTrue(inventoryPositionBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal)
+        && inventoryPositionBody.Contains("buildMonotoneAreaPath", StringComparison.Ordinal)
+        && inventoryPositionBody.Contains("buildMonotonePath", StringComparison.Ordinal)
+        && inventoryPositionBody.Contains("history-evidence-gap", StringComparison.Ordinal),
+        "inventory position history should render monotone evidence segments and explicit gaps");
+    AssertTrue(inventoryPositionBody.Contains("point.parameterSnapshotId", StringComparison.Ordinal),
+        "weekly inventory evidence must identify the effective historical parameter snapshot across V1/V2");
+    AssertTrue(inventoryPositionBody.Contains("周历史趋势", StringComparison.Ordinal)
+        && inventoryPositionBody.Contains("累计提前期详细证据窗口：${number(item.detailWindowWeeks)} 周", StringComparison.Ordinal)
+        && !inventoryPositionBody.Contains("周证据", StringComparison.Ordinal),
+        "inventory trend and selected-object detail window should use unambiguous labels");
+
+    var inventoryVolatilityBody = SourceFunctionBody(script, "renderHistoryInventoryVolatilityChart");
+    foreach (var backendField in new[] { "point.actualDemand", "point.demandSpikeThreshold" })
+    {
+        AssertTrue(inventoryVolatilityBody.Contains(backendField, StringComparison.Ordinal), $"inventory volatility history must read backend {backendField}");
+    }
+    AssertTrue(inventoryVolatilityBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal)
+        && inventoryVolatilityBody.Contains("buildMonotoneAreaPath", StringComparison.Ordinal)
+        && inventoryVolatilityBody.Contains("buildMonotonePath", StringComparison.Ordinal)
+        && inventoryVolatilityBody.Contains("history-evidence-gap", StringComparison.Ordinal),
+        "inventory volatility should split backend demand and threshold evidence at explicit gaps");
 
     var sizingBody = SourceFunctionBody(script, "renderHistoryDdmrpSizingTrace");
     AssertTrue(sizingBody.Contains("item.sizingLines", StringComparison.Ordinal),
@@ -5203,12 +5605,25 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     }
 
     var timeBody = SourceFunctionBody(script, "renderHistoryTimeBuffer");
-    foreach (var backendField in new[] { "point.earlyCount", "point.greenCount", "point.yellowCount", "point.redCount", "point.lateCount", "point.abnormalCost" })
+    AssertTrue(timeBody.Contains("renderHistoryTimeStatusChart", StringComparison.Ordinal)
+        && timeBody.Contains("renderHistoryTimeCostStrip", StringComparison.Ordinal),
+        "time-buffer history should render status and cost evidence in separate hosts");
+    var timeStatusBody = SourceFunctionBody(script, "renderHistoryTimeStatusChart");
+    foreach (var backendField in new[] { "point.earlyCount", "point.greenCount", "point.yellowCount", "point.redCount", "point.lateCount" })
     {
-        AssertTrue(timeBody.Contains(backendField, StringComparison.Ordinal), $"time-buffer history must read backend {backendField}");
+        AssertTrue(timeStatusBody.Contains(backendField, StringComparison.Ordinal), $"time-buffer status history must read backend {backendField}");
     }
-    AssertTrue(timeBody.Contains("contiguousEvidenceSegments", StringComparison.Ordinal),
-        "time-buffer cost line should split at evidence gaps");
+    AssertTrue(!timeStatusBody.Contains("point.abnormalCost", StringComparison.Ordinal)
+        && !timeStatusBody.Contains("history-cost-line", StringComparison.Ordinal)
+        && !timeStatusBody.Contains("history-cost-marker", StringComparison.Ordinal),
+        "time status chart must not contain a cost series, marker or secondary scale");
+    var timeCostBody = SourceFunctionBody(script, "renderHistoryTimeCostStrip");
+    foreach (var backendField in new[] { "item.abnormalCostEvents", "event.periodStartDate", "event.costAmount", "event.costType", "event.cause", "event.controlPoint", "event.targetType", "event.targetId", "event.sourceAuthority", "event.evidenceStatus" })
+    {
+        AssertTrue(timeCostBody.Contains(backendField, StringComparison.Ordinal), $"time cost strip must read backend {backendField}");
+    }
+    AssertTrue(timeCostBody.Contains("本窗口无异常费用事实", StringComparison.Ordinal),
+        "time cost strip should distinguish no events from a zero-cost substitute");
 
     var capacityBody = SourceFunctionBody(script, "renderHistoryCapacityBuffer");
     foreach (var backendField in new[] { "point.committedLoad", "point.theoreticalCapacity", "point.standardCapacity", "point.demonstratedCapacity", "point.plannedAvailableCapacity", "point.protectionStart" })
@@ -5260,13 +5675,16 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "baseline details should expose the selected frozen snapshot endpoint");
     AssertTrue(fixture.Contains("export async function runHistoryBufferRendererFixtures", StringComparison.Ordinal)
         && fixture.Contains("new vm.Script(source", StringComparison.Ordinal)
-        && fixture.Contains("renderHistoryReview(__historyFixture)", StringComparison.Ordinal),
+        && fixture.Contains("renderHistoryReview(__historyFixture)", StringComparison.Ordinal)
+        && fixture.Contains("createStandaloneHistoryReview", StringComparison.Ordinal),
         "runtime fixture should compile and execute the real app.js renderers against a backend-shaped history DTO");
 
     var seed = SeedData.Create();
-    var history = new HistoryReviewWorkspaceService(
+    var historyService = new HistoryReviewWorkspaceService(
         new SeedHistoryOperatingFactSource(seed),
-        new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
+        new SeedScenarioWorkspaceDataSource(seed));
+    var history = historyService.GetReview(6);
+    var annualHistory = historyService.GetReview(12);
     var alternateSetting = history.StandardDdmrpReference!.Setting with
     {
         Adu = 13m,
@@ -5283,7 +5701,7 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
             SizingLines = DdmrpSizingExplanation.Build(alternateSizing),
         },
     };
-    RunHistoryBufferRendererFixture(root, history, alternateHistory);
+    RunHistoryBufferRendererFixture(root, history, alternateHistory, annualHistory);
 }
 
 static void TestFutureBufferChartsUseBackendSizingAndSeparateVolatility()
@@ -5449,17 +5867,22 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
 static void RunHistoryBufferRendererFixture(
     string root,
     HistoryReviewWorkspace history,
-    HistoryReviewWorkspace alternateHistory)
+    HistoryReviewWorkspace alternateHistory,
+    HistoryReviewWorkspace annualHistory)
 {
     var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "history-buffer-renderers.fixture.mjs");
     var dtoPath = Path.Combine(Path.GetTempPath(), $"history-review-{Guid.NewGuid():N}.json");
     var alternateDtoPath = Path.Combine(Path.GetTempPath(), $"history-review-alternate-{Guid.NewGuid():N}.json");
+    var annualDtoPath = Path.Combine(Path.GetTempPath(), $"history-review-annual-{Guid.NewGuid():N}.json");
     File.WriteAllText(
         dtoPath,
         JsonSerializer.Serialize(history, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     File.WriteAllText(
         alternateDtoPath,
         JsonSerializer.Serialize(alternateHistory, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    File.WriteAllText(
+        annualDtoPath,
+        JsonSerializer.Serialize(annualHistory, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
     try
     {
@@ -5478,6 +5901,7 @@ static void RunHistoryBufferRendererFixture(
         process.StartInfo.ArgumentList.Add(fixturePath);
         process.StartInfo.ArgumentList.Add(dtoPath);
         process.StartInfo.ArgumentList.Add(alternateDtoPath);
+        process.StartInfo.ArgumentList.Add(annualDtoPath);
         process.Start();
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
@@ -5502,6 +5926,7 @@ static void RunHistoryBufferRendererFixture(
     {
         File.Delete(dtoPath);
         File.Delete(alternateDtoPath);
+        File.Delete(annualDtoPath);
     }
 }
 
@@ -10958,7 +11383,49 @@ internal sealed class DuplicateCostEventHistoryOperatingFactSource : IHistoryOpe
         return facts with
         {
             AbnormalCosts = facts.AbnormalCosts
-                .Append(linked with { WeekOffset = linked.WeekOffset - 1 })
+                .Append(linked with { WeekOffset = -46 })
+                .ToList()
+        };
+    }
+}
+
+internal sealed class InvalidAbnormalCostLedgerHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public InvalidAbnormalCostLedgerHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        var linked = facts.AbnormalCosts.Single(item => item.EventId == "HAC-2026-002");
+        var invalidated = facts.AbnormalCosts
+            .Select(item => item.EventId switch
+            {
+                "HAC-2025-004" => item with { CostAmount = -1m },
+                "HAC-2025-003" => item with { SourceAuthority = null },
+                "HAC-2026-001" => item with { EvidenceStatus = "EvidenceMissing" },
+                _ => item,
+            })
+            .ToList();
+        return facts with
+        {
+            AbnormalCosts = invalidated
+                .Append(linked with { WeekOffset = -46 })
+                .Append(new HistoryAbnormalCostEvent(
+                    "HAC-VALID-RECENT",
+                    -8,
+                    50_000m,
+                    "额外物流费用",
+                    "有效事件",
+                    "Complete",
+                    "需求对象",
+                    "星载电子",
+                    "星载电子需求控制点",
+                    "DDAE 演示历史事实台账"))
                 .ToList()
         };
     }

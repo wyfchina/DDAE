@@ -700,6 +700,7 @@ function baselineSourceLabel(source) {
     "DDAE Demo Meeting Snapshot": "DDAE 会前快照演示证据",
     "DDAE Demo Time Evidence": "DDAE 时间缓冲演示证据",
     "DDAE DemoFixture explicit historical operating ledger": "DDAE 历史演示台账",
+    "DDAE 演示历史事实台账": "DDAE 历史演示台账",
   })[source];
   if (mapped) return mapped;
   if (normalized.includes("DemoFixture")) return "演示数据";
@@ -4523,12 +4524,33 @@ function renderHistoryBufferOverview(history) {
 function renderHistoryInventoryBuffer(history) {
   const item = (history.inventoryBuffers || []).find(candidate =>
     candidate.controlPoint === state.selectedHistoryControlPoint && candidate.sku === state.selectedHistoryInventorySku);
-  const host = byId("history-inventory-chart");
   if (!item || !item.points?.length) {
-    renderHistoryMissing("history-inventory-chart");
+    renderHistoryMissing("history-inventory-position-chart");
+    renderHistoryMissing("history-inventory-volatility-chart");
     return;
   }
 
+  const weekScale = historyWeekXScale(item.points);
+  renderHistoryInventoryPositionChart(history, item, weekScale);
+  renderHistoryInventoryVolatilityChart(history, item, weekScale);
+}
+
+function historyWeekXScale(points, width = 920, left = 58, right = 20) {
+  const coordinates = points.map((point, index) => ({
+    weekOffset: point.weekOffset,
+    x: left + (index * (width - left - right)) / Math.max(1, points.length - 1),
+  }));
+  return {
+    width,
+    left,
+    right,
+    domain: coordinates.map(point => point.weekOffset).join(","),
+    x: index => coordinates[index] ? coordinates[index].x : left,
+  };
+}
+
+function renderHistoryInventoryPositionChart(history, item, weekScale) {
+  const host = byId("history-inventory-position-chart");
   const points = item.points;
   const indexed = points.map((point, index) => ({ point, index }));
   const values = points.flatMap(point => [
@@ -4537,48 +4559,71 @@ function renderHistoryInventoryBuffer(history) {
     point.topOfGreen,
     point.endingOnHand,
     point.netFlow,
+    point.targetNetFlowPosition,
   ]).filter(isFiniteHistoryValue);
-  const width = 920;
   const height = 320;
-  const left = 58;
-  const right = 20;
   const top = 22;
   const bottom = 270;
   const scale = historyValueScale(values, top, bottom);
   if (!scale) {
-    renderHistoryMissing("history-inventory-chart");
+    renderHistoryMissing("history-inventory-position-chart", "所选对象在当前历史窗口内没有库存位置证据");
     return;
   }
-  const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
-  const zoneSegments = contiguousEvidenceSegments(indexed, entry => {
-    const point = entry.point;
-    return isFiniteHistoryValue(point.topOfRed)
-      && isFiniteHistoryValue(point.topOfYellow)
-      && isFiniteHistoryValue(point.topOfGreen);
-  });
-  const endingSegments = contiguousEvidenceSegments(indexed, entry => {
-    const point = entry.point;
-    return isFiniteHistoryValue(point.endingOnHand);
-  });
-  const netFlowSegments = contiguousEvidenceSegments(indexed, entry => {
-    const point = entry.point;
-    return isFiniteHistoryValue(point.netFlow);
-  });
 
-  const zonePaths = zoneSegments.map(segment => {
+  const x = weekScale.x;
+  const zoneSegments = contiguousEvidenceSegments(indexed, entry =>
+    hasValidBufferZoneEvidence(entry.point));
+  const endingSegments = contiguousEvidenceSegments(indexed, entry =>
+    isFiniteHistoryValue(entry.point.endingOnHand));
+  const netFlowSegments = contiguousEvidenceSegments(indexed, entry =>
+    isFiniteHistoryValue(entry.point.netFlow));
+  const targetSegments = contiguousEvidenceSegments(indexed, entry =>
+    isFiniteHistoryValue(entry.point.targetNetFlowPosition));
+
+  const zonePaths = zoneSegments.filter(segment => segment.length > 1).map((segment, segmentIndex) => {
     const redLower = segment.map(entry => ({ x: x(entry.index), y: scale.y(0) }));
     const redUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfRed) }));
-    const yellowLower = redUpper;
     const yellowUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfYellow) }));
-    const greenLower = yellowUpper;
     const greenUpper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.topOfGreen) }));
+    const linearSegments = new Set([
+      ...monotoneCrossingSegments(redLower, redUpper),
+      ...monotoneCrossingSegments(redUpper, yellowUpper),
+      ...monotoneCrossingSegments(yellowUpper, greenUpper),
+    ]);
+    const attributes = `data-series-segment="${segmentIndex}" data-week-start="${number(segment[0].point.weekOffset)}" data-week-end="${number(segment[segment.length - 1].point.weekOffset)}"`;
     return `
-      <path class="history-zone-fill is-red" d="${buildLinearAreaPath(redLower, redUpper)}"></path>
-      <path class="history-zone-fill is-yellow" d="${buildLinearAreaPath(yellowLower, yellowUpper)}"></path>
-      <path class="history-zone-fill is-green" d="${buildLinearAreaPath(greenLower, greenUpper)}"></path>`;
+      <path class="history-zone-fill is-red" ${attributes} d="${buildMonotoneAreaPath(redLower, redUpper, linearSegments)}"></path>
+      <path class="history-zone-fill is-yellow" ${attributes} d="${buildMonotoneAreaPath(redUpper, yellowUpper, linearSegments)}"></path>
+      <path class="history-zone-fill is-green" ${attributes} d="${buildMonotoneAreaPath(yellowUpper, greenUpper, linearSegments)}"></path>`;
   }).join("");
-  const endingPaths = endingSegments.map(segment => `<path class="history-series-line is-on-hand" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.endingOnHand) })))}"></path>`).join("");
-  const netFlowPaths = netFlowSegments.map(segment => `<path class="history-series-line is-net-flow" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.netFlow) })))}"></path>`).join("");
+  const zoneMarkers = zoneSegments.filter(segment => segment.length === 1).map(segment => {
+    const entry = segment[0];
+    const attributes = `data-week-offset="${number(entry.point.weekOffset)}" cx="${x(entry.index)}" r="3.5"`;
+    return `
+      <circle class="history-zone-point is-red" ${attributes} cy="${scale.y(entry.point.topOfRed)}"><title>${escapeHtml(entry.point.periodStartDate)} 红区上沿 ${number(entry.point.topOfRed)}</title></circle>
+      <circle class="history-zone-point is-yellow" ${attributes} cy="${scale.y(entry.point.topOfYellow)}"><title>${escapeHtml(entry.point.periodStartDate)} 黄区上沿 ${number(entry.point.topOfYellow)}</title></circle>
+      <circle class="history-zone-point is-green" ${attributes} cy="${scale.y(entry.point.topOfGreen)}"><title>${escapeHtml(entry.point.periodStartDate)} 绿区上沿 ${number(entry.point.topOfGreen)}</title></circle>`;
+  }).join("");
+  const linePaths = (segments, cssClass, read) => segments.filter(segment => segment.length > 1).map((segment, segmentIndex) =>
+    `<path class="history-series-line ${cssClass}" data-series-segment="${segmentIndex}" data-week-start="${number(segment[0].point.weekOffset)}" data-week-end="${number(segment[segment.length - 1].point.weekOffset)}" d="${buildMonotonePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(read(entry.point)) })))}"></path>`).join("");
+  const lineMarkers = (segments, cssClass, read, label) => segments.filter(segment => segment.length === 1).map(segment => {
+    const entry = segment[0];
+    return `<circle class="history-series-point ${cssClass}" data-week-offset="${number(entry.point.weekOffset)}" cx="${x(entry.index)}" cy="${scale.y(read(entry.point))}" r="3.5"><title>${escapeHtml(entry.point.periodStartDate)} ${escapeHtml(label)} ${number(read(entry.point))}</title></circle>`;
+  }).join("");
+  const endingPaths = linePaths(endingSegments, "is-on-hand", point => point.endingOnHand);
+  const netFlowPaths = linePaths(netFlowSegments, "is-net-flow", point => point.netFlow);
+  const targetPaths = linePaths(targetSegments, "is-target-nfp", point => point.targetNetFlowPosition);
+  const endingMarkers = lineMarkers(endingSegments, "is-on-hand", point => point.endingOnHand, "期末现有量");
+  const netFlowMarkers = lineMarkers(netFlowSegments, "is-net-flow", point => point.netFlow, "净流量位置");
+  const targetMarkers = lineMarkers(targetSegments, "is-target-nfp", point => point.targetNetFlowPosition, "目标净流量位置");
+  const gapMarkers = indexed
+    .filter(entry => !hasValidBufferZoneEvidence(entry.point) || [
+      entry.point.endingOnHand,
+      entry.point.netFlow,
+      entry.point.targetNetFlowPosition,
+    ].some(value => !isFiniteHistoryValue(value)))
+    .map(entry => `<g class="history-evidence-gap" data-week-offset="${number(entry.point.weekOffset)}"><line x1="${x(entry.index)}" y1="${top}" x2="${x(entry.index)}" y2="${bottom}"></line><text x="${x(entry.index)}" y="${top + 12}" text-anchor="middle">证据缺口</text></g>`)
+    .join("");
   const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
     ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
     : "").join("");
@@ -4586,20 +4631,89 @@ function renderHistoryInventoryBuffer(history) {
     escapeHtml(point.periodStartDate),
     metricOrEvidenceMissing(point.endingOnHand),
     metricOrEvidenceMissing(point.netFlow),
+    metricOrEvidenceMissing(point.targetNetFlowPosition),
+    escapeHtml(metricOrEvidenceMissing(point.parameterSnapshotId)),
     escapeHtml(businessEvidenceLabel(point.cause)),
     escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
   ])).join("");
 
   host.innerHTML = `
-    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)}</strong><span>${number(item.detailWindowWeeks)} 周证据</span></div>
-    <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="库存缓冲历史水位">
-      <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
-      ${zonePaths}${endingPaths}${netFlowPaths}${periodLabels}
-      <text class="history-axis-label" x="${left - 8}" y="${scale.y(scale.maximum) + 4}" text-anchor="end">${number(scale.maximum)}</text>
-      <text class="history-axis-label" x="${left - 8}" y="${scale.y(0) + 4}" text-anchor="end">0</text>
+    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${escapeHtml(item.sku)} ${escapeHtml(item.name)} · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>累计提前期详细证据窗口：${number(item.detailWindowWeeks)} 周</span></div>
+    <svg class="history-evidence-svg" data-history-week-domain="${escapeHtml(weekScale.domain)}" viewBox="0 0 ${weekScale.width} ${height}" role="img" aria-label="库存缓冲历史水位与动态区域">
+      <line class="history-axis-line" x1="${weekScale.left}" y1="${bottom}" x2="${weekScale.width - weekScale.right}" y2="${bottom}"></line>
+      ${zonePaths}${zoneMarkers}${endingPaths}${endingMarkers}${netFlowPaths}${netFlowMarkers}${targetPaths}${targetMarkers}${gapMarkers}${periodLabels}
+      <text class="history-axis-label" x="${weekScale.left - 8}" y="${scale.y(scale.maximum) + 4}" text-anchor="end">${number(scale.maximum)}</text>
+      <text class="history-axis-label" x="${weekScale.left - 8}" y="${scale.y(0) + 4}" text-anchor="end">0</text>
     </svg>
-    <div class="history-chart-legend"><span><i class="zone red"></i>红区</span><span><i class="zone yellow"></i>黄区</span><span><i class="zone green"></i>绿区</span><span><i class="line on-hand"></i>期末现有量</span><span><i class="line net-flow"></i>净流量位置</span></div>
-    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>期末现有量</th><th>净流量位置</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+    <div class="history-chart-legend"><span><i class="zone red"></i>红区</span><span><i class="zone yellow"></i>黄区</span><span><i class="zone green"></i>绿区</span><span><i class="line on-hand"></i>期末现有量</span><span><i class="line net-flow"></i>净流量位置</span><span><i class="line target-nfp"></i>目标净流量位置</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>期末现有量</th><th>净流量位置</th><th>目标净流量</th><th>参数快照</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+}
+
+function renderHistoryInventoryVolatilityChart(history, item, weekScale) {
+  const host = byId("history-inventory-volatility-chart");
+  const points = item.points;
+  const indexed = points.map((point, index) => ({ point, index }));
+  const validDemandValue = value => isFiniteHistoryValue(value) && Number(value) >= 0;
+  const validThresholdValue = value => isFiniteHistoryValue(value) && Number(value) > 0;
+  const values = points.flatMap(point => [
+    ...(validDemandValue(point.actualDemand) ? [point.actualDemand] : []),
+    ...(validThresholdValue(point.demandSpikeThreshold) ? [point.demandSpikeThreshold] : []),
+  ]);
+  const height = 260;
+  const top = 20;
+  const bottom = 212;
+  const scale = historyValueScale([0, ...values], top, bottom);
+  if (!scale) {
+    renderHistoryMissing("history-inventory-volatility-chart", "所选对象在当前历史窗口内没有需求波动证据");
+    return;
+  }
+
+  const x = weekScale.x;
+  const demandSegments = contiguousEvidenceSegments(indexed, entry =>
+    validDemandValue(entry.point.actualDemand));
+  const thresholdSegments = contiguousEvidenceSegments(indexed, entry =>
+    validThresholdValue(entry.point.demandSpikeThreshold));
+  if (!demandSegments.length && !thresholdSegments.length) {
+    renderHistoryMissing("history-inventory-volatility-chart", "所选对象在当前历史窗口内没有需求波动证据");
+    return;
+  }
+
+  const demandAreas = demandSegments.filter(segment => segment.length > 1).map((segment, segmentIndex) => {
+    const lower = segment.map(entry => ({ x: x(entry.index), y: scale.y(0) }));
+    const upper = segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.actualDemand) }));
+    return `<path class="history-demand-area" data-series-segment="${segmentIndex}" data-week-start="${number(segment[0].point.weekOffset)}" data-week-end="${number(segment[segment.length - 1].point.weekOffset)}" d="${buildMonotoneAreaPath(lower, upper, monotoneCrossingSegments(lower, upper))}"></path>`;
+  }).join("");
+  const demandMarkers = demandSegments.flat().map(entry =>
+    `<circle class="history-demand-point" data-week-offset="${number(entry.point.weekOffset)}" data-value="${number(entry.point.actualDemand)}" cx="${x(entry.index)}" cy="${scale.y(entry.point.actualDemand)}" r="2.8"></circle>`).join("");
+  const thresholdPaths = thresholdSegments.filter(segment => segment.length > 1).map((segment, segmentIndex) =>
+    `<path class="history-demand-threshold" data-series-segment="${segmentIndex}" data-week-start="${number(segment[0].point.weekOffset)}" data-week-end="${number(segment[segment.length - 1].point.weekOffset)}" d="${buildMonotonePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(entry.point.demandSpikeThreshold) })))}"></path>`).join("");
+  const thresholdMarkers = thresholdSegments.filter(segment => segment.length === 1).map(segment => {
+    const entry = segment[0];
+    return `<circle class="history-demand-threshold-point" data-week-offset="${number(entry.point.weekOffset)}" cx="${x(entry.index)}" cy="${scale.y(entry.point.demandSpikeThreshold)}" r="3.5"><title>${escapeHtml(entry.point.periodStartDate)} 需求尖峰阈值 ${number(entry.point.demandSpikeThreshold)}</title></circle>`;
+  }).join("");
+  const gapMarkers = indexed
+    .filter(entry => !validDemandValue(entry.point.actualDemand)
+      || !validThresholdValue(entry.point.demandSpikeThreshold))
+    .map(entry => `<g class="history-evidence-gap" data-week-offset="${number(entry.point.weekOffset)}"><line x1="${x(entry.index)}" y1="${top}" x2="${x(entry.index)}" y2="${bottom}"></line><text x="${x(entry.index)}" y="${top + 12}" text-anchor="middle">证据缺口</text></g>`)
+    .join("");
+  const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
+    ? `<text class="history-axis-label" x="${x(index)}" y="238" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
+    : "").join("");
+  const evidenceRows = points.map(point => row([
+    escapeHtml(point.periodStartDate),
+    metricOrEvidenceMissing(point.actualDemand),
+    metricOrEvidenceMissing(point.demandSpikeThreshold),
+    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
+  ])).join("");
+
+  host.innerHTML = `
+    <div class="history-chart-heading"><strong>实际需求波动与尖峰阈值 · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>阈值来自后端历史证据，不在前端重算</span></div>
+    <svg class="history-evidence-svg history-volatility-svg" data-history-week-domain="${escapeHtml(weekScale.domain)}" data-zero-y="${scale.y(0)}" viewBox="0 0 ${weekScale.width} ${height}" role="img" aria-label="历史实际需求波动与后端尖峰阈值">
+      <line class="history-axis-line" x1="${weekScale.left}" y1="${bottom}" x2="${weekScale.width - weekScale.right}" y2="${bottom}"></line>
+      ${demandAreas}${thresholdPaths}${thresholdMarkers}${demandMarkers}${gapMarkers}${periodLabels}
+    </svg>
+    <div class="history-chart-legend"><span><i class="area demand"></i>实际需求波动</span><span><i class="line demand-threshold"></i>后端需求尖峰阈值</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>实际需求</th><th>尖峰阈值</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
 }
 
 function historyGreenDriverLabel(value) {
@@ -4753,31 +4867,35 @@ function renderHistoryStandardDdmrpReference(history) {
 
 function renderHistoryTimeBuffer(history) {
   const item = (history.timeBuffers || []).find(candidate => candidate.bufferId === state.selectedHistoryTimeBufferId);
-  const host = byId("history-time-buffer-chart");
   if (!item || !item.points?.length) {
-    renderHistoryMissing("history-time-buffer-chart");
+    renderHistoryMissing("history-time-status-chart");
+    renderHistoryMissing("history-time-cost-strip", "所选时间缓冲没有异常费用事实证据");
     return;
   }
 
+  renderHistoryTimeStatusChart(history, item);
+  renderHistoryTimeCostStrip(history, item);
+}
+
+function renderHistoryTimeStatusChart(history, item) {
+  const host = byId("history-time-status-chart");
   const points = item.points;
   const indexed = points.map((point, index) => ({ point, index }));
+  const validBandValue = value => isFiniteHistoryValue(value) && Number(value) >= 0;
   const bandPoints = indexed.filter(entry => {
     const point = entry.point;
     return [point.earlyCount, point.greenCount, point.yellowCount, point.redCount, point.lateCount]
-      .every(isFiniteHistoryValue);
+      .every(validBandValue);
   });
+  if (!bandPoints.length) {
+    renderHistoryMissing("history-time-status-chart", "所选时间缓冲在当前历史窗口内没有五段状态证据");
+    return;
+  }
+
   const totals = bandPoints.map(entry => {
     const point = entry.point;
     return Number(point.earlyCount) + Number(point.greenCount) + Number(point.yellowCount) + Number(point.redCount) + Number(point.lateCount);
   });
-  const costSegments = contiguousEvidenceSegments(indexed, entry => {
-    const point = entry.point;
-    return isFiniteHistoryValue(point.abnormalCost);
-  });
-  if (!bandPoints.length && !costSegments.length) {
-    renderHistoryMissing("history-time-buffer-chart");
-    return;
-  }
 
   const width = 920;
   const height = 320;
@@ -4787,8 +4905,6 @@ function renderHistoryTimeBuffer(history) {
   const bottom = 270;
   const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
   const countScale = historyValueScale([0, ...totals], top, bottom);
-  const costValues = costSegments.flatMap(segment => segment.map(entry => entry.point.abnormalCost));
-  const costScale = historyValueScale([0, ...costValues], top, bottom);
   const barWidth = Math.max(3, Math.min(22, (width - left - right) / Math.max(1, points.length) * 0.7));
   const bands = [
     ["is-early", point => point.earlyCount],
@@ -4807,14 +4923,16 @@ function renderHistoryTimeBuffer(history) {
       return `<rect class="history-time-band ${cssClass}" x="${x(entry.index) - barWidth / 2}" y="${y}" width="${barWidth}" height="${Math.max(0, bandHeight)}"></rect>`;
     }).join("");
   }).join("") : "";
-  const costPaths = costScale ? costSegments
-    .filter(segment => segment.length > 1)
-    .map(segment => `<path class="history-cost-line" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: costScale.y(entry.point.abnormalCost) })))}"></path>`)
-    .join("") : "";
-  const costMarkers = costScale ? costSegments
-    .flat()
-    .map(entry => `<circle class="history-cost-marker" data-week-offset="${number(entry.point.weekOffset)}" cx="${x(entry.index)}" cy="${costScale.y(entry.point.abnormalCost)}" r="4"></circle>`)
-    .join("") : "";
+  const gapMarkers = indexed
+    .filter(entry => [
+      entry.point.earlyCount,
+      entry.point.greenCount,
+      entry.point.yellowCount,
+      entry.point.redCount,
+      entry.point.lateCount,
+    ].some(value => !validBandValue(value)))
+    .map(entry => `<g class="history-evidence-gap" data-week-offset="${number(entry.point.weekOffset)}"><line x1="${x(entry.index)}" y1="${top}" x2="${x(entry.index)}" y2="${bottom}"></line><text x="${x(entry.index)}" y="${top + 12}" text-anchor="middle">证据缺口</text></g>`)
+    .join("");
   const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
     ? `<text class="history-axis-label" x="${x(index)}" y="296" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
     : "").join("");
@@ -4825,18 +4943,47 @@ function renderHistoryTimeBuffer(history) {
     metricOrEvidenceMissing(point.yellowCount),
     metricOrEvidenceMissing(point.redCount),
     metricOrEvidenceMissing(point.lateCount),
-    metricOrEvidenceMissing(point.abnormalCost, money),
     escapeHtml(businessEvidenceLabel(point.cause)),
+    escapeHtml(evidenceStatusLabel(point.evidenceStatus)),
   ])).join("");
 
   host.innerHTML = `
-    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))}</strong><span>${escapeHtml(item.protectedActivity)}</span></div>
+    <div class="history-chart-heading"><strong>${escapeHtml(historyControlPointLabel(item.controlPoint))} · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>${escapeHtml(item.protectedActivity)}</span></div>
     <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="时间缓冲五段历史">
       <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
-      ${bars}${costPaths}${costMarkers}${periodLabels}
+      ${bars}${gapMarkers}${periodLabels}
     </svg>
-    <div class="history-chart-legend"><span><i class="band early"></i>提前</span><span><i class="band green"></i>绿色</span><span><i class="band yellow"></i>黄色</span><span><i class="band red"></i>红色</span><span><i class="band late"></i>延误</span><span><i class="line cost"></i>异常费用</span></div>
-    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>提前</th><th>绿色</th><th>黄色</th><th>红色</th><th>延误</th><th>异常费用</th><th>原因</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+    <div class="history-chart-legend"><span><i class="band early"></i>提前</span><span><i class="band green"></i>绿色</span><span><i class="band yellow"></i>黄色</span><span><i class="band red"></i>红色</span><span><i class="band late"></i>延误</span></div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>提前</th><th>绿色</th><th>黄色</th><th>红色</th><th>延误</th><th>原因</th><th>证据</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+}
+
+function renderHistoryTimeCostStrip(history, item) {
+  const host = byId("history-time-cost-strip");
+  const events = Array.isArray(item.abnormalCostEvents) ? item.abnormalCostEvents : [];
+  const heading = `
+    <div class="history-chart-heading"><strong>全对象异常费用事实台账 · ${number(history.observedTrendWeeks)} 周历史趋势</strong><span>所选历史窗口内全部有效事件</span></div>`;
+  if (!events.length) {
+    host.innerHTML = `${heading}<div class="history-cost-empty">本窗口无异常费用事实</div>`;
+    return;
+  }
+
+  const cards = events.map(event => {
+    const target = `${metricOrEvidenceMissing(event.targetType)} · ${metricOrEvidenceMissing(event.targetId)}`;
+    return `
+      <article class="history-cost-event-card" data-event-id="${escapeHtml(metricOrEvidenceMissing(event.eventId))}">
+        <div class="history-cost-event-heading"><span>${escapeHtml(metricOrEvidenceMissing(event.periodStartDate))}</span><strong>${escapeHtml(metricOrEvidenceMissing(event.costAmount, money))}</strong></div>
+        <dl class="history-cost-event-facts">
+          <div><dt>事实编号</dt><dd>${escapeHtml(metricOrEvidenceMissing(event.eventId))}</dd></div>
+          <div><dt>费用类型</dt><dd>${escapeHtml(metricOrEvidenceMissing(event.costType))}</dd></div>
+          <div><dt>原因</dt><dd>${escapeHtml(metricOrEvidenceMissing(event.cause))}</dd></div>
+          <div><dt>控制点</dt><dd>${escapeHtml(historyControlPointLabel(metricOrEvidenceMissing(event.controlPoint)))}</dd></div>
+          <div><dt>影响对象</dt><dd>${escapeHtml(target)}</dd></div>
+          <div><dt>来源</dt><dd>${escapeHtml(baselineSourceLabel(metricOrEvidenceMissing(event.sourceAuthority)))}</dd></div>
+          <div><dt>证据</dt><dd>${escapeHtml(evidenceStatusLabel(metricOrEvidenceMissing(event.evidenceStatus)))}</dd></div>
+        </dl>
+      </article>`;
+  }).join("");
+  host.innerHTML = `${heading}<div class="history-cost-event-grid">${cards}</div>`;
 }
 
 function renderHistoryCapacityBuffer(history) {
@@ -4928,7 +5075,7 @@ function renderHistoryReview(history) {
     ["服务水平", metricOrEvidenceMissing(outcomes.serviceLevelPercent, percent), `${history.observedTrendWeeks} 周历史实际`],
     ["平均库存金额", metricOrEvidenceMissing(outcomes.inventoryValue, money), "所选历史窗口平均"],
     ["在制品", metricOrEvidenceMissing(outcomes.workInProcessUnits, number), "所选历史窗口平均"],
-    ["流动时间", metricOrEvidenceMissing(outcomes.averageFlowTimeDays, value => `${number(value)} 天`), `详细窗口 ${history.detailWindowWeeks} 周`],
+    ["流动时间", metricOrEvidenceMissing(outcomes.averageFlowTimeDays, value => `${number(value)} 天`), `累计提前期详细证据窗口：${history.detailWindowWeeks} 周`],
     ["现金占用", metricOrEvidenceMissing(outcomes.cashOccupied, money), "历史经营结果"],
     ["异常费用", metricOrEvidenceMissing(outcomes.expediteCost, money), "可追溯异常处置"],
     ["剩余保护", metricOrEvidenceMissing(outcomes.remainingProtectionPercent, percent), "上游能力保护余额"],

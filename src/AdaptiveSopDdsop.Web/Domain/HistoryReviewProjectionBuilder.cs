@@ -10,14 +10,24 @@ public static class HistoryReviewProjectionBuilder
     public static HistoryReviewProjection Build(
         HistoryFactSet facts,
         ScenarioWorkspaceDataSet definitions,
-        int detailWindowWeeks)
+        int detailWindowWeeks,
+        IReadOnlyList<WeeklyBufferFact>? rollingBufferFacts = null,
+        IReadOnlyList<HistoryAbnormalCostEvent>? abnormalCostLedger = null)
     {
         var weeks = Math.Clamp(facts.Request.Weeks, 1, 52);
         var normalizedDetailWindow = Math.Clamp(detailWindowWeeks, 1, weeks);
         var parameterFacts = facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>();
-        var inventory = BuildInventoryBuffers(facts, parameterFacts, weeks, normalizedDetailWindow);
+        var inventory = BuildInventoryBuffers(
+            facts,
+            parameterFacts,
+            rollingBufferFacts ?? facts.BufferFacts,
+            weeks,
+            normalizedDetailWindow);
         var sizing = BuildSizingSnapshots(parameterFacts, inventory);
-        var time = BuildTimeBuffers(facts, weeks);
+        var time = BuildTimeBuffers(
+            facts,
+            weeks,
+            abnormalCostLedger ?? facts.AbnormalCosts);
         var capacity = BuildCapacityBuffers(facts, definitions.Resources, weeks);
 
         return new HistoryReviewProjection(inventory, sizing, time, capacity);
@@ -26,6 +36,7 @@ public static class HistoryReviewProjectionBuilder
     private static IReadOnlyList<HistoryInventoryBufferView> BuildInventoryBuffers(
         HistoryFactSet facts,
         IReadOnlyList<HistoricalDdmrpParameterFact> parameterFacts,
+        IReadOnlyList<WeeklyBufferFact> rollingBufferFacts,
         int weeks,
         int detailWindowWeeks)
     {
@@ -40,6 +51,9 @@ public static class HistoryReviewProjectionBuilder
         return skus.Select(sku =>
         {
             var skuFacts = facts.BufferFacts
+                .Where(item => item.Sku == sku)
+                .ToList();
+            var skuRollingFacts = rollingBufferFacts
                 .Where(item => item.Sku == sku)
                 .ToList();
             var skuParameters = parameterFacts
@@ -65,6 +79,7 @@ public static class HistoryReviewProjectionBuilder
                     controlPoint,
                     weekOffset,
                     factsByWeek.GetValueOrDefault(weekOffset) ?? new List<WeeklyBufferFact>(),
+                    skuRollingFacts,
                     skuParameters))
                 .ToList();
             var distribution = BuildBuckets(
@@ -99,6 +114,7 @@ public static class HistoryReviewProjectionBuilder
         string controlPoint,
         int weekOffset,
         IReadOnlyList<WeeklyBufferFact> matchingFacts,
+        IReadOnlyList<WeeklyBufferFact> skuFacts,
         IReadOnlyList<HistoricalDdmrpParameterFact> parameterFacts)
     {
         if (matchingFacts.Count != 1)
@@ -138,8 +154,27 @@ public static class HistoryReviewProjectionBuilder
                     item.EffectiveFromWeekOffset <= weekOffset &&
                     weekOffset <= item.EffectiveThroughWeekOffset)
                 .ToList();
-        var sizing = snapshots.Count == 1 ? CalculateSizingOrNull(snapshots[0]) : null;
-        var complete = quantitiesComplete && sizing is not null;
+        var rollingAdu = CalculateRollingHistoricalAdu(skuFacts, weekOffset);
+        var sizing = snapshots.Count == 1 && rollingAdu.HasValue
+            ? CalculateSizingOrNull(snapshots[0] with
+            {
+                Setting = snapshots[0].Setting with { Adu = rollingAdu.Value }
+            })
+            : null;
+        var actualDemand = fact.EvidenceStatus == Complete && fact.QualifiedDemand is >= 0m
+            ? fact.QualifiedDemand
+            : null;
+        var demandSpikeThreshold = fact.EvidenceStatus == Complete && fact.DemandSpikeThreshold is > 0m
+            ? fact.DemandSpikeThreshold
+            : null;
+        decimal? targetNetFlowPosition = sizing is null
+            ? null
+            : decimal.Round(
+                (sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m,
+                2,
+                MidpointRounding.AwayFromZero);
+        var complete = quantitiesComplete && sizing is not null &&
+            actualDemand.HasValue && demandSpikeThreshold.HasValue && targetNetFlowPosition.HasValue;
 
         return new HistoryInventoryPoint(
             weekOffset,
@@ -154,7 +189,44 @@ public static class HistoryReviewProjectionBuilder
             complete ? DdmrpCalculator.GetBufferStatus(fact.EndingNetFlow!.Value, sizing!.Zones) : EvidenceMissing,
             string.IsNullOrWhiteSpace(fact.ExplicitCause) ? "历史原因事实缺失" : fact.ExplicitCause,
             fact.ParameterSnapshotId,
-            complete ? Complete : EvidenceMissing);
+            complete ? Complete : EvidenceMissing,
+            actualDemand,
+            demandSpikeThreshold,
+            complete ? targetNetFlowPosition : null);
+    }
+
+    private static decimal? CalculateRollingHistoricalAdu(
+        IReadOnlyList<WeeklyBufferFact> skuFacts,
+        int weekOffset)
+    {
+        var historicalFacts = skuFacts
+            .Where(item => item.WeekOffset <= weekOffset)
+            .OrderBy(item => item.WeekOffset)
+            .ToList();
+        if (historicalFacts.Count == 0)
+        {
+            return null;
+        }
+
+        var firstWeek = historicalFacts[0].WeekOffset;
+        var windowStart = Math.Max(firstWeek, weekOffset - 12);
+        var weeklyDemand = Enumerable.Range(windowStart, weekOffset - windowStart + 1)
+            .Select(offset => historicalFacts.Where(item => item.WeekOffset == offset).ToList())
+            .ToList();
+        if (weeklyDemand.Any(items =>
+                items.Count != 1 ||
+                items[0].EvidenceStatus != Complete ||
+                !items[0].QualifiedDemand.HasValue ||
+                items[0].QualifiedDemand.GetValueOrDefault() < 0m))
+        {
+            return null;
+        }
+
+        var rollingAdu = decimal.Round(
+            weeklyDemand.Average(items => items[0].QualifiedDemand!.Value) / 7m,
+            2,
+            MidpointRounding.AwayFromZero);
+        return rollingAdu > 0m ? rollingAdu : null;
     }
 
     private static IReadOnlyList<HistoryDdmrpSizingSnapshotView> BuildSizingSnapshots(
@@ -232,8 +304,12 @@ public static class HistoryReviewProjectionBuilder
 
     private static IReadOnlyList<HistoryTimeBufferView> BuildTimeBuffers(
         HistoryFactSet facts,
-        int weeks)
+        int weeks,
+        IReadOnlyList<HistoryAbnormalCostEvent> abnormalCostLedger)
     {
+        var validAbnormalCostEvents = SelectValidAbnormalCostEvents(
+            facts.AbnormalCosts,
+            abnormalCostLedger);
         var eligibleFacts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
             .Where(IsEligibleTimeFact)
             .ToList();
@@ -258,9 +334,16 @@ public static class HistoryReviewProjectionBuilder
             var points = HistoricalWeeks(weeks)
                 .Select(weekOffset => BuildTimePoint(
                     facts,
+                    validAbnormalCostEvents,
+                    bufferId,
+                    controlPoint,
                     weekOffset,
                     factsByWeek.GetValueOrDefault(weekOffset) ?? new List<WeeklyTimeBufferFact>()))
                 .ToList();
+            var abnormalCostEvents = BuildGlobalAbnormalCostEventViews(
+                facts,
+                weeks,
+                validAbnormalCostEvents);
             var completePoints = points.Where(item => item.EvidenceStatus == Complete).ToList();
             var countByCode = new Dictionary<string, int>(StringComparer.Ordinal)
             {
@@ -290,12 +373,16 @@ public static class HistoryReviewProjectionBuilder
                 protectedActivity,
                 points,
                 distribution,
-                evidenceStatus);
+                evidenceStatus,
+                abnormalCostEvents);
         }).ToList();
     }
 
     private static HistoryTimeBufferPoint BuildTimePoint(
         HistoryFactSet facts,
+        IReadOnlyList<HistoryAbnormalCostEvent> validAbnormalCostEvents,
+        string bufferId,
+        string controlPoint,
         int weekOffset,
         IReadOnlyList<WeeklyTimeBufferFact> matchingFacts)
     {
@@ -321,19 +408,15 @@ public static class HistoryReviewProjectionBuilder
             fact.YellowCount is >= 0 &&
             fact.RedCount is >= 0 &&
             fact.LateCount is >= 0;
-        var costEvents = string.IsNullOrWhiteSpace(fact.AbnormalCostEventId)
-            ? new List<HistoryAbnormalCostEvent>()
-            : facts.AbnormalCosts
-                .Where(item => item.EventId == fact.AbnormalCostEventId)
-                .ToList();
         var hasNoCostEvidence = fact.AbnormalCostEventId is null && fact.AbnormalCost is null;
-        var hasMatchedCostEvidence = fact.AbnormalCostEventId is not null &&
-            fact.AbnormalCost.HasValue &&
-            costEvents.Count == 1 &&
-            costEvents[0].WeekOffset == weekOffset &&
-            costEvents[0].EvidenceStatus == Complete &&
-            fact.AbnormalCost.Value == costEvents[0].CostAmount;
-        var costComplete = hasNoCostEvidence || hasMatchedCostEvidence;
+        var matchedCostEvent = BuildAbnormalCostEventView(
+            facts,
+            validAbnormalCostEvents,
+            bufferId,
+            controlPoint,
+            weekOffset,
+            matchingFacts);
+        var costComplete = hasNoCostEvidence || matchedCostEvent is not null;
         var complete = countsComplete && costComplete;
 
         return new HistoryTimeBufferPoint(
@@ -344,10 +427,122 @@ public static class HistoryReviewProjectionBuilder
             fact.YellowCount,
             fact.RedCount,
             fact.LateCount,
-            hasMatchedCostEvidence ? costEvents[0].CostAmount : null,
+            matchedCostEvent?.CostAmount,
             string.IsNullOrWhiteSpace(fact.ExplicitCause) ? "历史原因事实缺失" : fact.ExplicitCause,
             complete ? Complete : EvidenceMissing);
     }
+
+    private static HistoryAbnormalCostEventView? BuildAbnormalCostEventView(
+        HistoryFactSet facts,
+        IReadOnlyList<HistoryAbnormalCostEvent> validAbnormalCostEvents,
+        string bufferId,
+        string controlPoint,
+        int weekOffset,
+        IReadOnlyList<WeeklyTimeBufferFact> matchingFacts)
+    {
+        if (matchingFacts.Count != 1)
+        {
+            return null;
+        }
+
+        var fact = matchingFacts[0];
+        if (fact.BufferId != bufferId ||
+            fact.ControlPoint != controlPoint ||
+            fact.EvidenceStatus != Complete ||
+            string.IsNullOrWhiteSpace(fact.AbnormalCostEventId) ||
+            !fact.AbnormalCost.HasValue)
+        {
+            return null;
+        }
+
+        var candidates = validAbnormalCostEvents
+            .Where(item => item.EventId == fact.AbnormalCostEventId)
+            .ToList();
+        if (candidates.Count != 1)
+        {
+            return null;
+        }
+
+        var costEvent = candidates[0];
+        var completeMatch = costEvent.WeekOffset == weekOffset &&
+            costEvent.CostAmount == fact.AbnormalCost.Value &&
+            HasCompleteAbnormalCostEventEvidence(costEvent) &&
+            costEvent.TargetType == "时间缓冲" &&
+            costEvent.TargetId == bufferId &&
+            costEvent.ControlPoint == controlPoint &&
+            string.Equals(costEvent.Cause, fact.ExplicitCause, StringComparison.Ordinal);
+        if (!completeMatch)
+        {
+            return null;
+        }
+
+        return new HistoryAbnormalCostEventView(
+            costEvent.EventId,
+            costEvent.WeekOffset,
+            PeriodStartDate(facts, costEvent.WeekOffset),
+            costEvent.CostAmount,
+            costEvent.CostType,
+            costEvent.Cause,
+            costEvent.TargetType!,
+            costEvent.TargetId!,
+            costEvent.ControlPoint!,
+            costEvent.SourceAuthority!,
+            costEvent.EvidenceStatus);
+    }
+
+    private static IReadOnlyList<HistoryAbnormalCostEventView> BuildGlobalAbnormalCostEventViews(
+        HistoryFactSet facts,
+        int weeks,
+        IReadOnlyList<HistoryAbnormalCostEvent> validAbnormalCostEvents)
+    {
+        var validWeeks = HistoricalWeeks(weeks).ToHashSet();
+        return validAbnormalCostEvents
+            .Where(item => validWeeks.Contains(item.WeekOffset))
+            .Select(item => new HistoryAbnormalCostEventView(
+                item.EventId,
+                item.WeekOffset,
+                PeriodStartDate(facts, item.WeekOffset),
+                item.CostAmount,
+                item.CostType,
+                item.Cause,
+                item.TargetType!,
+                item.TargetId!,
+                item.ControlPoint!,
+                item.SourceAuthority!,
+                item.EvidenceStatus))
+            .ToList();
+    }
+
+    internal static IReadOnlyList<HistoryAbnormalCostEvent> SelectValidAbnormalCostEvents(
+        IReadOnlyList<HistoryAbnormalCostEvent> windowEvents,
+        IReadOnlyList<HistoryAbnormalCostEvent> annualLedger)
+    {
+        var uniqueLedgerEvents = annualLedger
+            .Where(item => !string.IsNullOrWhiteSpace(item.EventId))
+            .GroupBy(item => item.EventId, StringComparer.Ordinal)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+        return windowEvents
+            .Where(item =>
+                !string.IsNullOrWhiteSpace(item.EventId) &&
+                uniqueLedgerEvents.TryGetValue(item.EventId, out var ledgerEvent) &&
+                ledgerEvent == item &&
+                HasCompleteAbnormalCostEventEvidence(item))
+            .OrderBy(item => item.WeekOffset)
+            .ThenBy(item => item.EventId, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static bool HasCompleteAbnormalCostEventEvidence(HistoryAbnormalCostEvent item) =>
+        item.EvidenceStatus == Complete &&
+        item.CostAmount > 0m &&
+        !string.IsNullOrWhiteSpace(item.EventId) &&
+        !string.IsNullOrWhiteSpace(item.CostType) &&
+        !string.IsNullOrWhiteSpace(item.Cause) &&
+        !string.IsNullOrWhiteSpace(item.TargetType) &&
+        !string.IsNullOrWhiteSpace(item.TargetId) &&
+        !string.IsNullOrWhiteSpace(item.ControlPoint) &&
+        !string.IsNullOrWhiteSpace(item.SourceAuthority);
 
     private static IReadOnlyList<HistoryCapacityBufferView> BuildCapacityBuffers(
         HistoryFactSet facts,

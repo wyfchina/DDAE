@@ -161,12 +161,18 @@
                     </aside>
                     <div class="history-object-options">
                         <section class="history-visual-card">
-                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">库存缓冲</span><h2>水位与区域历史</h2></div></div>
-                            <div id="history-inventory-chart" class="history-chart" aria-label="历史库存缓冲图" aria-live="polite"></div>
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">库存缓冲</span><h2>26 周/52 周历史趋势</h2></div></div>
+                            <div id="history-inventory-chart" class="history-chart-stack" aria-label="历史库存缓冲图" aria-live="polite">
+                                <div id="history-inventory-position-chart" class="history-chart" aria-label="历史库存水位与区域图"></div>
+                                <div id="history-inventory-volatility-chart" class="history-chart" aria-label="历史需求波动图"></div>
+                            </div>
                         </section>
                         <section class="history-visual-card">
-                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间缓冲</span><h2>五段时效与异常费用</h2></div></div>
-                            <div id="history-time-buffer-chart" class="history-chart" aria-label="历史时间缓冲图" aria-live="polite"></div>
+                            <div class="panel-heading compact-heading"><div><span class="panel-kicker">时间缓冲</span><h2>26 周/52 周历史趋势</h2></div></div>
+                            <div id="history-time-buffer-chart" class="history-chart-stack" aria-label="历史时间缓冲图" aria-live="polite">
+                                <div id="history-time-status-chart" class="history-chart" aria-label="历史时间缓冲五段状态图"></div>
+                                <div id="history-time-cost-strip" class="history-cost-strip" aria-label="历史异常费用事实"></div>
+                            </div>
                         </section>
                     </div>
                 </div>

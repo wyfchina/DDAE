@@ -113,12 +113,20 @@ public sealed class HistoryReviewWorkspaceService
             ? Math.Clamp((int)Math.Ceiling(maximumLeadTime.Value / 7m), 1, requestedWeeks)
             : (int?)null;
         var projectionDetailWeeks = detailWeeks ?? requestedWeeks;
-        var projection = HistoryReviewProjectionBuilder.Build(history, definitions, projectionDetailWeeks);
+        var projection = HistoryReviewProjectionBuilder.Build(
+            history,
+            definitions,
+            projectionDetailWeeks,
+            annualHistory.BufferFacts,
+            annualHistory.AbnormalCosts);
         var zoneResidence = BuildZoneResidence(projection.InventoryBuffers, projectionDetailWeeks);
         var capacity = BuildCapacityProtection(projection.CapacityBuffers, history.CapacityFacts);
         var relationships = BuildProtectionRelationships(projection, capacity, definitions.Resources);
         var exposure = BuildConstraintExposure(history.ConstraintFacts, definitions.Resources);
-        var outcomes = BuildOperatingOutcomes(history, capacity);
+        var outcomes = BuildOperatingOutcomes(
+            history,
+            annualHistory.AbnormalCosts,
+            capacity);
         var observedTrendWeeks = history.OperatingFacts
             .Select(item => item.WeekOffset)
             .Distinct()
@@ -221,6 +229,7 @@ public sealed class HistoryReviewWorkspaceService
 
     private static HistoryOperatingOutcomes BuildOperatingOutcomes(
         HistoryFactSet history,
+        IReadOnlyList<HistoryAbnormalCostEvent> annualAbnormalCostLedger,
         IReadOnlyList<CapacityProtectionLayer> capacity)
     {
         var service = AverageOrNull(history.OperatingFacts, item => item.ServiceLevelPercent, 1);
@@ -228,9 +237,9 @@ public sealed class HistoryReviewWorkspaceService
         var workInProcess = AverageOrNull(history.OperatingFacts, item => item.WorkInProcessUnits, 1);
         var flowTime = AverageOrNull(history.OperatingFacts, item => item.AverageFlowTimeDays, 1);
         var cash = AverageOrNull(history.OperatingFacts, item => item.CashOccupied, 0);
-        var costEvents = history.AbnormalCosts
-            .Where(item => item.EvidenceStatus == Complete)
-            .ToList();
+        var costEvents = HistoryReviewProjectionBuilder.SelectValidAbnormalCostEvents(
+            history.AbnormalCosts,
+            annualAbnormalCostLedger);
         decimal? abnormalCost = costEvents.Count == 0
             ? null
             : decimal.Round(costEvents.Sum(item => item.CostAmount), 0);

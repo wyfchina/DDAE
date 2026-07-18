@@ -5,7 +5,9 @@ public sealed record HistoryDistributionBucket(string Code, string Label, int Co
 public sealed record HistoryInventoryPoint(
     int WeekOffset, string PeriodStartDate, decimal? EndingOnHand, decimal? OpenSupply,
     decimal? QualifiedDemand, decimal? NetFlow, decimal? TopOfRed, decimal? TopOfYellow,
-    decimal? TopOfGreen, string Status, string Cause, string? ParameterSnapshotId, string EvidenceStatus);
+    decimal? TopOfGreen, string Status, string Cause, string? ParameterSnapshotId, string EvidenceStatus,
+    decimal? ActualDemand = null, decimal? DemandSpikeThreshold = null,
+    decimal? TargetNetFlowPosition = null);
 
 public sealed record HistoryInventoryBufferView(
     string ControlPoint, string Sku, string Name, int DetailWindowWeeks,
@@ -25,11 +27,17 @@ public sealed record HistoryTimeBufferPoint(
     int? YellowCount, int? RedCount, int? LateCount, decimal? AbnormalCost,
     string Cause, string EvidenceStatus);
 
+public sealed record HistoryAbnormalCostEventView(
+    string EventId, int WeekOffset, string PeriodStartDate, decimal CostAmount,
+    string CostType, string Cause, string TargetType, string TargetId,
+    string ControlPoint, string SourceAuthority, string EvidenceStatus);
+
 public sealed record HistoryTimeBufferView(
     string BufferId, string ControlPoint, string ProtectedActivity,
     IReadOnlyList<HistoryTimeBufferPoint> Points,
     IReadOnlyList<HistoryDistributionBucket> Distribution,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    IReadOnlyList<HistoryAbnormalCostEventView>? AbnormalCostEvents = null);
 
 public sealed record HistoryCapacityPoint(
     int WeekOffset, string PeriodStartDate, decimal? TheoreticalCapacity,
