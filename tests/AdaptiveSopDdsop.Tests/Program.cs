@@ -10,6 +10,7 @@ var tests = new (string Name, Action Run)[]
     ("Internal demo demand profiles are not proportional copies", TestInternalDemoDemandProfilesAreDistinct),
     ("Internal demo inventory adjustments belong to named event weeks", TestInternalDemoInventoryAdjustmentsUseNamedEvents),
     ("Internal demo historical net flow has explicit varying supply and demand components", TestInternalDemoHistoricalNetFlowHasExplicitComponents),
+    ("Internal demo receipt weeks keep only outstanding supply in end-of-week NFP", TestInternalDemoReceiptWeeksDoNotDoubleCountReceipts),
     ("Internal demo operating facts leave target NFP empty without parameter evidence", TestInternalDemoOperatingFactsDoNotRelabelActualNfpAsTarget),
     ("Scenario workspace exposes shared fact-set lineage", TestScenarioWorkspaceExposesSharedFactSetLineage),
     ("FPGA MOQ is five in master and scenario data", TestFpgaMoqIsFiveInMasterAndScenario),
@@ -343,6 +344,44 @@ static void TestInternalDemoHistoricalNetFlowHasExplicitComponents()
         "qualified demand must vary beyond a per-SKU constant");
     AssertTrue(history.All(item => item.EndingNetFlow == item.EndingOnHand + item.OpenSupply - item.QualifiedDemand),
         "historical NFP must reconcile to its physical components");
+}
+
+static void TestInternalDemoReceiptWeeksDoNotDoubleCountReceipts()
+{
+    var data = SeedData.Create();
+    var facts = new SeedInternalDemoOperatingFactSource(data).Load();
+    var skuIndexes = data.Skus
+        .OrderBy(item => item.Sku, StringComparer.Ordinal)
+        .Select((item, index) => (item.Sku, Index: index))
+        .ToDictionary(item => item.Sku, item => item.Index, StringComparer.Ordinal);
+    var receiptWeeks = facts.InventoryMovements
+        .Where(item => item.WeekOffset < -1 && item.ActualReceipts > 0m)
+        .ToList();
+    AssertTrue(receiptWeeks.Count > 0, "historical ledger must contain receipt weeks");
+
+    foreach (var item in receiptWeeks)
+    {
+        var sku = data.Skus.Single(candidate => candidate.Sku == item.Sku);
+        var index = skuIndexes[item.Sku];
+        var week = item.WeekOffset + 53;
+        var cadence = 3 + index % 4;
+        var receiptWeeksAway = cadence - week % cadence;
+        var confirmedInbound = receiptWeeksAway <= 2
+            ? sku.Adu * 7m * (0.72m + (index % 3) * 0.08m)
+            : 0m;
+        var openPurchaseCommitment = sku.Adu * 7m *
+            (0.24m + ((week * ((index % 4) + 2) + index) % 6) * 0.09m);
+        var expectedOutstandingSupply = decimal.Round(
+            Math.Max(0m, confirmedInbound + openPurchaseCommitment +
+                (item.WeekOffset == -39 && item.Sku == "AV-FPGA-203" ? -openPurchaseCommitment : 0m)),
+            2,
+            MidpointRounding.AwayFromZero);
+
+        AssertEqual(expectedOutstandingSupply, item.OpenSupply,
+            $"{item.Sku}/{item.WeekOffset} end-of-week outstanding supply");
+        AssertTrue(item.OpenSupply < item.ActualReceipts,
+            $"{item.Sku}/{item.WeekOffset} already-received quantity must not remain in open supply");
+    }
 }
 
 static void TestInternalDemoOperatingFactsDoNotRelabelActualNfpAsTarget()

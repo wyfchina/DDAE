@@ -132,7 +132,7 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
                 var inventory = baselineBySku[sku.Sku];
                 var openSupply = isLatest
                     ? inventory.OpenSupply
-                    : HistoricalOpenSupply(sku, index, week, cadence, receipts[week - 1], offset);
+                    : HistoricalOpenSupply(sku, index, week, cadence, offset);
                 var qualifiedDemand = isLatest
                     ? inventory.QualifiedDemand
                     : HistoricalQualifiedDemand(sku, index, week, demands[week - 1]);
@@ -229,7 +229,6 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
         int skuIndex,
         int week,
         int cadence,
-        decimal recordedReceipt,
         int weekOffset)
     {
         var receiptWeeksAway = cadence - week % cadence;
@@ -241,7 +240,7 @@ public sealed class SeedInternalDemoOperatingFactSource : IInternalDemoOperating
         var eventAdjustment = weekOffset == -39 && sku.Sku == "AV-FPGA-203"
             ? -openPurchaseCommitment
             : 0m;
-        return RoundQuantity(recordedReceipt + confirmedInbound + openPurchaseCommitment + eventAdjustment);
+        return RoundQuantity(confirmedInbound + openPurchaseCommitment + eventAdjustment);
     }
 
     private static decimal HistoricalQualifiedDemand(
