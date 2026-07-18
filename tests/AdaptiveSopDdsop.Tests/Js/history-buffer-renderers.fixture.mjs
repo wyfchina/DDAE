@@ -616,6 +616,52 @@ export async function runHistoryBufferRendererFixtures(
   assert.ok(!harnessCcrCard.includes("保护能力") && !harnessCcrCard.includes("已消耗") && !harnessCcrCard.includes("剩余保护"),
     "CCR must remain a utilization reference without protection values");
   assert.ok(harnessChart.includes("上游保护利用率历史证据"), "CCR selection must retain the resolved upstream composite");
+
+  const capacitySelectionRuntime = createRuntime(source);
+  const capacitySelectionFixture = structuredClone(historyReview);
+  const firstUpstream = capacitySelectionFixture.capacityBuffers.find(item => item.relationshipRole === "UpstreamProtection");
+  const secondUpstream = {
+    ...firstUpstream,
+    resourceCode: "RES-SECOND-UP",
+    resourceName: "二号上游保护资源",
+    protectedCcrResourceCode: "RES-SECOND-CCR",
+    points: firstUpstream.points.map((point, index) => ({
+      ...point,
+      committedLoad: 150 + index,
+      measure: { ...point.measure, utilizationPercent: 91 + index % 7, utilizationBand: "Red" },
+    })),
+  };
+  const secondCcr = {
+    ...firstUpstream,
+    resourceCode: "RES-SECOND-CCR",
+    resourceName: "二号 CCR 利用率参照",
+    protectedCcrResourceCode: null,
+    relationshipRole: "CcrUtilization",
+    points: firstUpstream.points.map((point, index) => ({
+      ...point,
+      committedLoad: 115 + index,
+      measure: { ...point.measure, utilizationPercent: 72 + index % 4, protectionCapacity: null, consumedProtection: null, remainingProtection: null, overload: null, utilizationBand: "Yellow" },
+    })),
+  };
+  capacitySelectionFixture.capacityBuffers.push(secondUpstream, secondCcr);
+  capacitySelectionRuntime.context.__historyFixture = capacitySelectionFixture;
+  vm.runInContext("renderHistoryReview(__historyFixture)", capacitySelectionRuntime.context);
+  assert.ok(capacitySelectionRuntime.elements.get("history-capacity-buffer-chart").innerHTML.includes(firstUpstream.resourceName),
+    "the default capacity composite must remain on the first upstream resource");
+  clickHistorySelector(capacitySelectionRuntime, "[data-history-capacity-resource]", { historyCapacityResource: "RES-SECOND-UP" });
+  const secondUpstreamChart = capacitySelectionRuntime.elements.get("history-capacity-buffer-chart").innerHTML;
+  const secondUpstreamCard = capacitySelectionRuntime.elements.get("history-capacity-upstream-card").innerHTML;
+  const secondCcrCard = capacitySelectionRuntime.elements.get("history-capacity-ccr-card").innerHTML;
+  assert.ok(secondUpstreamChart.includes("二号上游保护资源") && secondUpstreamChart.includes('data-utilization-percent="91"'),
+    "selecting a second upstream must update the composite heading and observations");
+  assert.ok(secondUpstreamCard.includes("二号上游保护资源") && secondCcrCard.includes("二号 CCR 利用率参照"),
+    "selecting a second upstream must update both capacity pair cards");
+  assert.ok(capacitySelectionRuntime.elements.get("history-capacity-protection-kpis").innerHTML.includes("证据缺失"),
+    "a backend summary for the first upstream must remain explicitly missing for the second pair");
+  clickHistorySelector(capacitySelectionRuntime, "[data-history-capacity-resource]", { historyCapacityResource: "RES-SECOND-CCR" });
+  const secondCcrChart = capacitySelectionRuntime.elements.get("history-capacity-buffer-chart").innerHTML;
+  assert.ok(secondCcrChart.includes("二号上游保护资源") && secondCcrChart.includes('data-utilization-percent="91"'),
+    "selecting a paired CCR must resolve back to its upstream composite");
   console.log("PASS delegated selectors preserve FPGA source and keep HARNESS reference-only");
 
   let baselineUrl = null;

@@ -5115,9 +5115,15 @@ function renderHistoryTimeCostStrip(history, item) {
 }
 
 function resolveHistoryCapacityPair(history) {
-  const upstream = (history.capacityBuffers || []).find(item => item.relationshipRole === "UpstreamProtection") || null;
+  const views = history.capacityBuffers || [];
+  const selected = views.find(item => item.resourceCode === state.selectedHistoryCapacityResource) || null;
+  const upstream = selected?.relationshipRole === "UpstreamProtection"
+    ? selected
+    : selected?.relationshipRole === "CcrUtilization"
+      ? views.find(item => item.relationshipRole === "UpstreamProtection" && item.protectedCcrResourceCode === selected.resourceCode) || null
+      : views.find(item => item.relationshipRole === "UpstreamProtection") || null;
   const ccr = upstream?.protectedCcrResourceCode
-    ? (history.capacityBuffers || []).find(item => item.resourceCode === upstream.protectedCcrResourceCode) || null
+    ? views.find(item => item.resourceCode === upstream.protectedCcrResourceCode && item.relationshipRole === "CcrUtilization") || null
     : null;
   return { upstream, ccr };
 }

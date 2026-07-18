@@ -28,3 +28,10 @@ Commit message: `feat: render historical capacity buffer distribution`
 ## Note
 
 The normal Debug harness could not rebuild while a user-owned `AdaptiveSopDdsop.Web.exe` held the Debug apphost lock. The Release build and full Release harness completed cleanly.
+
+## Selection Review Fix
+
+- `resolveHistoryCapacityPair` now honors the selected history resource: an upstream selection is used directly, and a CCR selection resolves to the upstream resource that explicitly protects it. With no selected pair it still falls back to the first upstream resource.
+- CCR resolution requires the named resource and the `CcrUtilization` role, so the cards and composite remain tied to one explicit relationship.
+- RED: the new second-pair fixture failed because the old resolver always used the first upstream resource.
+- GREEN: the fixture now proves default-first behavior, selecting a second upstream changes the cards/chart/weekly observations, selecting its paired CCR resolves back to the same upstream, and an unmatched backend summary remains explicit as missing evidence.
