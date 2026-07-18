@@ -1,90 +1,30 @@
-# Task 7 Report: Render Historical Buffer Evidence
+# Task 7 Report: Historical Capacity Buffer Composite
 
-Base commit: `05dccce130744bd1db1a457bbb06b57ed8bc5c9e`
+Base commit: `6377ff4`
 
-Commit message: `feat: render historical buffer evidence`
-
-Formal-review fix commit: `fix: preserve historical evidence visibility`
+Commit message: `feat: render historical capacity buffer distribution`
 
 ## Delivered
 
-- Replaced placeholder historical-buffer panels with native SVG/DOM evidence views for inventory, historical DDMRP sizing, five-band time buffers, and capacity layers.
-- Kept business calculations in the backend. JavaScript reads the Task 5 DTO and performs only pixel scaling, stacking, path construction, selection, and display formatting.
-- Added persistent selectors for control point, inventory SKU, sizing snapshot, time-buffer ID, and capacity resource. Valid selections survive 6↔12-month refreshes.
-- Inventory history reads the backend red/yellow/green tops, ending on-hand, and net-flow values. Missing evidence splits paths instead of becoming zero.
-- Historical DDMRP shows backend sizing lines, the standard 80/120/70 case, green driver, effective weeks, source cutoff, evidence status, and average on-hand.
-- Time history renders all five backend bands, a visible marker for every non-null abnormal-cost point, and lines only for contiguous cost segments containing at least two points.
-- Capacity history renders committed load plus theoretical, standard, demonstrated, planned-available, and protection-start layers. AIT defaults to upstream protection; HARNESS is labelled `CCR 利用率参照` and never renders protective consumption.
-- The source control-point value `关键进口 FPGA 库存控制点` remains unchanged while the UI maps it to `关键进口 FPGA 独立库存控制点`.
-- Empty collections and all-missing points show `证据缺失` without producing an empty SVG.
-- Frozen-baseline detail reads only `/api/current-baselines/{snapshotId}`; legacy missing lead-time factors show the exact read-only warning and are never substituted with a current candidate.
-- Drawer labels now cross one escaping boundary. Malicious parameter and frozen-baseline labels are escaped exactly once.
-
-## Standard Runtime Fixture
-
-The C# harness now:
-
-1. Builds the real six-month Task 5 DTO through `HistoryReviewWorkspaceService`.
-2. Serializes it with web/camelCase JSON options.
-3. Discovers Node from `NODE_BINARY`, `PATH`, the installed Codex runtime, or standard install locations.
-4. Executes `tests/AdaptiveSopDdsop.Tests/Js/history-buffer-renderers.fixture.mjs`.
-5. Fails explicitly if Node is absent, times out, exits nonzero, or does not report completion.
-
-The Node fixture compiles the real `app.js` with `vm.Script` and executes six runtime groups:
-
-1. Backend sizing, evidence gaps, five time bands, and capacity layers.
-2. Delegated selectors, FPGA source preservation/display mapping, and HARNESS reference-only behavior.
-3. Frozen legacy baseline endpoint and exact warning.
-4. Empty collections and all-missing points, with no SVG.
-5. Malicious drawer labels escaped exactly once.
-6. Overall fixture completion against the serialized real DTO.
+- Replaced the history-only period distribution wrapper with one stable composite host containing upstream weekly utilization and empirical frequency panels.
+- Added `resolveHistoryCapacityPair` for the upstream/CCR cards, backend summary KPIs, and composite renderer.
+- Rendered the four fixed utilization zones, weekly bars, prescribed axis floor, average and peak markers, and a 10-point-bin historical-frequency curve.
+- Kept theoretical, standard, demonstrated, planned, and committed values in the evidence table; renamed protection columns to `保护带宽`、`已用保护`、`未用保护余量`.
+- Kept CCR as a utilization reference with no protection fields. The future scenario distribution renderer and shared distribution CSS remain in use.
+- Added responsive two-column composite layout with a one-column layout below 980px.
 
 ## TDD Evidence
 
-- Initial renderer RED: the complete harness failed only the newly registered history-renderer test because the renderer state/selectors did not exist.
-- Initial renderer GREEN: the implementation brought the complete suite to `142/142`.
-- Review RED: after wiring the Node fixture into the standard harness and adding malicious-label assertions, the suite reported `141 PASS / 1 FAIL` on the double-escaped parameter label.
-- Review GREEN: passing raw labels into `openWorkspaceDrawer` restored one escaping boundary; the complete suite returned to `142/142`, including all six Node runtime groups.
+- RED: the revised Node fixture failed because `history-capacity-protection-kpis` did not exist in the old renderer.
+- GREEN: the fixture asserts all four bands, weekly observations, average/peak markers, empirical curve, risk notes, retained table evidence, no old capacity-line paths, explicit missing utilization evidence, and CCR reference-only behavior.
 
-### Formal Commit Review Follow-up
+## Verification
 
-- Cost-marker RED: the real six-month DTO reported abnormal-cost weeks `[-18]`, while the rendered marker weeks were `[]`; the complete harness failed `1` test for the expected visibility reason.
-- Cost-marker GREEN: every non-null cost point now renders a circle; only segments longer than one point render a path. The fixture confirms week `-18` has a marker, missing week `-17` is not plotted as zero, and the isolated point creates no cross-gap line. The suite returned to `142/142`.
-- FPGA-table RED: the real protection table did not contain `关键进口 FPGA 独立库存控制点`; the complete harness failed `1` test for the expected display-label reason.
-- FPGA-table GREEN: the table now applies `historyControlPointLabel` only at its HTML boundary. The fixture confirms the table uses the independent-inventory label while the selector data attribute and selected state retain `关键进口 FPGA 库存控制点`. The suite returned to `142/142`.
+- `C:\Users\吴一帆\AppData\Local\OpenAI\Codex\bin\node.exe .\tests\AdaptiveSopDdsop.Tests\Js\history-buffer-renderers.fixture.mjs` — 9/9 groups passed.
+- `dotnet build .\tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj -c Release --no-restore` — 0 warnings, 0 errors.
+- `dotnet .\tests\AdaptiveSopDdsop.Tests\bin\Release\net9.0\AdaptiveSopDdsop.Tests.dll` — 250 tests passed.
+- `git diff --check` — passed.
 
-## Final Verification
+## Note
 
-```text
-dotnet restore src\AdaptiveSopDdsop.Web\AdaptiveSopDdsop.Web.csproj -p:NuGetAudit=false
-dotnet restore tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj -p:NuGetAudit=false
-Both restores succeeded with projects up to date.
-```
-
-```text
-dotnet build AdaptiveSopDdsop.sln --no-restore -m:1
-Build succeeded.
-0 warnings, 0 errors.
-```
-
-```text
-dotnet run --project tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj --no-restore
-142 test(s) passed.
-Node renderer fixture: 6/6 groups passed.
-```
-
-```text
-& .\scripts\verify-protected-boundaries.ps1
-PASS 11 whole-file protected boundaries.
-Protected CONTRACT, SDBR, Network, validation, trace, and public-demo blocks match baseline 4e39ec5.
-```
-
-- `git diff --check`: no whitespace errors; only Git's informational LF→CRLF notices.
-- CSS delimiter check: 568 opening and 568 closing braces.
-- JavaScript syntax: the standard Node fixture compiled the real `app.js`.
-- Frontend-formula gate: historical renderers contain no copied DDMRP sizing or capacity-protection business formulas.
-- Independent re-review after the formal visibility fixes: `0` Critical, `0` Important, `0` Minor; ready to merge.
-
-## Environment Note
-
-No in-app browser session was available in this worker. Runtime DOM behavior was therefore verified through the standard Node fixture using the real serialized Task 5 DTO. This did not block the required gates.
+The normal Debug harness could not rebuild while a user-owned `AdaptiveSopDdsop.Web.exe` held the Debug apphost lock. The Release build and full Release harness completed cleanly.

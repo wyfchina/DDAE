@@ -273,6 +273,16 @@ function createStandaloneHistoryReview(weeks = 26) {
       consumedProtection: isUpstream ? 8 + index % 5 : null,
       remainingProtection: isUpstream ? 20 : null,
       evidenceStatus: "Complete",
+      measure: {
+        utilizationPercent: 58 + index % 54,
+        protectionStart: isUpstream ? 128 : null,
+        protectionCapacity: isUpstream ? 32 : null,
+        consumedProtection: isUpstream ? 8 + index % 5 : null,
+        remainingProtection: isUpstream ? 20 : null,
+        overload: isUpstream ? Math.max(0, index % 54 - 42) : null,
+        utilizationBand: index % 54 > 42 ? "DeepRed" : index % 54 > 22 ? "Red" : index % 54 > 2 ? "Yellow" : "Green",
+        evidenceStatus: "Complete",
+      },
     };
   });
   const inventoryBuffers = [
@@ -293,14 +303,15 @@ function createStandaloneHistoryReview(weeks = 26) {
     operatingOutcomes: { serviceLevelPercent: 96.8, inventoryValue: 386000000, workInProcessUnits: 1088, averageFlowTimeDays: 8.9, cashOccupied: 410000000, expediteCost: 420000, remainingProtectionPercent: 37, evidenceStatus: "Complete" },
     protectionRelationships: [{ controlPoint: "关键进口 FPGA 库存控制点", protectedObject: "AV-FPGA-203", protectionType: "库存缓冲", designStatus: "有保护设计", availabilityStatus: "保护可用", effectivenessStatus: "保护有效", evidence: "Complete" }],
     zoneResidence: [{ sku: "AV-COM-201", name: "星载通信机", observedPeriods: 3, redPeriods: 1, yellowPeriods: 1, greenPeriods: 1, overTopOfGreenPeriods: 0, redPercent: 33.3, yellowPercent: 33.3, greenPercent: 33.4, overTopOfGreenPercent: 0, redEntryCount: 1, maximumRedStreak: 1, recoveryPeriods: 1, primaryCause: "无事件" }],
-    capacityProtection: [{ resourceCode: "RES-AIT", resourceName: "AIT 总装集成大厅", protectedCcrResourceCode: "RES-TVAC", relationshipRole: "UpstreamProtection", theoreticalCapacity: 200, standardCapacity: 180, demonstratedCapacity: 165, plannedAvailableCapacity: 160, committedLoad: 124, protectiveCapacity: 32, consumedProtection: 10, remainingProtection: 22, lossReason: "换线", evidenceStatus: "Complete" }],
+    capacityProtection: [{ resourceCode: "RES-AIT", resourceName: "AIT 总装集成大厅", protectedCcrResourceCode: "RES-HARNESS", relationshipRole: "UpstreamProtection", theoreticalCapacity: 200, standardCapacity: 180, demonstratedCapacity: 165, plannedAvailableCapacity: 160, committedLoad: 124, protectiveCapacity: 32, consumedProtection: 10, remainingProtection: 22, lossReason: "换线", evidenceStatus: "Complete" }],
+    capacityProtectionSummary: { resourceCode: "RES-AIT", protectedCcrResourceCode: "RES-HARNESS", averageProtectionBand: 32, averageUnusedProtection: 20, balancePercent: 62.5, minimumBalancePercent: 50, exhaustedWeekCount: 0, overloadWeekCount: 4, evidenceStatus: "Complete" },
     constraintExposure: [],
     evidenceLabel: `DemoFixture / TrendWindow=${weeks}`,
     inventoryBuffers,
     ddmrpSizingSnapshots,
     timeBuffers: [{ bufferId: "MS-TB-001", controlPoint: "热真空试验准备控制点", protectedActivity: "试验件到位与热真空窗口准备", points: timePoints, distribution: [], evidenceStatus: "Complete", abnormalCostEvents: weeks === 52 ? annualCosts : [recentCost] }],
     capacityBuffers: [
-      { resourceCode: "RES-AIT", resourceName: "AIT 总装集成大厅", protectedCcrResourceCode: "RES-TVAC", relationshipRole: "UpstreamProtection", points: makeCapacityPoints(true), distribution: [], evidenceStatus: "Complete" },
+      { resourceCode: "RES-AIT", resourceName: "AIT 总装集成大厅", protectedCcrResourceCode: "RES-HARNESS", relationshipRole: "UpstreamProtection", points: makeCapacityPoints(true), distribution: [], evidenceStatus: "Complete" },
       { resourceCode: "RES-HARNESS", resourceName: "线束集成工位", protectedCcrResourceCode: null, relationshipRole: "CcrUtilization", points: makeCapacityPoints(false), distribution: [], evidenceStatus: "Complete" },
     ],
     standardDdmrpReference: null,
@@ -386,6 +397,7 @@ export async function runHistoryBufferRendererFixtures(
   const timeStatusChart = runtime.elements.get("history-time-status-chart").innerHTML;
   const timeCostStrip = runtime.elements.get("history-time-cost-strip").innerHTML;
   const capacityChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
+  const capacityKpis = runtime.elements.get("history-capacity-protection-kpis").innerHTML;
   assert.ok(historicalInput.includes("登记校验证据"), "historical source should localize registered validation evidence");
   assert.ok(!historicalInput.includes("registered validation data"), "historical source must not expose ordinary English wording");
   const selectedSizingSnapshot = fixture.ddmrpSizingSnapshots.find(item =>
@@ -505,8 +517,20 @@ export async function runHistoryBufferRendererFixtures(
     "the 26-week global abnormal-cost strip should render one event card");
   for (const field of ["返工费用", "返工", "热真空试验准备控制点", "时间缓冲", "MS-TB-001", "DDAE 历史演示台账", "完整"])
     assert.ok(timeCostStrip.includes(field), `cost event card should include ${field}`);
-  assert.ok(["is-theoretical", "is-standard", "is-demonstrated", "is-planned", "is-protection-start"].every(css => capacityChart.includes(css)));
-  assert.ok(capacityChart.includes("is-consumed-protection"), "AIT should show upstream protection consumption");
+  assert.ok(["绿区（0–60%）", "黄区（>60–80%）", "红区（>80–100%）", "深红区（>100%）"].every(label => capacityChart.includes(label)),
+    "capacity composite must label all four fixed utilization zones");
+  assert.ok(capacityChart.includes("history-capacity-period-observations"), "capacity composite must render weekly utilization observations");
+  assert.ok(capacityChart.includes("history-capacity-average-marker"), "capacity composite must render the average marker");
+  assert.ok(capacityChart.includes("history-capacity-peak-marker"), "capacity composite must render the peak marker");
+  assert.ok(capacityChart.includes("history-capacity-empirical-curve"), "capacity composite must render an empirical frequency curve");
+  assert.ok(capacityChart.includes("可用于吸收波动或扩大产量的余量") && capacityChart.includes("可能成为流程干扰点的风险"),
+    "capacity composite must explain low-side headroom and high-side risk");
+  assert.ok(!["is-theoretical", "is-standard", "is-demonstrated", "is-planned", "is-protection-start", "is-consumed-protection"].some(css => capacityChart.includes(css)),
+    "composite SVG must not retain old capacity-layer paths");
+  assert.ok(capacityChart.includes("理论") && capacityChart.includes("标准") && capacityChart.includes("经验证") && capacityChart.includes("计划可用") && capacityChart.includes("承诺负荷"),
+    "capacity evidence table must retain the underlying capacity values");
+  assert.ok(["上游保护带余额率", "最低余额率", "保护耗尽周数", "超载周数"].every(label => capacityKpis.includes(label)),
+    "capacity KPI host must render backend summary labels");
   assert.ok(runtime.elements.get("history-capacity-resource-options").innerHTML.includes("CCR 利用率参照"));
   const controlPointOptions = runtime.elements.get("history-inventory-control-point-options").innerHTML;
   assert.ok(controlPointOptions.includes("关键进口 FPGA 独立库存控制点"));
@@ -587,8 +611,11 @@ export async function runHistoryBufferRendererFixtures(
   assert.ok(runtime.elements.get("history-inventory-position-chart").innerHTML.includes("关键进口 FPGA 独立库存控制点"));
   clickHistorySelector(runtime, "[data-history-capacity-resource]", { historyCapacityResource: "RES-HARNESS" });
   const harnessChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
-  assert.ok(harnessChart.includes("CCR 利用率参照"));
-  assert.ok(!harnessChart.includes("is-consumed-protection"), "HARNESS must not show protective consumption");
+  const harnessCcrCard = runtime.elements.get("history-capacity-ccr-card").innerHTML;
+  assert.ok(harnessCcrCard.includes("CCR 利用率参照"));
+  assert.ok(!harnessCcrCard.includes("保护能力") && !harnessCcrCard.includes("已消耗") && !harnessCcrCard.includes("剩余保护"),
+    "CCR must remain a utilization reference without protection values");
+  assert.ok(harnessChart.includes("上游保护利用率历史证据"), "CCR selection must retain the resolved upstream composite");
   console.log("PASS delegated selectors preserve FPGA source and keep HARNESS reference-only");
 
   let baselineUrl = null;
@@ -672,6 +699,7 @@ export async function runHistoryBufferRendererFixtures(
     plannedAvailableCapacity: null,
     protectionStart: null,
     consumedProtection: null,
+    measure: null,
     evidenceStatus: "EvidenceMissing",
   }));
   allMissingRuntime.context.__historyFixture = allMissingFixture;
@@ -687,6 +715,16 @@ export async function runHistoryBufferRendererFixtures(
     assert.ok(markup.includes("证据缺失"), `${hostId} should expose all-missing evidence`);
     assert.ok(!markup.includes("<svg"), `${hostId} should not draw an all-missing SVG`);
   }
+
+  const partialCapacityRuntime = createRuntime(source);
+  const partialCapacityFixture = structuredClone(historyReview);
+  partialCapacityFixture.capacityBuffers[0].points[4].measure = null;
+  partialCapacityFixture.capacityBuffers[0].points[4].evidenceStatus = "EvidenceMissing";
+  partialCapacityRuntime.context.__historyFixture = partialCapacityFixture;
+  vm.runInContext("renderHistoryReview(__historyFixture)", partialCapacityRuntime.context);
+  const partialCapacityChart = partialCapacityRuntime.elements.get("history-capacity-buffer-chart").innerHTML;
+  assert.ok(partialCapacityChart.includes("<svg") && partialCapacityChart.includes("证据缺失"),
+    "a missing weekly utilization value must remain explicit without suppressing other capacity evidence");
 
   const positionMissingRuntime = createRuntime(source);
   const positionMissingFixture = structuredClone(historyReview);

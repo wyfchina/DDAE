@@ -1567,7 +1567,6 @@ body.has-focus-panel { overflow: hidden; }
 .capacity-band-chip.is-red { border-color: #e29a8f; background: #fff2f0; color: #9b2f24; }
 .capacity-band-chip.is-deep-red { border-color: #b7737e; background: #f8e9ec; color: #7e2131; }
 .capacity-band-chip.is-evidence-missing { border-color: var(--color-border-strong); background: #f4f6f8; color: var(--color-muted); }
-.history-capacity-distribution-frame { margin-top: 14px; }
 .history-capacity-distribution { display: grid; gap: 8px; min-height: 54px; }
 .capacity-distribution-bar { display: flex; width: 100%; height: 18px; overflow: hidden; border-radius: 5px; background: #eef1f3; }
 .capacity-distribution-segment { display: block; min-width: 0; }
@@ -1769,20 +1768,24 @@ body.has-focus-panel { overflow: hidden; }
 .history-cost-event-facts dt { color: var(--color-muted); font-size: 10px; }
 .history-cost-event-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
 .history-cost-empty { padding: 18px; border: 1px dashed var(--color-border); border-radius: 6px; color: var(--color-muted); text-align: center; background: #f8faf8; }
-.history-capacity-load { fill: #456f91; opacity: .72; }
-.history-capacity-line.is-theoretical { stroke: #35434b; }
-.history-capacity-line.is-standard { stroke: #63727a; stroke-dasharray: 7 4; }
-.history-capacity-line.is-demonstrated { stroke: #287f75; }
-.history-capacity-line.is-planned { stroke: #4f8b45; }
-.history-capacity-line.is-protection-start { stroke: #bf7b2c; stroke-dasharray: 3 3; }
-.history-capacity-line.is-consumed-protection { stroke: #a34157; }
-.history-chart-legend .bar.load { background: #456f91; opacity: .72; }
-.history-chart-legend .line.is-theoretical { border-top-color: #35434b; }
-.history-chart-legend .line.is-standard { border-top-color: #63727a; border-top-style: dashed; }
-.history-chart-legend .line.is-demonstrated { border-top-color: #287f75; }
-.history-chart-legend .line.is-planned { border-top-color: #4f8b45; }
-.history-chart-legend .line.is-protection-start { border-top-color: #bf7b2c; border-top-style: dashed; }
-.history-chart-legend .line.is-consumed-protection { border-top-color: #a34157; }
+.rccp-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.history-capacity-composite { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.history-capacity-subpanel { min-width: 0; }
+.history-capacity-subpanel .history-evidence-svg { min-width: 0; }
+.history-capacity-zone { opacity: .22; }
+.history-capacity-zone.is-green, .history-capacity-observation.is-green { fill: #5ca66a; }
+.history-capacity-zone.is-yellow, .history-capacity-observation.is-yellow { fill: #d6c64f; }
+.history-capacity-zone.is-red, .history-capacity-observation.is-red { fill: #cf5a4a; }
+.history-capacity-zone.is-deep-red, .history-capacity-observation.is-deep-red { fill: #8b3346; }
+.history-capacity-zone-label { fill: #26352d; font-size: 9px; font-weight: 700; }
+.history-capacity-observation { opacity: .8; }
+.history-capacity-average-marker { stroke: #1f5f88; stroke-width: 2; stroke-dasharray: 5 4; }
+.history-capacity-peak-marker { fill: #1d2939; stroke: #fff; stroke-width: 1.5; }
+.history-capacity-peak-label { fill: #1d2939; font-size: 10px; font-weight: 700; }
+.history-capacity-empirical-curve { fill: none; stroke: #1f5f88; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.history-capacity-note { font-size: 10px; font-weight: 650; }
+.history-capacity-note.is-headroom { fill: #276a32; }
+.history-capacity-note.is-risk { fill: #8f342b; }
 .history-zone-layout { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(220px, .6fr); align-items: center; gap: 16px; }
 .history-zone-svg { display: block; width: 100%; height: auto; }
 .history-zone-block.is-red { fill: #cf5a4a; }
@@ -1814,6 +1817,8 @@ body.has-focus-panel { overflow: hidden; }
 @media (max-width: 980px) {
   .history-buffer-layout { grid-template-columns: 1fr; }
   .history-capacity-pair { grid-template-columns: 1fr; }
+  .history-capacity-composite { grid-template-columns: 1fr; }
+  .rccp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .capacity-role-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .history-zone-layout { grid-template-columns: 1fr; }
   .ddmrp-standard-reference-grid, .history-standard-zone { grid-template-columns: 1fr; }

@@ -1206,16 +1206,21 @@ static void TestCapacityALayoutPairsUpstreamAndCcr()
     var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
 
     AssertTrue(page.Contains("id=\"history-capacity-protection-pair\"", StringComparison.Ordinal), "capacity A layout needs a paired upstream and CCR host");
-    AssertTrue(page.Contains("id=\"history-capacity-band-distribution\"", StringComparison.Ordinal), "capacity A layout needs all-period upstream distribution host");
+    AssertTrue(!page.Contains("id=\"history-capacity-band-distribution\"", StringComparison.Ordinal), "capacity history must remove the old all-period distribution wrapper");
+    AssertTrue(!page.Contains("id=\"history-capacity-utilization-distribution\"", StringComparison.Ordinal), "capacity history must remove the old distribution subpanel");
+    AssertTrue(page.Contains("id=\"history-capacity-protection-kpis\"", StringComparison.Ordinal), "capacity history needs backend protection KPI host");
+    AssertTrue(page.Contains("id=\"history-capacity-buffer-chart\"", StringComparison.Ordinal), "capacity history needs the stable composite chart host");
     AssertTrue(page.Contains("id=\"history-capacity-upstream-card\"", StringComparison.Ordinal), "capacity A layout needs the upstream role card");
     AssertTrue(page.Contains("id=\"history-capacity-ccr-card\"", StringComparison.Ordinal), "capacity A layout needs the CCR reference card");
-    AssertTrue(script.Contains("candidate.relationshipRole === \"UpstreamProtection\"", StringComparison.Ordinal), "capacity A layout must discover the eligible upstream role from backend data");
-    AssertTrue(script.Contains("candidate.resourceCode === upstream.protectedCcrResourceCode", StringComparison.Ordinal), "capacity A layout must pair the named downstream CCR from backend data");
+    AssertTrue(script.Contains("function resolveHistoryCapacityPair(history)", StringComparison.Ordinal), "capacity history must share one upstream/CCR resolver");
+    AssertTrue(script.Contains("function buildHistoryCapacityFrequency(values, axisMaximum, binWidth = 10)", StringComparison.Ordinal), "capacity history must build display-only empirical frequency bins");
+    AssertTrue(script.Contains("history-capacity-period-observations", StringComparison.Ordinal), "capacity history needs a weekly utilization subpanel");
+    AssertTrue(script.Contains("history-capacity-empirical-distribution", StringComparison.Ordinal), "capacity history needs an empirical frequency subpanel");
     AssertTrue(script.Contains("measure.utilizationBand", StringComparison.Ordinal), "capacity A layout must use the backend utilization band");
     var pairBody = SourceFunctionBody(script, "renderHistoryCapacityProtectionPair");
     AssertTrue(pairBody.Contains("upstreamMeasure?.protectionStart", StringComparison.Ordinal), "upstream A card must show the backend eighty-percent protection start");
     var ccrCardStart = pairBody.IndexOf("history-capacity-ccr-card", StringComparison.Ordinal);
-    var ccrCardEnd = pairBody.IndexOf("const observations", ccrCardStart, StringComparison.Ordinal);
+    var ccrCardEnd = pairBody.Length;
     AssertTrue(ccrCardStart >= 0 && ccrCardEnd > ccrCardStart, "CCR A card source boundaries");
     var ccrCardBody = pairBody[ccrCardStart..ccrCardEnd];
     AssertTrue(
@@ -1225,7 +1230,7 @@ static void TestCapacityALayoutPairsUpstreamAndCcr()
         !ccrCardBody.Contains("超载保护", StringComparison.Ordinal),
         "CCR A card must not render protection fields, including not-applicable placeholders");
     AssertTrue(!page.Contains("<th>保护消耗</th>", StringComparison.Ordinal), "future CCR reference table must not expose a protection-consumption column");
-    AssertTrue(!SourceFunctionBody(script, "renderHistoryCapacityBuffer").Contains("<= 60", StringComparison.Ordinal), "history renderer must not recalculate capacity thresholds");
+    AssertTrue(SourceFunctionBody(script, "renderHistoryCapacityBuffer").Contains("axisMaximum = Math.max(120", StringComparison.Ordinal), "history composite must retain the prescribed display axis floor");
     AssertTrue(!SourceFunctionBody(script, "renderFutureCapacityProtection").Contains("<= 60", StringComparison.Ordinal), "future renderer must not recalculate capacity thresholds");
 }
 
@@ -6591,6 +6596,7 @@ static void TestHistoryReviewExposesSelectableVisualizationWorkspaces()
         "history-ddmrp-sizing-body",
         "history-ddmrp-zone-chart",
         "history-capacity-resource-options",
+        "history-capacity-protection-kpis",
         "history-capacity-buffer-chart",
         "buffer-volatility-chart"
     })
@@ -6718,6 +6724,9 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "renderHistoryTimeStatusChart",
         "renderHistoryTimeCostStrip",
         "renderHistoryCapacityBuffer",
+        "resolveHistoryCapacityPair",
+        "renderHistoryCapacityProtectionKpis",
+        "buildHistoryCapacityFrequency",
         "renderHistoryDdmrpZoneSvg",
         "historyControlPointLabel",
         "historyWeekXScale",
@@ -6839,13 +6848,19 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
         "time cost strip should distinguish no events from a zero-cost substitute");
 
     var capacityBody = SourceFunctionBody(script, "renderHistoryCapacityBuffer");
-    foreach (var backendField in new[] { "point.committedLoad", "point.theoreticalCapacity", "point.standardCapacity", "point.demonstratedCapacity", "point.plannedAvailableCapacity", "point.protectionStart" })
+    foreach (var backendField in new[] { "point.committedLoad", "point.theoreticalCapacity", "point.standardCapacity", "point.demonstratedCapacity", "point.plannedAvailableCapacity", "point.measure.utilizationPercent" })
     {
         AssertTrue(capacityBody.Contains(backendField, StringComparison.Ordinal), $"capacity history must read backend {backendField}");
     }
-    AssertTrue(capacityBody.Contains("item.relationshipRole === \"UpstreamProtection\"", StringComparison.Ordinal),
-        "only upstream protection resources should show protective consumption");
-    AssertTrue(capacityBody.Contains("CCR 利用率参照", StringComparison.Ordinal),
+    AssertTrue(capacityBody.Contains("axisMaximum = Math.max(120", StringComparison.Ordinal)
+        && capacityBody.Contains("buildHistoryCapacityFrequency", StringComparison.Ordinal)
+        && capacityBody.Contains("buildMonotonePath", StringComparison.Ordinal),
+        "capacity history should use the prescribed display axis and empirical frequency curve");
+    var capacityPairBody = SourceFunctionBody(script, "resolveHistoryCapacityPair");
+    AssertTrue(capacityPairBody.Contains("item.relationshipRole === \"UpstreamProtection\"")
+        && capacityPairBody.Contains("item.resourceCode === upstream.protectedCcrResourceCode"),
+        "capacity pair resolver must select upstream protection and its named CCR reference");
+    AssertTrue(SourceFunctionBody(script, "renderHistoryCapacityProtectionPair").Contains("CCR 利用率参照", StringComparison.Ordinal),
         "CCR utilization history should be labelled as a reference");
 
     foreach (var selector in new[]

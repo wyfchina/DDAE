@@ -5114,17 +5114,16 @@ function renderHistoryTimeCostStrip(history, item) {
   host.innerHTML = `${heading}<div class="history-cost-event-grid">${cards}</div>`;
 }
 
-function renderHistoryCapacityProtectionPair(history) {
-  const views = history.capacityBuffers || [];
-  const selected = views.find(item => item.resourceCode === state.selectedHistoryCapacityResource);
-  const upstream = selected?.relationshipRole === "UpstreamProtection"
-    ? selected
-    : selected?.relationshipRole === "CcrUtilization"
-      ? views.find(candidate => candidate.relationshipRole === "UpstreamProtection" && candidate.protectedCcrResourceCode === selected.resourceCode)
-      : views.find(candidate => candidate.relationshipRole === "UpstreamProtection");
-  const ccr = upstream
-    ? views.find(candidate => candidate.relationshipRole === "CcrUtilization" && candidate.resourceCode === upstream.protectedCcrResourceCode)
+function resolveHistoryCapacityPair(history) {
+  const upstream = (history.capacityBuffers || []).find(item => item.relationshipRole === "UpstreamProtection") || null;
+  const ccr = upstream?.protectedCcrResourceCode
+    ? (history.capacityBuffers || []).find(item => item.resourceCode === upstream.protectedCcrResourceCode) || null
     : null;
+  return { upstream, ccr };
+}
+
+function renderHistoryCapacityProtectionPair(history) {
+  const { upstream, ccr } = resolveHistoryCapacityPair(history);
   const summaryByCode = new Map((history.capacityProtection || []).map(item => [item.resourceCode, item]));
   const latestPoint = view => [...(view?.points || [])]
     .reverse()
@@ -5160,72 +5159,106 @@ function renderHistoryCapacityProtectionPair(history) {
       ])}`
     : `<div class="history-chart-empty"><strong>CCR 参照证据缺失</strong><span>没有找到与所选上游资源配对的 CCR</span></div>`;
 
-  const observations = views
-    .filter(item => item.relationshipRole === "UpstreamProtection")
-    .flatMap(item => (item.distribution || []).map(bucket => ({ band: bucket.code, count: bucket.count })));
-  renderCapacityBandDistribution("history-capacity-utilization-distribution", observations);
+}
+
+function renderHistoryCapacityProtectionKpis(history) {
+  const host = byId("history-capacity-protection-kpis");
+  const { upstream } = resolveHistoryCapacityPair(history);
+  const summary = history.capacityProtectionSummary;
+  const summaryMatchesUpstream = summary && upstream && summary.resourceCode === upstream.resourceCode;
+  const value = (metric, formatter = percent) => summaryMatchesUpstream && summary.evidenceStatus === "Complete"
+    ? metricOrEvidenceMissing(summary[metric], formatter)
+    : "证据缺失";
+  host.innerHTML = [
+    ["上游保护带余额率", value("balancePercent"), "后端期间汇总"],
+    ["最低余额率", value("minimumBalancePercent"), "后端期间汇总"],
+    ["保护耗尽周数", value("exhaustedWeekCount", number), "后端期间汇总"],
+    ["超载周数", value("overloadWeekCount", number), "后端期间汇总"],
+  ].map(item => stageKpi(...item)).join("");
+}
+
+function buildHistoryCapacityFrequency(values, axisMaximum, binWidth = 10) {
+  const binCount = Math.max(1, Math.ceil(axisMaximum / binWidth));
+  const bins = Array.from({ length: binCount }, (_, index) => ({
+    from: index * binWidth,
+    through: (index + 1) * binWidth,
+    count: 0,
+  }));
+  values.forEach(value => {
+    const index = Math.min(bins.length - 1, Math.max(0, Math.floor(Number(value) / binWidth)));
+    bins[index].count += 1;
+  });
+  return bins;
+}
+
+function historyCapacityZoneLabel(from, through) {
+  if (from === 0) return "绿区（0–60%）";
+  if (from === 60) return "黄区（>60–80%）";
+  if (from === 80) return "红区（>80–100%）";
+  return "深红区（>100%）";
+}
+
+function historyCapacityZoneClass(from) {
+  if (from === 0) return "is-green";
+  if (from === 60) return "is-yellow";
+  if (from === 80) return "is-red";
+  return "is-deep-red";
 }
 
 function renderHistoryCapacityBuffer(history) {
   renderHistoryCapacityProtectionPair(history);
-  const item = (history.capacityBuffers || []).find(candidate => candidate.resourceCode === state.selectedHistoryCapacityResource);
-  if (!item || !item.points?.length) {
+  renderHistoryCapacityProtectionKpis(history);
+  const { upstream: item } = resolveHistoryCapacityPair(history);
+  const points = item?.points || [];
+  const utilizationPoints = points.filter(point =>
+    point.measure?.evidenceStatus === "Complete" && isFiniteHistoryValue(point.measure?.utilizationPercent));
+  if (!item || !utilizationPoints.length) {
     renderHistoryMissing("history-capacity-buffer-chart");
     return;
   }
 
-  const points = item.points;
   const indexed = points.map((point, index) => ({ point, index }));
-  const isUpstreamProtection = item.relationshipRole === "UpstreamProtection";
-  const roleLabel = item.relationshipRole === "CcrUtilization" ? "CCR 利用率参照" : historyCapacityRoleLabel(item);
-  const lineSeries = [
-    ["理论能力", "is-theoretical", point => point.theoreticalCapacity],
-    ["标准能力", "is-standard", point => point.standardCapacity],
-    ["经验证能力", "is-demonstrated", point => point.demonstratedCapacity],
-    ["计划可用能力", "is-planned", point => point.plannedAvailableCapacity],
-    ["保护起点", "is-protection-start", point => point.protectionStart],
-  ];
-  if (isUpstreamProtection) {
-    lineSeries.push(["已消耗保护", "is-consumed-protection", point => point.consumedProtection]);
-  }
-  const values = points.flatMap(point => [
-    point.committedLoad,
-    point.theoreticalCapacity,
-    point.standardCapacity,
-    point.demonstratedCapacity,
-    point.plannedAvailableCapacity,
-    point.protectionStart,
-    ...(isUpstreamProtection ? [point.consumedProtection] : []),
-  ]).filter(isFiniteHistoryValue);
-  const width = 920;
-  const height = 330;
+  const values = utilizationPoints.map(point => Number(point.measure.utilizationPercent));
+  const peak = Math.max(...values);
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const axisMaximum = Math.max(120, Math.ceil(peak / 10) * 10);
+  const zones = [[0, 60], [60, 80], [80, 100], [100, axisMaximum]];
+  const width = 760;
+  const height = 320;
   const left = 58;
   const right = 24;
   const top = 20;
-  const bottom = 278;
-  const scale = historyValueScale(values, top, bottom);
-  if (!scale) {
-    renderHistoryMissing("history-capacity-buffer-chart");
-    return;
-  }
+  const bottom = 262;
+  const y = value => bottom - Number(value) * (bottom - top) / axisMaximum;
   const x = index => left + (index * (width - left - right)) / Math.max(1, points.length - 1);
   const barWidth = Math.max(3, Math.min(22, (width - left - right) / Math.max(1, points.length) * 0.58));
-  const loadBars = indexed.filter(entry => isFiniteHistoryValue(entry.point.committedLoad)).map(entry => {
-    const valueY = scale.y(entry.point.committedLoad);
-    const zeroY = scale.y(0);
-    return `<rect class="history-capacity-load" x="${x(entry.index) - barWidth / 2}" y="${Math.min(valueY, zeroY)}" width="${barWidth}" height="${Math.abs(zeroY - valueY)}"></rect>`;
+  const bars = indexed.filter(entry => entry.point.measure?.evidenceStatus === "Complete" && isFiniteHistoryValue(entry.point.measure?.utilizationPercent)).map(entry => {
+    const value = Number(entry.point.measure.utilizationPercent);
+    return `<rect class="history-capacity-observation ${historyCapacityZoneClass(value <= 60 ? 0 : value <= 80 ? 60 : value <= 100 ? 80 : 100)}" data-week-offset="${number(entry.point.weekOffset)}" data-utilization-percent="${number(value)}" x="${x(entry.index) - barWidth / 2}" y="${y(value)}" width="${barWidth}" height="${bottom - y(value)}"></rect>`;
   }).join("");
-  const paths = lineSeries.map(([label, cssClass, read]) => {
-    const segments = contiguousEvidenceSegments(indexed, entry => isFiniteHistoryValue(read(entry.point)));
-    return segments.map(segment => `<path class="history-capacity-line ${cssClass}" aria-label="${escapeHtml(label)}" d="${buildHistoryLinePath(segment.map(entry => ({ x: x(entry.index), y: scale.y(read(entry.point)) })))}"></path>`).join("");
+  const horizontalZones = zones.map(([from, through]) => {
+    const clippedThrough = Math.min(through, axisMaximum);
+    if (clippedThrough <= from) return "";
+    return `<rect class="history-capacity-zone ${historyCapacityZoneClass(from)}" x="${left}" y="${y(clippedThrough)}" width="${width - left - right}" height="${y(from) - y(clippedThrough)}"></rect><text class="history-capacity-zone-label" x="${left + 5}" y="${y(clippedThrough) + 13}">${historyCapacityZoneLabel(from, clippedThrough)}</text>`;
   }).join("");
   const periodLabels = points.map((point, index) => index % Math.max(1, Math.ceil(points.length / 8)) === 0 || index === points.length - 1
-    ? `<text class="history-axis-label" x="${x(index)}" y="304" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
+    ? `<text class="history-axis-label" x="${x(index)}" y="288" text-anchor="middle">${escapeHtml(point.periodStartDate)}</text>`
     : "").join("");
-  const legend = [
-    ["bar load", "承诺负荷"],
-    ...lineSeries.map(([label, cssClass]) => [`line ${cssClass}`, label]),
-  ].map(([cssClass, label]) => `<span><i class="${cssClass}"></i>${escapeHtml(label)}</span>`).join("");
+  const frequencies = buildHistoryCapacityFrequency(values, axisMaximum);
+  const frequencyMaximum = Math.max(1, ...frequencies.map(bin => bin.count));
+  const frequencyWidth = 760;
+  const frequencyLeft = 42;
+  const frequencyRight = 20;
+  const frequencyTop = 20;
+  const frequencyBottom = 236;
+  const frequencyX = value => frequencyLeft + Number(value) * (frequencyWidth - frequencyLeft - frequencyRight) / axisMaximum;
+  const frequencyY = value => frequencyBottom - Number(value) * (frequencyBottom - frequencyTop) / frequencyMaximum;
+  const verticalZones = zones.map(([from, through]) => {
+    const clippedThrough = Math.min(through, axisMaximum);
+    if (clippedThrough <= from) return "";
+    return `<rect class="history-capacity-zone ${historyCapacityZoneClass(from)}" x="${frequencyX(from)}" y="${frequencyTop}" width="${frequencyX(clippedThrough) - frequencyX(from)}" height="${frequencyBottom - frequencyTop}"></rect><text class="history-capacity-zone-label" x="${frequencyX(from) + 4}" y="${frequencyTop + 13}">${historyCapacityZoneLabel(from, clippedThrough)}</text>`;
+  }).join("");
+  const curve = buildMonotonePath(frequencies.map(bin => ({ x: frequencyX((bin.from + bin.through) / 2), y: frequencyY(bin.count) })));
   const capacitySummary = (history.capacityProtection || []).find(candidate => candidate.resourceCode === item.resourceCode);
   const evidenceRows = points.map(point => {
     const measure = point.measure;
@@ -5237,23 +5270,36 @@ function renderHistoryCapacityBuffer(history) {
     metricOrEvidenceMissing(point.plannedAvailableCapacity),
     metricOrEvidenceMissing(point.committedLoad),
     metricOrEvidenceMissing(measure?.utilizationPercent, percent),
-    isUpstreamProtection ? metricOrEvidenceMissing(measure?.protectionCapacity) : "不适用",
-    isUpstreamProtection ? metricOrEvidenceMissing(measure?.consumedProtection) : "不适用",
-    isUpstreamProtection ? metricOrEvidenceMissing(measure?.remainingProtection) : "不适用",
-    isUpstreamProtection ? metricOrEvidenceMissing(measure?.overload) : "不适用",
+    metricOrEvidenceMissing(measure?.protectionCapacity),
+    metricOrEvidenceMissing(measure?.consumedProtection),
+    metricOrEvidenceMissing(measure?.remainingProtection),
+    metricOrEvidenceMissing(measure?.overload),
     escapeHtml(businessEvidenceLabel(capacitySummary?.lossReason)),
     capacityUtilizationBandChip(measure),
   ]);
   }).join("");
 
   byId("history-capacity-buffer-chart").innerHTML = `
-    <div class="history-chart-heading"><strong>${escapeHtml(item.resourceName)} · ${escapeHtml(item.resourceCode)}</strong><span>${escapeHtml(roleLabel)}</span></div>
-    <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="历史能力分层与保护">
+    <div class="history-chart-heading"><strong>${escapeHtml(item.resourceName)} · ${escapeHtml(item.resourceCode)}</strong><span>上游保护利用率历史证据</span></div>
+    <div class="history-capacity-composite">
+      <section id="history-capacity-period-observations" class="history-capacity-subpanel" aria-label="上游周度利用率观测">
+        <div class="history-chart-heading"><strong>周度上游利用率</strong><span>纵轴为利用率，不推演负荷</span></div>
+        <svg class="history-evidence-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="周度上游利用率和保护带">
+      ${horizontalZones}
       <line class="history-axis-line" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
-      ${loadBars}${paths}${periodLabels}
-    </svg>
-    <div class="history-chart-legend">${legend}</div>
-    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>理论</th><th>标准</th><th>经验证</th><th>计划可用</th><th>承诺负荷</th><th>利用率</th><th>保护能力</th><th>已消耗</th><th>剩余保护</th><th>超载</th><th>损失原因</th><th>负荷区</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
+      <line class="history-capacity-average-marker" x1="${left}" y1="${y(average)}" x2="${width - right}" y2="${y(average)}"></line><text class="history-average-label" x="${width - right}" y="${y(average) - 5}" text-anchor="end">平均 ${percent(average)}</text>
+      ${bars}<circle class="history-capacity-peak-marker" cx="${x(points.findIndex(point => Number(point.measure?.utilizationPercent) === peak))}" cy="${y(peak)}" r="4"></circle><text class="history-capacity-peak-label" x="${x(points.findIndex(point => Number(point.measure?.utilizationPercent) === peak))}" y="${y(peak) - 8}" text-anchor="middle">峰值 ${percent(peak)}</text>${periodLabels}
+        </svg>
+      </section>
+      <section id="history-capacity-empirical-distribution" class="history-capacity-subpanel" aria-label="上游利用率历史频率分布">
+        <div class="history-chart-heading"><strong>历史频率曲线</strong><span>利用率分箱计数，不代表概率预测</span></div>
+        <svg class="history-evidence-svg" viewBox="0 0 ${frequencyWidth} 300" role="img" aria-label="上游利用率历史频率曲线">
+          ${verticalZones}<line class="history-axis-line" x1="${frequencyLeft}" y1="${frequencyBottom}" x2="${frequencyWidth - frequencyRight}" y2="${frequencyBottom}"></line><path class="history-capacity-empirical-curve" d="${curve}"></path>
+          <text class="history-capacity-note is-headroom" x="${frequencyX(2)}" y="270">可用于吸收波动或扩大产量的余量</text><text class="history-capacity-note is-risk" x="${frequencyX(Math.min(82, axisMaximum - 5))}" y="286">可能成为流程干扰点的风险</text>
+        </svg>
+      </section>
+    </div>
+    <div class="table-scroll history-chart-table"><table class="data-table"><thead><tr><th>期间</th><th>理论</th><th>标准</th><th>经验证</th><th>计划可用</th><th>承诺负荷</th><th>利用率</th><th>保护带宽</th><th>已用保护</th><th>未用保护余量</th><th>超载</th><th>损失原因</th><th>负荷区</th></tr></thead><tbody>${evidenceRows}</tbody></table></div>`;
 }
 
 function renderHistoryReview(history) {
