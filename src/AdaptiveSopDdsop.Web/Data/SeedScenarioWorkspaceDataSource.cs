@@ -5,6 +5,7 @@ namespace AdaptiveSopDdsop.Web.Data;
 public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource
 {
     private readonly ValidationData _data;
+    private readonly IInternalDemoOperatingFactSource _operatingFacts;
 
     public SeedScenarioWorkspaceDataSource()
         : this(SeedData.Create())
@@ -12,12 +13,21 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
     }
 
     public SeedScenarioWorkspaceDataSource(ValidationData data)
+        : this(data, new SeedInternalDemoOperatingFactSource(data))
+    {
+    }
+
+    public SeedScenarioWorkspaceDataSource(
+        ValidationData data,
+        IInternalDemoOperatingFactSource operatingFacts)
     {
         _data = data;
+        _operatingFacts = operatingFacts;
     }
 
     public ScenarioWorkspaceDataSet Load(ScenarioWorkspaceDataRequest request)
     {
+        var facts = _operatingFacts.Load();
         var horizonWeeks = Math.Clamp(request.HorizonWeeks, 1, 52);
         var scopedSkus = FilterSkus(request);
         var skuCodes = scopedSkus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
@@ -27,7 +37,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         var demand = _data.Demand
             .Where(item => skuCodes.Contains(item.Sku) && item.Week <= horizonWeeks)
             .ToList();
-        var inventory = _data.Inventory
+        var inventory = facts.BaselineInventory
             .Where(item => skuCodes.Contains(item.Sku))
             .ToList();
         var routings = _data.ResourceRoutings
@@ -41,7 +51,10 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             .Where(item => skuCodes.Contains(item.Sku))
             .ToList();
         var confirmedReceipts = BuildConfirmedReceipts(scopedSkus, inventory, sources, request.AnchorDate);
-        var openingBacklog = BuildOpeningBacklog(scopedSkus, request.AnchorDate);
+        var historyWeeks = Math.Min(52, Math.Max(4, horizonWeeks));
+        var openingBacklog = facts.BaselineBacklog
+            .Where(item => skuCodes.Contains(item.Sku))
+            .ToList();
 
         return new ScenarioWorkspaceDataSet(
             scopedRequest,
@@ -52,7 +65,9 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             resources,
             routings,
             sources,
-            BuildHistoricalDemand(scopedSkus, horizonWeeks),
+            facts.HistoricalDemand
+                .Where(item => skuCodes.Contains(item.Sku) && Math.Abs(item.WeekOffset) <= historyWeeks)
+                .ToList(),
             BuildBudgetBenchmarks(scopedSkus, horizonWeeks),
             BuildResourceCalendar(resources, horizonWeeks),
             BuildSupplierCapacityWindows(sources, 52),
@@ -70,7 +85,10 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             BuildTimeBufferProductScopes(scopedSkus),
             confirmedReceipts,
             openingBacklog,
-            new PlanningEvidenceCoverage(request.AnchorDate, 1, 52, "Complete"));
+            new PlanningEvidenceCoverage(request.AnchorDate, 1, 52, "Complete"),
+            facts.Header.FactSetId,
+            facts.Header.HistoryThroughUtc,
+            facts.Header.BaselineAsOfUtc);
     }
 
     private static IReadOnlyList<CapacityProtectionDefinition> BuildCapacityProtections(
@@ -312,56 +330,8 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             .ToList();
     }
 
-    private static IReadOnlyList<OpeningBacklogEvidence> BuildOpeningBacklog(
-        IReadOnlyList<SkuBufferSetting> skus,
-        DateOnly anchor)
-    {
-        var asOfUtc = SourceCutoffUtc(anchor);
-        return skus
-            .OrderBy(item => item.Sku, StringComparer.Ordinal)
-            .Select(item => new OpeningBacklogEvidence(
-                $"DEMO-OPENING-BACKLOG-{item.Sku}",
-                item.Sku,
-                item.Sku switch
-                {
-                    "PAY-SAR-102" => 1m,
-                    "AV-FPGA-203" => 2m,
-                    "CBL-HAR-402" => 8m,
-                    _ => 0m
-                },
-                $"DEMO-CUSTOMER-BACKLOG-{item.Sku}",
-                "Complete",
-                asOfUtc,
-                "DemoFixture"))
-            .ToList();
-    }
-
     private static string SourceCutoffUtc(DateOnly anchor) =>
         new DateTimeOffset(anchor.ToDateTime(new TimeOnly(8, 0)), TimeSpan.Zero).ToString("O");
-
-    private static IReadOnlyList<HistoricalDemandActual> BuildHistoricalDemand(
-        IReadOnlyList<SkuBufferSetting> skus,
-        int horizonWeeks)
-    {
-        var historyWeeks = Math.Min(52, Math.Max(4, horizonWeeks));
-        return skus
-            .SelectMany(sku => Enumerable.Range(1, historyWeeks).Select(week =>
-            {
-                var pattern = (week % 4) switch
-                {
-                    0 => 1.18m,
-                    1 => 0.92m,
-                    2 => 1.04m,
-                    _ => 0.98m
-                };
-                var forecast = decimal.Round(sku.Adu * 5m, 0);
-                var actual = decimal.Round(forecast * pattern, 0);
-                var service = pattern > 1.12m && sku.Family is "星载电子" ? 92.5m : 97.2m;
-                var netFlow = decimal.Round(sku.Adu * sku.DecoupledLeadTimeDays * (1.9m - (week % 3) * 0.18m), 0);
-                return new HistoricalDemandActual(sku.Sku, -week, actual, forecast, service, netFlow);
-            }))
-            .ToList();
-    }
 
     private static IReadOnlyList<BudgetBenchmark> BuildBudgetBenchmarks(
         IReadOnlyList<SkuBufferSetting> skus,

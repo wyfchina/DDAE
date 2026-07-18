@@ -6,6 +6,11 @@ using System.Text.Json.Nodes;
 
 var tests = new (string Name, Action Run)[]
 {
+    ("Internal demo fact set conserves 52 weeks for all twelve SKUs", TestInternalDemoFactSetConservesAllSkuInventory),
+    ("Internal demo demand profiles are not proportional copies", TestInternalDemoDemandProfilesAreDistinct),
+    ("Internal demo inventory adjustments belong to named event weeks", TestInternalDemoInventoryAdjustmentsUseNamedEvents),
+    ("Scenario workspace exposes shared fact-set lineage", TestScenarioWorkspaceExposesSharedFactSetLineage),
+    ("FPGA MOQ is five in master and scenario data", TestFpgaMoqIsFiveInMasterAndScenario),
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
     ("Standard DDMRP reference is calculated by an internal backend service", TestDdmrpStandardReferenceIsBackendCalculated),
     ("History review no longer owns the standard DDMRP reference", TestHistoryReviewNoLongerOwnsStandardDdmrpReference),
@@ -254,6 +259,90 @@ if (failed > 0)
 }
 
 Console.WriteLine($"{tests.Length} test(s) passed.");
+
+static void TestInternalDemoFactSetConservesAllSkuInventory()
+{
+    var data = SeedData.Create();
+    var facts = new SeedInternalDemoOperatingFactSource(data).Load();
+    AssertEqual("DEMO-OPERATING-20260630-V1", facts.Header.FactSetId, "fact set id");
+    AssertEqual("DemoFixture", facts.Header.SourceKind, "fact source kind");
+    AssertEqual(12, facts.InventoryMovements.Select(item => item.Sku).Distinct().Count(), "ledger SKU count");
+    AssertEqual(12 * 52, facts.InventoryMovements.Count, "ledger row count");
+
+    foreach (var skuFacts in facts.InventoryMovements.GroupBy(item => item.Sku))
+    {
+        var ordered = skuFacts.OrderBy(item => item.WeekOffset).ToList();
+        AssertEqual(52, ordered.Count, $"{skuFacts.Key} week count");
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            var point = ordered[index];
+            AssertEqual(
+                decimal.Round(point.OpeningOnHand + point.ActualReceipts - point.ActualConsumption + point.InventoryAdjustment, 2),
+                point.EndingOnHand,
+                $"{skuFacts.Key}/{point.WeekOffset} inventory conservation");
+            if (index > 0)
+            {
+                AssertEqual(ordered[index - 1].EndingOnHand, point.OpeningOnHand,
+                    $"{skuFacts.Key}/{point.WeekOffset} opening continuity");
+            }
+        }
+    }
+}
+
+static void TestInternalDemoDemandProfilesAreDistinct()
+{
+    var facts = new SeedInternalDemoOperatingFactSource(SeedData.Create()).Load();
+    var com = facts.InventoryMovements.Where(item => item.Sku == "AV-COM-201")
+        .OrderBy(item => item.WeekOffset).Select(item => item.ActualDemand).ToList();
+    var obc = facts.InventoryMovements.Where(item => item.Sku == "AV-OBC-202")
+        .OrderBy(item => item.WeekOffset).Select(item => item.ActualDemand).ToList();
+    var ratios = com.Zip(obc, (left, right) => right == 0m ? 0m : decimal.Round(left / right, 3)).Distinct().ToList();
+    AssertTrue(ratios.Count > 4, "AV-COM and AV-OBC must not be fixed proportional copies");
+}
+
+static void TestInternalDemoInventoryAdjustmentsUseNamedEvents()
+{
+    var expected = new Dictionary<int, string>
+    {
+        [-46] = "DEMAND_CHANGE",
+        [-39] = "IMPORT_DELAY",
+        [-33] = "AIT_CAPACITY_LOSS",
+        [-29] = "RECOVERY",
+        [-21] = "DEMAND_PEAK",
+        [-16] = "REWORK",
+        [-11] = "SUPPLY_RECOVERY",
+        [-6] = "TAKT_RECOVERY"
+    };
+    var facts = new SeedInternalDemoOperatingFactSource(SeedData.Create()).Load();
+    var adjusted = facts.InventoryMovements.Where(item => item.InventoryAdjustment != 0m).ToList();
+    AssertTrue(adjusted.Count > 0, "named inventory events must produce adjustments");
+    foreach (var item in adjusted)
+    {
+        AssertTrue(!string.IsNullOrWhiteSpace(item.EventCode) && item.EventCode != "NONE", "adjustment must have an event code");
+        AssertTrue(expected.TryGetValue(item.WeekOffset, out var eventCode) && eventCode == item.EventCode,
+            $"{item.Sku}/{item.WeekOffset} adjustment must use the shared event registry");
+    }
+}
+
+static void TestScenarioWorkspaceExposesSharedFactSetLineage()
+{
+    var data = SeedData.Create();
+    var facts = new SeedInternalDemoOperatingFactSource(data).Load();
+    var scenario = new SeedScenarioWorkspaceDataSource(data)
+        .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
+    AssertEqual(facts.Header.FactSetId, scenario.FactSetId, "scenario fact-set id");
+    AssertEqual(facts.Header.HistoryThroughUtc, scenario.HistoryThroughUtc, "scenario history cutoff");
+    AssertEqual(facts.Header.BaselineAsOfUtc, scenario.BaselineAsOfUtc, "scenario baseline cutoff");
+}
+
+static void TestFpgaMoqIsFiveInMasterAndScenario()
+{
+    var data = SeedData.Create();
+    AssertEqual(5m, data.Skus.Single(item => item.Sku == "AV-FPGA-203").MinimumOrderQuantity, "master FPGA MOQ");
+    var scenario = new SeedScenarioWorkspaceDataSource(data)
+        .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
+    AssertEqual(5m, scenario.Skus.Single(item => item.Sku == "AV-FPGA-203").MinimumOrderQuantity, "scenario FPGA MOQ");
+}
 
 static void TestStandardDdmrpSizingReturns80_120_70()
 {
@@ -2416,10 +2505,13 @@ static void TestCurrentBaselineExposesSnapshotKpisWithSourceAndAsOf()
         AssertTrue(kpis is not null, "candidate should expose meeting snapshot KPIs");
         AssertTrue(kpis!.ServiceLevelPercent is > 0m and <= 100m, "snapshot service level should be evidence-backed");
         AssertTrue(!string.IsNullOrWhiteSpace(kpis.ServiceWindow), "snapshot service level should name its statistical window");
+        var inventoryBridge = new SeedInternalDemoOperatingFactSource(validationData).Load().BalanceBridges
+            .Single(item => item.MetricCode == "INVENTORY_VALUE" && item.ItemKey == "ALL");
         AssertEqual(
-            validationData.Inventory.Join(validationData.Skus, item => item.Sku, sku => sku.Sku, (item, sku) => item.OnHand * sku.UnitCost).Sum(),
-            kpis.InventoryValue,
-            "snapshot inventory value");
+            inventoryBridge.HistoryClosingBalance + inventoryBridge.IntervalIncrease - inventoryBridge.IntervalDecrease + inventoryBridge.Adjustment,
+            inventoryBridge.BaselineBalance,
+            "shared inventory bridge reconciliation");
+        AssertEqual(inventoryBridge.BaselineBalance, kpis.InventoryValue, "snapshot inventory value");
         AssertEqual(candidate.Payload.WorkInProcess.Sum(item => item.Quantity), kpis.WorkInProcessUnits, "snapshot WIP units");
         AssertEqual(candidate.Payload.Backlog.Sum(item => item.Quantity), kpis.BacklogUnits, "snapshot backlog units");
         AssertTrue(kpis.SupplyCoverageWeeks is > 0m, "snapshot supply coverage should be present");
@@ -4283,7 +4375,28 @@ static void TestScenarioSupplyResponseRestoresCommittedSupply()
         var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(data), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "供应响应来源基线"));
         var assumptionSource = new SeedScenarioAssumptionSource();
-        var externalScenario = assumptionSource.GetTemplates().Single().ExternalScenario;
+        var externalScenario = assumptionSource.GetTemplates().Single().ExternalScenario with
+        {
+            DemandChanges = (assumptionSource.GetTemplates().Single().ExternalScenario.DemandChanges ?? Array.Empty<ExternalDemandChange>())
+                .Append(new ExternalDemandChange(
+                    "AV-FPGA-203",
+                    null,
+                    3,
+                    8,
+                    100m,
+                    "供应响应测试：在受风险窗口触发 FPGA 补货"))
+                .ToList(),
+            Metadata = new ScenarioAssumptionMetadata(
+                "Manual",
+                null,
+                null,
+                "DDS&OP 计划员",
+                "2026-06-30T08:00:00.0000000+00:00",
+                "2026-06-30",
+                "2026-09-30",
+                "供应响应测试的明确 FPGA 需求增量",
+                "TestFixture")
+        };
         var risks = externalScenario.SupplyRisks ?? Array.Empty<ExternalSupplyRisk>();
         var service = new ScenarioComparisonService(
             baselineService,

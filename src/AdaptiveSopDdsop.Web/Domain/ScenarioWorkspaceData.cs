@@ -906,7 +906,10 @@ public sealed record ScenarioWorkspaceDataSet(
     IReadOnlyList<TimeBufferProductScope>? TimeBufferProductScopes = null,
     IReadOnlyList<ConfirmedReceiptEvidence>? ConfirmedReceipts = null,
     IReadOnlyList<OpeningBacklogEvidence>? OpeningBacklog = null,
-    PlanningEvidenceCoverage? PlanningEvidenceCoverage = null);
+    PlanningEvidenceCoverage? PlanningEvidenceCoverage = null,
+    string FactSetId = "",
+    string HistoryThroughUtc = "",
+    string BaselineAsOfUtc = "");
 
 public interface IScenarioWorkspaceDataSource
 {

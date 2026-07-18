@@ -8,7 +8,12 @@ builder.Services.AddRazorPages();
 builder.Services.AddSingleton(SeedData.Create());
 builder.Services.AddSingleton<DdmrpCalculator>();
 builder.Services.AddSingleton<DdsopScenarioService>();
-builder.Services.AddSingleton<IScenarioWorkspaceDataSource, SeedScenarioWorkspaceDataSource>();
+builder.Services.AddSingleton<IInternalDemoOperatingFactSource>(sp =>
+    new SeedInternalDemoOperatingFactSource(sp.GetRequiredService<ValidationData>()));
+builder.Services.AddSingleton<IScenarioWorkspaceDataSource>(sp =>
+    new SeedScenarioWorkspaceDataSource(
+        sp.GetRequiredService<ValidationData>(),
+        sp.GetRequiredService<IInternalDemoOperatingFactSource>()));
 builder.Services.AddSingleton<IHistoryOperatingFactSource>(sp =>
     new SeedHistoryOperatingFactSource(sp.GetRequiredService<ValidationData>()));
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
