@@ -43,7 +43,6 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
     };
     private static readonly IReadOnlyList<AnnualWeekProfile> AnnualProfiles = BuildAnnualProfiles();
 
-    private readonly ValidationData _data;
     private readonly InternalDemoOperatingFactSet _sharedFacts;
     private readonly IReadOnlyList<WeeklyOperatingFact> _operatingFacts;
     private readonly IReadOnlyList<WeeklyBufferFact> _bufferFacts;
@@ -62,7 +61,6 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
         ValidationData data,
         IInternalDemoOperatingFactSource operatingFacts)
     {
-        _data = data;
         _sharedFacts = operatingFacts.Load();
         _ddmrpParameterFacts = BuildDdmrpParameterFacts(data.Skus);
         _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts, _sharedFacts.InventoryMovements);
@@ -70,7 +68,7 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
         _abnormalCosts = BuildAbnormalCosts();
         _timeBufferFacts = BuildTimeBufferFacts(AnnualProfiles, _abnormalCosts);
         _capacityFacts = BuildCapacityFacts(AnnualProfiles);
-        _capacityProtectionFacts = BuildCapacityProtectionFacts();
+        _capacityProtectionFacts = BuildCapacityProtectionFacts(data);
     }
 
     public HistoryFactSet Load(HistoryFactRequest request)
@@ -367,17 +365,17 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
         }).ToList();
     }
 
-    private IReadOnlyList<HistoricalCapacityProtectionFact> BuildCapacityProtectionFacts()
+    private static IReadOnlyList<HistoricalCapacityProtectionFact> BuildCapacityProtectionFacts(ValidationData data)
     {
         var sequenceEvidence = new List<(ResourceRouting Upstream, ResourceRouting Ccr)>();
-        foreach (var upstream in _data.ResourceRoutings.Where(item =>
+        foreach (var upstream in data.ResourceRoutings.Where(item =>
                      ProtectionProductEligibility.IsEligible(item.Sku) &&
                      item.ResourceCode == "RES-AIT" &&
                      item.ProtectsCcrResourceCode == "RES-HARNESS" &&
                      item.OperationSequence > 0 &&
                      item.EvidenceStatus == "Complete"))
         {
-            var ccr = _data.ResourceRoutings
+            var ccr = data.ResourceRoutings
                 .Where(item =>
                     item.Sku == upstream.Sku &&
                     item.ResourceCode == upstream.ProtectsCcrResourceCode &&
