@@ -9,7 +9,10 @@ public sealed record WeeklyOperatingFact(
     decimal? WorkInProcessUnits,
     decimal? AverageFlowTimeDays,
     decimal? CashOccupied,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    decimal? ActualDemand = null,
+    decimal? DemandSpikeThreshold = null,
+    decimal? TargetNetFlowPosition = null);
 
 public sealed record WeeklyBufferFact(
     string Sku,
@@ -21,7 +24,9 @@ public sealed record WeeklyBufferFact(
     decimal? OpenSupply = null,
     decimal? QualifiedDemand = null,
     string ControlPoint = "",
-    string? ParameterSnapshotId = null);
+    string? ParameterSnapshotId = null,
+    decimal? DemandSpikeThreshold = null,
+    decimal? TargetNetFlowPosition = null);
 
 public sealed record WeeklyTimeBufferFact(
     string BufferId,
@@ -88,7 +93,11 @@ public sealed record HistoryAbnormalCostEvent(
     decimal CostAmount,
     string CostType,
     string Cause,
-    string EvidenceStatus);
+    string EvidenceStatus,
+    string? TargetType = null,
+    string? TargetId = null,
+    string? ControlPoint = null,
+    string? SourceAuthority = null);
 
 public sealed record HistoryFactSet(
     HistoryFactRequest Request,

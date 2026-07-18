@@ -24,6 +24,17 @@ var tests = new (string Name, Action Run)[]
     ("Consolidated requirements are represented in validation data", TestConsolidatedRequirementsDataCoverage),
     ("History review follows cumulative lead time and exposes protection evidence", TestHistoryReviewUsesCumulativeLeadTimeAndProtectionEvidence),
     ("History review aggregates distinct twenty-six and fifty-two week facts", TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts),
+    ("History annual facts contain 52 irregular weeks", TestHistoryAnnualFactsContainFiftyTwoIrregularWeeks),
+    ("History six month view is annual tail", TestHistorySixMonthViewIsAnnualTail),
+    ("History facts avoid repeated fixture cycles", TestHistoryFactsAvoidRepeatedFixtureCycles),
+    ("History event costs are explicit evidence", TestHistoryEventCostsAreExplicitEvidence),
+    ("History magnitudes reconcile across views", TestHistoryMagnitudesReconcileAcrossViews),
+    ("History target NFP derives from parameter evidence", TestHistoryTargetNfpDerivesFromParameterEvidence),
+    ("History facts ignore current inventory positions", TestHistoryFactsIgnoreCurrentInventoryPositions),
+    ("History facts ignore current SKU unit costs", TestHistoryFactsIgnoreCurrentSkuUnitCosts),
+    ("History abnormal costs retain object ownership", TestHistoryAbnormalCostsRetainObjectOwnership),
+    ("History events remain scoped to owned objects", TestHistoryEventsRemainScopedToOwnedObjects),
+    ("History event display text is Chinese", TestHistoryEventDisplayTextIsChinese),
     ("History review projects stock time capacity and sizing views from explicit facts", TestHistoryReviewProjectsExplicitBufferViews),
     ("History capacity summaries average weekly protection consumption", TestHistoryCapacitySummariesAverageWeeklyProtectionConsumption),
     ("History capacity protection rejects self-referential resource evidence", TestHistoryCapacityProtectionRejectsSelfReference),
@@ -845,6 +856,473 @@ static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
     AssertTrue(failures.Count == 0, string.Join("; ", failures));
 }
 
+static void TestHistoryAnnualFactsContainFiftyTwoIrregularWeeks()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var expectedWeeks = Enumerable.Range(-52, 52).ToList();
+    var operatingWeeks = facts.OperatingFacts
+        .Select(item => item.WeekOffset)
+        .OrderBy(item => item)
+        .ToList();
+
+    AssertEqual(52, facts.Request.Weeks, "annual history request weeks");
+    AssertEqual(52, facts.OperatingFacts.Count, "annual operating fact count");
+    AssertTrue(operatingWeeks.SequenceEqual(expectedWeeks), "annual history must contain every offset from -52 through -1 exactly once");
+    AssertTrue(
+        typeof(WeeklyOperatingFact).GetProperty("ActualDemand") is not null &&
+        typeof(WeeklyOperatingFact).GetProperty("DemandSpikeThreshold") is not null &&
+        typeof(WeeklyOperatingFact).GetProperty("TargetNetFlowPosition") is not null,
+        "weekly operating facts must expose optional demand, spike-threshold and target-NFP evidence");
+    AssertTrue(
+        facts.OperatingFacts.All(item =>
+            ReadOptionalHistoryDecimal(item, "ActualDemand") is > 0m &&
+            ReadOptionalHistoryDecimal(item, "DemandSpikeThreshold") is > 0m &&
+            ReadOptionalHistoryDecimal(item, "TargetNetFlowPosition") is not null),
+        "all 52 complete annual weeks must carry the optional magnitude evidence");
+    AssertTrue(
+        facts.OperatingFacts
+            .Select(item => ReadOptionalHistoryDecimal(item, "ActualDemand"))
+            .Distinct()
+            .Count() >= 40,
+        "annual demand evidence must be irregular rather than a short repeated cycle");
+
+    var expectedEvents = ExpectedHistoryEventNames();
+    var visibleCauses = facts.BufferFacts.Select(item => item.ExplicitCause)
+        .Concat(facts.CapacityFacts.Select(item => item.LossReason))
+        .Concat((facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>()).Select(item => item.ExplicitCause))
+        .ToList();
+    foreach (var expected in expectedEvents)
+    {
+        AssertTrue(
+            visibleCauses.Contains(expected.Value, StringComparer.Ordinal),
+            $"named annual event at week {expected.Key}");
+    }
+}
+
+static void TestHistorySixMonthViewIsAnnualTail()
+{
+    var seed = SeedData.Create();
+    var source = new SeedHistoryOperatingFactSource(seed);
+    var asOfDate = new DateOnly(2026, 6, 1);
+    var annual = source.Load(new HistoryFactRequest(52, asOfDate));
+    var recent = source.Load(new HistoryFactRequest(26, asOfDate));
+    bool InRecent(int weekOffset) => weekOffset is >= -26 and <= -1;
+
+    AssertEqual(
+        JsonSerializer.Serialize(annual.OperatingFacts.Where(item => InRecent(item.WeekOffset)).ToList()),
+        JsonSerializer.Serialize(recent.OperatingFacts),
+        "six-month operating facts must be the annual trailing 26 weeks");
+    AssertEqual(
+        JsonSerializer.Serialize(annual.BufferFacts.Where(item => InRecent(item.WeekOffset)).ToList()),
+        JsonSerializer.Serialize(recent.BufferFacts),
+        "six-month buffer facts must be the annual trailing 26 weeks");
+    AssertEqual(
+        JsonSerializer.Serialize(annual.CapacityFacts.Where(item => InRecent(item.WeekOffset)).ToList()),
+        JsonSerializer.Serialize(recent.CapacityFacts),
+        "six-month capacity facts must be the annual trailing 26 weeks");
+    AssertEqual(
+        JsonSerializer.Serialize((annual.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>()).Where(item => InRecent(item.WeekOffset)).ToList()),
+        JsonSerializer.Serialize(recent.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>()),
+        "six-month time-buffer facts must be the annual trailing 26 weeks");
+    AssertEqual(
+        JsonSerializer.Serialize(annual.AbnormalCosts.Where(item => InRecent(item.WeekOffset)).ToList()),
+        JsonSerializer.Serialize(recent.AbnormalCosts),
+        "six-month abnormal costs must be the annual trailing 26 weeks");
+
+    var recordingSource = new RecordingHistoryOperatingFactSource(source);
+    var service = new HistoryReviewWorkspaceService(
+        recordingSource,
+        new SeedScenarioWorkspaceDataSource(seed));
+    var recentReview = service.GetReview(6);
+    AssertEqual(1, recordingSource.Requests.Count, "six-month review history load count");
+    AssertEqual(52, recordingSource.Requests.Single().Weeks, "six-month review must load the annual fact set before slicing");
+    AssertEqual(26, recentReview.ObservedTrendWeeks, "six-month review annual-tail observation count");
+    AssertEqual(3, recentReview.DetailWindowWeeks.GetValueOrDefault(), "selected-object cumulative-lead-time detail window");
+    AssertTrue(
+        recentReview.EvidenceLabel.Contains("TrendWindow=trailing-26-of-52", StringComparison.Ordinal) &&
+        recentReview.EvidenceLabel.Contains("SelectedObjectDetail=3-week cumulative-lead-time", StringComparison.Ordinal),
+        "evidence label must distinguish the 26-week trend from the selected object's 3-week detail window");
+}
+
+static void TestHistoryFactsAvoidRepeatedFixtureCycles()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var recentBuffer = facts.BufferFacts
+        .Where(item => item.Sku == "AV-COM-201" && item.WeekOffset >= -24)
+        .OrderBy(item => item.WeekOffset)
+        .Select(item => item.EndingNetFlow)
+        .ToList();
+    var aitLoadRatios = facts.CapacityFacts
+        .Where(item => item.ResourceCode == "RES-AIT")
+        .OrderBy(item => item.WeekOffset)
+        .Select(item => item.PlannedAvailableCapacity is > 0m && item.CommittedLoad.HasValue
+            ? decimal.Round(item.CommittedLoad.Value * 100m / item.PlannedAvailableCapacity.Value, 1)
+            : (decimal?)null)
+        .ToList();
+    var timeCounts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+        .OrderBy(item => item.WeekOffset)
+        .Select(item => $"{item.EarlyCount}|{item.GreenCount}|{item.YellowCount}|{item.RedCount}|{item.LateCount}")
+        .ToList();
+
+    AssertTrue(!RepeatsHistoryCycle(recentBuffer, 8), "buffer facts must not repeat an eight-week fixture cycle");
+    AssertTrue(!RepeatsHistoryCycle(aitLoadRatios, 4), "capacity facts must not repeat a four-week fixture cycle");
+    AssertTrue(!RepeatsHistoryCycle(timeCounts, 8), "time-buffer facts must not repeat an eight-week fixture cycle");
+
+    var expectedEvents = ExpectedHistoryEventNames();
+    var allowedEventNames = expectedEvents.Values.Append("无事件").ToHashSet(StringComparer.Ordinal);
+    var timeFacts = facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>();
+    AssertTrue(
+        timeFacts.All(item => allowedEventNames.Contains(item.ExplicitCause)),
+        "every weekly time fact must carry a named event or explicit no-event status");
+    AssertTrue(
+        facts.BufferFacts.All(item => allowedEventNames.Contains(item.ExplicitCause)),
+        "every weekly buffer fact must carry a scoped named event or explicit no-event status");
+    AssertTrue(
+        facts.CapacityFacts.All(item => allowedEventNames.Contains(item.LossReason)),
+        "every weekly capacity fact must carry a scoped named event or explicit no-event status");
+}
+
+static void TestHistoryEventCostsAreExplicitEvidence()
+{
+    var source = new SeedHistoryOperatingFactSource(SeedData.Create());
+    var annual = source.Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var recent = source.Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
+    var namedEvents = ExpectedHistoryEventNames();
+    var expectedAmounts = new[] { 180_000m, 240_000m, 360_000m, 420_000m };
+    var actualAmounts = annual.AbnormalCosts.Select(item => item.CostAmount).OrderBy(item => item).ToList();
+
+    AssertEqual(4, annual.AbnormalCosts.Count, "annual abnormal cost event count");
+    AssertTrue(actualAmounts.SequenceEqual(expectedAmounts), "annual abnormal costs must use the four explicit evidence amounts");
+    AssertEqual(1_200_000m, annual.AbnormalCosts.Sum(item => item.CostAmount), "annual explicit abnormal cost total");
+    AssertEqual(420_000m, recent.AbnormalCosts.Sum(item => item.CostAmount), "trailing-six-month explicit abnormal cost total");
+    AssertTrue(
+        annual.AbnormalCosts.All(item =>
+            item.EvidenceStatus == "Complete" &&
+            namedEvents.TryGetValue(item.WeekOffset, out var eventName) &&
+            item.Cause == eventName),
+        "each abnormal cost must link to one named evidence-bearing event");
+
+    var timeBufferCostsByWeek = annual.AbnormalCosts
+        .Where(item => ReadRequiredRecordString(item, "TargetType") == "时间缓冲" &&
+                       ReadRequiredRecordString(item, "TargetId") == "MS-TB-001")
+        .ToDictionary(item => item.WeekOffset);
+    foreach (var timeFact in annual.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+    {
+        if (timeBufferCostsByWeek.TryGetValue(timeFact.WeekOffset, out var cost))
+        {
+            AssertEqual(cost.EventId, timeFact.AbnormalCostEventId!, $"week {timeFact.WeekOffset} abnormal cost event link");
+            AssertEqual(cost.CostAmount, timeFact.AbnormalCost!.Value, $"week {timeFact.WeekOffset} abnormal cost amount link");
+        }
+        else
+        {
+            AssertTrue(
+                timeFact.AbnormalCostEventId is null && timeFact.AbnormalCost is null,
+                $"week {timeFact.WeekOffset} without cost evidence must be explicitly cost-free");
+        }
+    }
+}
+
+static void TestHistoryMagnitudesReconcileAcrossViews()
+{
+    var seed = SeedData.Create();
+    var facts = new SeedHistoryOperatingFactSource(seed)
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var skuCosts = seed.Skus.ToDictionary(item => item.Sku, item => item.UnitCost, StringComparer.Ordinal);
+    var operatingByWeek = facts.OperatingFacts.ToDictionary(item => item.WeekOffset);
+
+    foreach (var operating in facts.OperatingFacts)
+    {
+        var buffers = facts.BufferFacts.Where(item => item.WeekOffset == operating.WeekOffset).ToList();
+        var expectedDemand = buffers.Sum(item => item.QualifiedDemand ?? 0m);
+        var expectedThreshold = buffers.Sum(item => ReadRequiredRecordDecimal(item, "DemandSpikeThreshold"));
+        var expectedTargetNfp = buffers.Sum(item => ReadRequiredRecordDecimal(item, "TargetNetFlowPosition"));
+        var expectedInventoryValue = decimal.Round(buffers.Sum(item => (item.EndingOnHand ?? 0m) * skuCosts[item.Sku]), 0);
+        AssertEqual(expectedDemand, ReadRequiredHistoryDecimal(operating, "ActualDemand"), $"week {operating.WeekOffset} actual demand reconciliation");
+        AssertEqual(expectedThreshold, ReadRequiredHistoryDecimal(operating, "DemandSpikeThreshold"), $"week {operating.WeekOffset} demand spike threshold reconciliation");
+        AssertEqual(expectedTargetNfp, ReadRequiredHistoryDecimal(operating, "TargetNetFlowPosition"), $"week {operating.WeekOffset} target NFP reconciliation");
+        AssertEqual(expectedInventoryValue, operating.InventoryValue!.Value, $"week {operating.WeekOffset} inventory value reconciliation");
+        AssertTrue(ReadRequiredHistoryDecimal(operating, "DemandSpikeThreshold") > 0m, $"week {operating.WeekOffset} demand spike threshold evidence");
+        AssertTrue(
+            buffers.All(item => item.EndingNetFlow == item.EndingOnHand + item.OpenSupply - item.QualifiedDemand),
+            $"week {operating.WeekOffset} component NFP reconciliation");
+    }
+
+    var peak = operatingByWeek[-21];
+    AssertTrue(
+        ReadRequiredHistoryDecimal(peak, "ActualDemand") > ReadRequiredHistoryDecimal(peak, "DemandSpikeThreshold"),
+        "named peak-demand week must exceed its explicit spike threshold");
+    AssertTrue(operatingByWeek[-33].WorkInProcessUnits > operatingByWeek[-29].WorkInProcessUnits,
+        "AIT capacity loss must raise WIP before recovery");
+    AssertTrue(operatingByWeek[-33].ServiceLevelPercent < operatingByWeek[-29].ServiceLevelPercent,
+        "AIT recovery must improve service after the capacity-loss event");
+    AssertTrue(
+        facts.BufferFacts.Where(item => item.WeekOffset == -39).Sum(item => item.EndingNetFlow) <
+        facts.BufferFacts.Where(item => item.WeekOffset == -11).Sum(item => item.EndingNetFlow),
+        "supply recovery must restore actual ending NFP after the import delay");
+
+    var aitCapacity = facts.CapacityFacts
+        .Where(item => item.ResourceCode == "RES-AIT")
+        .ToDictionary(item => item.WeekOffset);
+    AssertTrue(aitCapacity[-33].PlannedAvailableCapacity < aitCapacity[-29].PlannedAvailableCapacity,
+        "AIT recovery must restore planned available capacity");
+    var timeFacts = (facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+        .ToDictionary(item => item.WeekOffset);
+    AssertTrue(timeFacts[-16].LateCount > timeFacts[-6].LateCount,
+        "pacing recovery must reduce late time-buffer observations after rework");
+}
+
+static void TestHistoryTargetNfpDerivesFromParameterEvidence()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var parameters = facts.DdmrpParameterFacts ?? throw new InvalidOperationException("historical DDMRP parameter evidence is missing");
+    var targetProperty = typeof(WeeklyBufferFact).GetProperty("TargetNetFlowPosition");
+    var thresholdProperty = typeof(WeeklyBufferFact).GetProperty("DemandSpikeThreshold");
+
+    AssertTrue(targetProperty is not null, "weekly SKU buffer evidence must expose its target NFP");
+    AssertTrue(thresholdProperty is not null, "weekly SKU buffer evidence must expose its demand-spike threshold");
+
+    foreach (var buffer in facts.BufferFacts)
+    {
+        var parameter = parameters.Single(item =>
+            item.Sku == buffer.Sku &&
+            item.EffectiveFromWeekOffset <= buffer.WeekOffset &&
+            buffer.WeekOffset <= item.EffectiveThroughWeekOffset);
+        var sizing = DdmrpCalculator.CalculateSizing(parameter.Setting);
+        var expectedTarget = decimal.Round((sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m, 2);
+        var expectedThreshold = decimal.Round(parameter.Setting.Adu * 7m * 1.35m, 2);
+
+        AssertEqual(expectedTarget, ReadRequiredRecordDecimal(buffer, "TargetNetFlowPosition"), $"{buffer.Sku} week {buffer.WeekOffset} target NFP");
+        AssertEqual(expectedThreshold, ReadRequiredRecordDecimal(buffer, "DemandSpikeThreshold"), $"{buffer.Sku} week {buffer.WeekOffset} spike threshold");
+        AssertTrue(buffer.QualifiedDemand is > 0m, $"{buffer.Sku} week {buffer.WeekOffset} qualified demand evidence");
+    }
+
+    AssertTrue(
+        facts.BufferFacts.Any(item => item.EndingNetFlow != ReadRequiredRecordDecimal(item, "TargetNetFlowPosition")),
+        "actual ending NFP must not be relabeled as the parameter-derived target");
+}
+
+static void TestHistoryFactsIgnoreCurrentInventoryPositions()
+{
+    var current = SeedData.Create();
+    var cutoff = new DateOnly(2026, 6, 1);
+    var original = new SeedHistoryOperatingFactSource(current)
+        .Load(new HistoryFactRequest(52, cutoff));
+    var clearedCurrent = current with
+    {
+        Inventory = current.Inventory
+            .Select(item => item with { OnHand = 0m, OpenSupply = 0m, QualifiedDemand = 0m })
+            .ToList(),
+    };
+    var afterCurrentChanged = new SeedHistoryOperatingFactSource(clearedCurrent)
+        .Load(new HistoryFactRequest(52, cutoff));
+
+    AssertEqual(
+        JsonSerializer.Serialize(original.BufferFacts),
+        JsonSerializer.Serialize(afterCurrentChanged.BufferFacts),
+        "frozen historical SKU inventory facts must not read the current inventory positions");
+    AssertEqual(
+        JsonSerializer.Serialize(original.OperatingFacts),
+        JsonSerializer.Serialize(afterCurrentChanged.OperatingFacts),
+        "frozen historical operating magnitudes must not read the current inventory positions");
+    AssertTrue(
+        original.EvidenceLabel.Contains("HistoricalInventoryOpeningAsOf=2025-06-02T00:00:00Z", StringComparison.Ordinal),
+        "historical inventory evidence must disclose its frozen opening cutoff");
+    AssertTrue(
+        afterCurrentChanged.BufferFacts.All(item => item.EndingOnHand is > 0m),
+        "clearing current inventory must neither divide by zero nor erase the frozen historical opening evidence");
+}
+
+static void TestHistoryFactsIgnoreCurrentSkuUnitCosts()
+{
+    var current = SeedData.Create();
+    var cutoff = new DateOnly(2026, 6, 1);
+    var original = new SeedHistoryOperatingFactSource(current)
+        .Load(new HistoryFactRequest(52, cutoff));
+    var changedCurrentCosts = current with
+    {
+        Skus = current.Skus
+            .Select((item, index) => item with { UnitCost = item.UnitCost * (2m + index / 10m) })
+            .ToList(),
+    };
+    var afterCurrentCostsChanged = new SeedHistoryOperatingFactSource(changedCurrentCosts)
+        .Load(new HistoryFactRequest(52, cutoff));
+
+    AssertEqual(
+        JsonSerializer.Serialize(original.BufferFacts),
+        JsonSerializer.Serialize(afterCurrentCostsChanged.BufferFacts),
+        "frozen historical SKU quantities must not read current unit costs");
+    AssertEqual(
+        JsonSerializer.Serialize(original.OperatingFacts),
+        JsonSerializer.Serialize(afterCurrentCostsChanged.OperatingFacts),
+        "frozen historical operating values must not read current unit costs");
+    AssertEqual(
+        JsonSerializer.Serialize(original.DdmrpParameterFacts),
+        JsonSerializer.Serialize(afterCurrentCostsChanged.DdmrpParameterFacts),
+        "frozen historical DDMRP parameter snapshots must not read current unit costs");
+}
+
+static void TestHistoryAbnormalCostsRetainObjectOwnership()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var costs = facts.AbnormalCosts.ToDictionary(item => item.WeekOffset);
+
+    AssertEqual("需求对象", ReadRequiredRecordString(costs[-46], "TargetType"), "demand-change cost target type");
+    AssertEqual("星载电子", ReadRequiredRecordString(costs[-46], "TargetId"), "demand-change cost target");
+    AssertEqual("库存控制点", ReadRequiredRecordString(costs[-39], "TargetType"), "import-delay cost target type");
+    AssertEqual("AV-FPGA-203", ReadRequiredRecordString(costs[-39], "TargetId"), "import-delay cost target");
+    AssertEqual("关键进口 FPGA 库存控制点", ReadRequiredRecordString(costs[-39], "ControlPoint"), "import-delay control point");
+    AssertEqual("能力对象", ReadRequiredRecordString(costs[-33], "TargetType"), "AIT capacity-loss target type");
+    AssertEqual("RES-AIT", ReadRequiredRecordString(costs[-33], "TargetId"), "AIT capacity-loss target");
+    AssertEqual("时间缓冲", ReadRequiredRecordString(costs[-16], "TargetType"), "rework cost target type");
+    AssertEqual("MS-TB-001", ReadRequiredRecordString(costs[-16], "TargetId"), "rework cost target");
+    AssertTrue(costs.Values.All(item => ReadRequiredRecordString(item, "SourceAuthority") == "DDAE 演示历史事实台账"),
+        "every abnormal cost must name its historical source authority");
+
+    var timeFacts = facts.TimeBufferFacts ?? throw new InvalidOperationException("historical time-buffer evidence is missing");
+    var linkedCosts = timeFacts.Where(item => item.AbnormalCostEventId is not null).ToList();
+    AssertEqual(1, linkedCosts.Count, "only the rework cost belongs to the heat-vacuum time buffer");
+    AssertEqual(-16, linkedCosts.Single().WeekOffset, "heat-vacuum time-buffer cost week");
+    AssertEqual("HAC-2026-002", linkedCosts.Single().AbnormalCostEventId!, "heat-vacuum time-buffer cost event");
+    AssertTrue(timeFacts.Single(item => item.WeekOffset == -39).AbnormalCostEventId is null,
+        "the FPGA inventory-control event must not be attached to the heat-vacuum time buffer");
+
+    AssertTrue(
+        facts.ConstraintFacts.Any(item => item.WeekOffset == -16 && item.SourceKind == "HistoricalFact" && item.Evidence.Contains("返工", StringComparison.Ordinal)),
+        "event constraint observation must align with the named rework week");
+    AssertTrue(
+        facts.ConstraintFacts.Any(item => item.WeekOffset == -39 && item.SourceKind == "HistoricalFact" && item.Target.Contains("FPGA", StringComparison.Ordinal)),
+        "external constraint observation must align with the named FPGA import-delay week");
+}
+
+static void TestHistoryEventsRemainScopedToOwnedObjects()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+
+    var importBuffers = facts.BufferFacts.Where(item => item.WeekOffset == -39).ToList();
+    AssertEqual("进口延迟", importBuffers.Single(item => item.Sku == "AV-FPGA-203").ExplicitCause, "FPGA import-delay cause");
+    AssertTrue(importBuffers.Where(item => item.Sku != "AV-FPGA-203").All(item => item.ExplicitCause == "无事件"),
+        "the FPGA import delay must not spread to other inventory control points");
+    AssertTrue(facts.CapacityFacts.Where(item => item.WeekOffset == -39).All(item => item.LossReason == "无事件"),
+        "the FPGA import delay must not spread to capacity resources");
+
+    var aitLossCapacity = facts.CapacityFacts.Where(item => item.WeekOffset == -33).ToList();
+    AssertEqual("AIT 能力损失", aitLossCapacity.Single(item => item.ResourceCode == "RES-AIT").LossReason, "AIT capacity-loss cause");
+    AssertTrue(aitLossCapacity.Where(item => item.ResourceCode != "RES-AIT").All(item => item.LossReason == "无事件"),
+        "the AIT capacity loss must not spread to other resources");
+    AssertTrue(facts.BufferFacts.Where(item => item.WeekOffset == -33).All(item => item.ExplicitCause == "无事件"),
+        "the AIT capacity loss must not spread to inventory control points");
+
+    var expectedBufferOwnership = new Dictionary<int, IReadOnlySet<string>>
+    {
+        [-46] = new HashSet<string>(["AV-COM-201", "AV-OBC-202"], StringComparer.Ordinal),
+        [-39] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
+        [-21] = new HashSet<string>(["AV-COM-201", "AV-OBC-202", "TC-MLI-301"], StringComparer.Ordinal),
+        [-11] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
+    };
+    foreach (var ownership in expectedBufferOwnership)
+    {
+        var eventName = ExpectedHistoryEventNames()[ownership.Key];
+        var points = facts.BufferFacts.Where(item => item.WeekOffset == ownership.Key).ToList();
+        AssertTrue(points.Where(item => ownership.Value.Contains(item.Sku)).All(item => item.ExplicitCause == eventName),
+            $"week {ownership.Key} owned inventory event");
+        AssertTrue(points.Where(item => !ownership.Value.Contains(item.Sku)).All(item => item.ExplicitCause == "无事件"),
+            $"week {ownership.Key} unowned inventory objects");
+    }
+
+    var expectedCapacityOwnership = new Dictionary<int, IReadOnlySet<string>>
+    {
+        [-33] = new HashSet<string>(["RES-AIT"], StringComparer.Ordinal),
+        [-29] = new HashSet<string>(["RES-AIT"], StringComparer.Ordinal),
+        [-16] = new HashSet<string>(["RES-AIT", "RES-CLEAN"], StringComparer.Ordinal),
+        [-6] = new HashSet<string>(["RES-AIT", "RES-CLEAN"], StringComparer.Ordinal),
+    };
+    foreach (var ownership in expectedCapacityOwnership)
+    {
+        var eventName = ExpectedHistoryEventNames()[ownership.Key];
+        var points = facts.CapacityFacts.Where(item => item.WeekOffset == ownership.Key).ToList();
+        AssertTrue(points.Where(item => ownership.Value.Contains(item.ResourceCode)).All(item => item.LossReason == eventName),
+            $"week {ownership.Key} owned capacity event");
+        AssertTrue(points.Where(item => !ownership.Value.Contains(item.ResourceCode)).All(item => item.LossReason == "无事件"),
+            $"week {ownership.Key} unowned capacity objects");
+    }
+
+    var timeFacts = facts.TimeBufferFacts ?? throw new InvalidOperationException("historical time-buffer evidence is missing");
+    AssertTrue(timeFacts.All(item => item.WeekOffset == -16 ? item.ExplicitCause == "返工" : item.ExplicitCause == "无事件"),
+        "the heat-vacuum time buffer must own only the rework event");
+}
+
+static void TestHistoryEventDisplayTextIsChinese()
+{
+    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
+        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var expectedEvents = ExpectedHistoryEventNames();
+    var forbidden = new[]
+    {
+        "DemandChange", "ImportDelay", "AitCapacityLoss", "Recovery", "PeakDemand",
+        "Rework", "SupplyRecovery", "PacingRecovery", "NoEvent", "Demand response",
+        "Expedite transport", "Temporary capacity",
+    };
+    var visibleText = facts.BufferFacts.Select(item => item.ExplicitCause)
+        .Concat(facts.CapacityFacts.Select(item => item.LossReason))
+        .Concat((facts.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>()).Select(item => item.ExplicitCause))
+        .Concat(facts.AbnormalCosts.SelectMany(item => new[] { item.Cause, item.CostType }))
+        .ToList();
+
+    AssertTrue(expectedEvents.Values.All(name => visibleText.Contains(name, StringComparer.Ordinal)),
+        "all named annual events must have Chinese display text");
+    AssertTrue(visibleText.Contains("无事件", StringComparer.Ordinal), "ordinary weeks must display the Chinese no-event label");
+    AssertTrue(
+        visibleText.All(text => forbidden.All(token => !text.Contains(token, StringComparison.Ordinal))),
+        "ordinary event and cost labels must not expose English fixture tokens");
+}
+
+static IReadOnlyDictionary<int, string> ExpectedHistoryEventNames() => new Dictionary<int, string>
+{
+    [-46] = "需求变化",
+    [-39] = "进口延迟",
+    [-33] = "AIT 能力损失",
+    [-29] = "恢复",
+    [-21] = "需求峰值",
+    [-16] = "返工",
+    [-11] = "供应恢复",
+    [-6] = "节拍恢复",
+};
+
+static decimal ReadRequiredRecordDecimal(object fact, string propertyName) =>
+    fact.GetType().GetProperty(propertyName)?.GetValue(fact) is decimal value
+        ? value
+        : throw new InvalidOperationException($"{fact.GetType().Name} is missing {propertyName} evidence");
+
+static string ReadRequiredRecordString(object fact, string propertyName) =>
+    fact.GetType().GetProperty(propertyName)?.GetValue(fact) is string value && !string.IsNullOrWhiteSpace(value)
+        ? value
+        : throw new InvalidOperationException($"{fact.GetType().Name} is missing {propertyName} evidence");
+
+static decimal? ReadOptionalHistoryDecimal(WeeklyOperatingFact fact, string propertyName) =>
+    typeof(WeeklyOperatingFact).GetProperty(propertyName)?.GetValue(fact) is decimal value
+        ? value
+        : null;
+
+static decimal ReadRequiredHistoryDecimal(WeeklyOperatingFact fact, string propertyName) =>
+    ReadOptionalHistoryDecimal(fact, propertyName)
+        ?? throw new InvalidOperationException($"weekly operating fact is missing {propertyName} evidence");
+
+static bool RepeatsHistoryCycle<T>(IReadOnlyList<T> values, int period)
+{
+    if (values.Count <= period)
+    {
+        return false;
+    }
+
+    return Enumerable.Range(period, values.Count - period)
+        .All(index => EqualityComparer<T>.Default.Equals(values[index], values[index - period]));
+}
+
 static void TestHistoryReviewProjectsExplicitBufferViews()
 {
     var seed = SeedData.Create();
@@ -1171,7 +1649,7 @@ static void TestHistoryReviewDoesNotBackfillMissingEvidence()
         new SeedScenarioWorkspaceDataSource(seed)).GetReview(6);
     var ambiguousCostPoint = (duplicateCostEvidence.TimeBuffers ?? throw new InvalidOperationException("time-buffer projection is missing"))
         .Single()
-        .Points.Single(item => item.WeekOffset == -18);
+        .Points.Single(item => item.WeekOffset == -16);
     AssertTrue(
         ambiguousCostPoint.AbnormalCost is null && ambiguousCostPoint.EvidenceStatus == "EvidenceMissing",
         "an event ID that joins more than one historical cost event must remain missing evidence");
@@ -10375,6 +10853,24 @@ internal sealed class CapacityProtectionRemovingHistoryOperatingFactSource : IHi
     {
         var facts = _inner.Load(request);
         return facts with { CapacityProtectionFacts = Array.Empty<HistoricalCapacityProtectionFact>() };
+    }
+}
+
+internal sealed class RecordingHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+
+    public RecordingHistoryOperatingFactSource(IHistoryOperatingFactSource inner)
+    {
+        _inner = inner;
+    }
+
+    public List<HistoryFactRequest> Requests { get; } = new();
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        Requests.Add(request);
+        return _inner.Load(request);
     }
 }
 

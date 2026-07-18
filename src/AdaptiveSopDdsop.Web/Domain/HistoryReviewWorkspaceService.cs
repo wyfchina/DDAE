@@ -98,7 +98,8 @@ public sealed class HistoryReviewWorkspaceService
         var normalizedMonths = trendMonths >= 12 ? 12 : 6;
         var requestedWeeks = normalizedMonths == 12 ? 52 : 26;
         var asOfDate = new DateOnly(2026, 6, 1);
-        var history = _historyFactSource.Load(new HistoryFactRequest(requestedWeeks, asOfDate));
+        var annualHistory = _historyFactSource.Load(new HistoryFactRequest(52, asOfDate));
+        var history = SliceAnnualHistory(annualHistory, requestedWeeks);
         var definitions = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(requestedWeeks, asOfDate));
         var historicalParameters = history.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>();
         var maximumLeadTime = historicalParameters
@@ -133,12 +134,48 @@ public sealed class HistoryReviewWorkspaceService
             zoneResidence,
             capacity,
             exposure,
-            $"{history.EvidenceLabel} / SourceAuthority={history.SourceAuthority} / AsOf={history.AsOfUtc}",
+            $"{history.EvidenceLabel} / SelectedObjectDetail={(detailWeeks.HasValue ? $"{detailWeeks.Value}-week cumulative-lead-time" : "EvidenceMissing")} / SourceAuthority={history.SourceAuthority} / AsOf={history.AsOfUtc}",
             projection.InventoryBuffers,
             projection.DdmrpSizingSnapshots,
             projection.TimeBuffers,
             projection.CapacityBuffers,
             BuildStandardDdmrpReference(asOfDate));
+    }
+
+    private static HistoryFactSet SliceAnnualHistory(HistoryFactSet annual, int requestedWeeks)
+    {
+        var weeks = Math.Clamp(requestedWeeks, 1, 52);
+        bool InWindow(int weekOffset) => weekOffset is < 0 && weekOffset >= -weeks;
+        bool HistoricalRangeOverlapsWindow(int effectiveFromWeekOffset, int effectiveThroughWeekOffset) =>
+            effectiveFromWeekOffset <= effectiveThroughWeekOffset &&
+            effectiveFromWeekOffset < 0 &&
+            effectiveThroughWeekOffset < 0 &&
+            effectiveThroughWeekOffset >= -weeks;
+        var trendLabel = weeks == 52
+            ? "TrendWindow=annual-52"
+            : $"TrendWindow=trailing-{weeks}-of-52";
+
+        return annual with
+        {
+            Request = annual.Request with { Weeks = weeks },
+            OperatingFacts = annual.OperatingFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            BufferFacts = annual.BufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            CapacityFacts = annual.CapacityFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            ConstraintFacts = annual.ConstraintFacts
+                .Where(item => item.WeekOffset is null || InWindow(item.WeekOffset.Value))
+                .ToList(),
+            AbnormalCosts = annual.AbnormalCosts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            EvidenceLabel = $"{annual.EvidenceLabel} / {trendLabel}",
+            TimeBufferFacts = (annual.TimeBufferFacts ?? Array.Empty<WeeklyTimeBufferFact>())
+                .Where(item => InWindow(item.WeekOffset))
+                .ToList(),
+            DdmrpParameterFacts = (annual.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>())
+                .Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset))
+                .ToList(),
+            CapacityProtectionFacts = (annual.CapacityProtectionFacts ?? Array.Empty<HistoricalCapacityProtectionFact>())
+                .Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset))
+                .ToList(),
+        };
     }
 
     private static HistoryDdmrpSizingSnapshotView BuildStandardDdmrpReference(DateOnly asOfDate)

@@ -5,10 +5,7 @@ namespace AdaptiveSopDdsop.Web.Data;
 
 public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
 {
-    private static readonly IReadOnlyList<WeeklyOperatingFact> OperatingFacts = BuildOperatingFacts();
-    private static readonly IReadOnlyList<WeeklyCapacityFact> CapacityFacts = BuildCapacityFacts();
     private static readonly IReadOnlyList<HistoryConstraintFact> ConstraintFacts = BuildConstraintFacts();
-    private static readonly IReadOnlyList<HistoryAbnormalCostEvent> AbnormalCosts = BuildAbnormalCosts();
     private static readonly string[] HistoricalInventorySkus =
     {
         "AV-COM-201",
@@ -17,15 +14,50 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
         "TC-MLI-301",
         "TC-RAD-302",
     };
-    private static readonly HashSet<string> TimeBufferCostEventIds = new(StringComparer.Ordinal)
+    private static readonly IReadOnlyList<HistoricalOpeningInventoryFact> HistoricalOpeningInventoryFacts =
+    [
+        new("AV-COM-201", 28m, 5_040_000m, "2025-06-02T00:00:00Z", "Complete"),
+        new("AV-OBC-202", 20m, 6_400_000m, "2025-06-02T00:00:00Z", "Complete"),
+        new("AV-FPGA-203", 22m, 11_880_000m, "2025-06-02T00:00:00Z", "Complete"),
+        new("TC-MLI-301", 75m, 3_150_000m, "2025-06-02T00:00:00Z", "Complete"),
+        new("TC-RAD-302", 48m, 4_128_000m, "2025-06-02T00:00:00Z", "Complete"),
+    ];
+    private static readonly IReadOnlyDictionary<int, IReadOnlySet<string>> InventoryEventOwners =
+        new Dictionary<int, IReadOnlySet<string>>
     {
-        "HAC-2026-002",
-        "HAC-2025-003",
+        [-46] = new HashSet<string>(["AV-COM-201", "AV-OBC-202"], StringComparer.Ordinal),
+        [-39] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
+        [-21] = new HashSet<string>(["AV-COM-201", "AV-OBC-202", "TC-MLI-301"], StringComparer.Ordinal),
+        [-11] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
     };
+    private static readonly IReadOnlyDictionary<int, IReadOnlySet<string>> CapacityEventOwners =
+        new Dictionary<int, IReadOnlySet<string>>
+    {
+        [-33] = new HashSet<string>(["RES-AIT"], StringComparer.Ordinal),
+        [-29] = new HashSet<string>(["RES-AIT"], StringComparer.Ordinal),
+        [-16] = new HashSet<string>(["RES-AIT", "RES-CLEAN"], StringComparer.Ordinal),
+        [-6] = new HashSet<string>(["RES-AIT", "RES-CLEAN"], StringComparer.Ordinal),
+    };
+    private static readonly IReadOnlyDictionary<int, NamedHistoryEvent> NamedEvents =
+        new Dictionary<int, NamedHistoryEvent>
+    {
+        [-46] = new("需求变化", 1.36m, -2_000_000m, -0.8m, 5m, 1.5m, 0.88m, "HAC-2025-004", 240_000m, "需求应对", "需求对象", "星载电子", "星载电子需求控制点", "DDAE 演示历史事实台账"),
+        [-39] = new("进口延迟", 1.12m, -7_000_000m, -2.0m, 8m, 3m, 0.45m, "HAC-2025-003", 180_000m, "加急运输", "库存控制点", "AV-FPGA-203", "关键进口 FPGA 库存控制点", "DDAE 演示历史事实台账"),
+        [-33] = new("AIT 能力损失", 1.18m, -4_000_000m, -2.5m, 12m, 4m, 0.82m, "HAC-2026-001", 360_000m, "临时能力", "能力对象", "RES-AIT", "AIT 总装集成大厅", "DDAE 演示历史事实台账"),
+        [-29] = new("恢复", 0.94m, 2_000_000m, 0.3m, -4m, -1m, 1.22m, null, null, null),
+        [-21] = new("需求峰值", 1.72m, -6_000_000m, -1.8m, 9m, 2.5m, 0.86m, null, null, null),
+        [-16] = new("返工", 1.08m, -3_000_000m, -2.2m, 14m, 4m, 0.92m, "HAC-2026-002", 420_000m, "返工费用", "时间缓冲", "MS-TB-001", "热真空试验准备控制点", "DDAE 演示历史事实台账"),
+        [-11] = new("供应恢复", 0.92m, 3_000_000m, 0.4m, -5m, -1m, 1.38m, null, null, null),
+        [-6] = new("节拍恢复", 0.88m, 2_000_000m, 0.5m, -7m, -1.5m, 1.18m, null, null, null),
+    };
+    private static readonly IReadOnlyList<AnnualWeekProfile> AnnualProfiles = BuildAnnualProfiles();
 
     private readonly ValidationData _data;
+    private readonly IReadOnlyList<WeeklyOperatingFact> _operatingFacts;
     private readonly IReadOnlyList<WeeklyBufferFact> _bufferFacts;
     private readonly IReadOnlyList<WeeklyTimeBufferFact> _timeBufferFacts;
+    private readonly IReadOnlyList<WeeklyCapacityFact> _capacityFacts;
+    private readonly IReadOnlyList<HistoryAbnormalCostEvent> _abnormalCosts;
     private readonly IReadOnlyList<HistoricalDdmrpParameterFact> _ddmrpParameterFacts;
     private readonly IReadOnlyList<HistoricalCapacityProtectionFact> _capacityProtectionFacts;
 
@@ -35,8 +67,11 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
     {
         _data = data;
         _ddmrpParameterFacts = BuildDdmrpParameterFacts(data.Skus);
-        _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts);
-        _timeBufferFacts = BuildTimeBufferFacts();
+        _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts, AnnualProfiles);
+        _operatingFacts = BuildOperatingFacts(_bufferFacts, AnnualProfiles);
+        _abnormalCosts = BuildAbnormalCosts();
+        _timeBufferFacts = BuildTimeBufferFacts(AnnualProfiles, _abnormalCosts);
+        _capacityFacts = BuildCapacityFacts(AnnualProfiles);
         _capacityProtectionFacts = BuildCapacityProtectionFacts();
     }
 
@@ -53,35 +88,96 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
 
         return new HistoryFactSet(
             normalizedRequest,
-            OperatingFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            _operatingFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             _bufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
-            CapacityFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            _capacityFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             ConstraintFacts.Where(item => item.WeekOffset is null || InWindow(item.WeekOffset.Value)).ToList(),
-            AbnormalCosts.Where(item => InWindow(item.WeekOffset)).ToList(),
+            _abnormalCosts.Where(item => InWindow(item.WeekOffset)).ToList(),
             "DDAE DemoFixture explicit historical operating ledger",
             $"{request.AsOfDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}T23:59:59Z",
-            $"DemoFixture / Explicit52WeekHistory / {weeks}-week historical window",
+            $"DemoFixture / TraceableIrregularAnnualHistory / AnnualSource=52 / ViewWeeks={weeks} / HistoricalInventoryOpeningAsOf=2025-06-02T00:00:00Z",
             _timeBufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             _ddmrpParameterFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList(),
             _capacityProtectionFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList());
     }
 
-    private static IReadOnlyList<WeeklyOperatingFact> BuildOperatingFacts()
+    private static IReadOnlyList<AnnualWeekProfile> BuildAnnualProfiles()
     {
-        return Enumerable.Range(1, 52)
-            .Select(week =>
+        var irregularDemandOrder = new[]
+        {
+            8, 23, 3, 31, 14, 42, 5, 27, 18, 49, 11, 36, 1,
+            25, 44, 7, 20, 33, 12, 47, 29, 0, 39, 16, 51, 22,
+            9, 34, 6, 45, 15, 30, 2, 41, 19, 50, 10, 28, 4,
+            38, 17, 46, 13, 32, 24, 48, 21, 35, 26, 43, 37, 40,
+        };
+
+        return Enumerable.Range(0, 52)
+            .Select(index =>
             {
-                var age = (week - 1) / 51m;
-                return new WeeklyOperatingFact(
-                    -week,
-                    decimal.Round(98.2m - 4.4m * age, 1),
-                    decimal.Round(65_000_000m + 30_000_000m * age, 0),
-                    decimal.Round(55m + 40m * age, 1),
-                    decimal.Round(17m + 12m * age, 1),
-                    decimal.Round(78_000_000m + 47_000_000m * age, 0),
-                    "Complete");
+                var weekOffset = index - 52;
+                var baseDemandFactor = 0.82m + irregularDemandOrder[index] * 0.009m;
+                NamedEvents.TryGetValue(weekOffset, out var namedEvent);
+                var demandFactor = namedEvent?.DemandFactor ?? baseDemandFactor;
+                var progress = index / 51m;
+                var baseInventoryValue = 86_000_000m - 18_000_000m * progress;
+                var inventoryValueTarget = baseInventoryValue - (demandFactor - 1m) * 2_000_000m +
+                    (namedEvent?.InventoryValueAdjustment ?? 0m);
+                return new AnnualWeekProfile(
+                    weekOffset,
+                    demandFactor,
+                    decimal.Round(inventoryValueTarget, 0),
+                    namedEvent);
             })
             .ToList();
+    }
+
+    private static IReadOnlyList<WeeklyOperatingFact> BuildOperatingFacts(
+        IReadOnlyList<WeeklyBufferFact> bufferFacts,
+        IReadOnlyList<AnnualWeekProfile> profiles)
+    {
+        var historicalUnitCostBySku = HistoricalOpeningInventoryFacts.ToDictionary(
+            item => item.Sku,
+            item => item.OpeningInventoryValue / item.OpeningQuantity,
+            StringComparer.Ordinal);
+        var buffersByWeek = bufferFacts
+            .GroupBy(item => item.WeekOffset)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        return profiles.Select(profile =>
+        {
+            var progress = (profile.WeekOffset + 52) / 51m;
+            var weeklyBuffers = buffersByWeek[profile.WeekOffset];
+            var actualDemand = weeklyBuffers.Sum(item => item.QualifiedDemand ?? 0m);
+            var demandSpikeThreshold = weeklyBuffers.Sum(item => item.DemandSpikeThreshold ?? 0m);
+            var targetNetFlow = weeklyBuffers.Sum(item => item.TargetNetFlowPosition ?? 0m);
+            var inventoryValue = decimal.Round(
+                weeklyBuffers.Sum(item => (item.EndingOnHand ?? 0m) * historicalUnitCostBySku[item.Sku]),
+                0);
+            var eventData = profile.Event;
+            var service = decimal.Round(
+                95.0m + 2.4m * progress + (eventData?.ServiceAdjustment ?? 0m),
+                1);
+            var workInProcess = decimal.Round(
+                80m - 22m * progress + (profile.DemandFactor - 1m) * 6m +
+                (eventData?.WorkInProcessAdjustment ?? 0m),
+                1);
+            var flowTime = decimal.Round(
+                24.5m - 6.5m * progress + (eventData?.FlowTimeAdjustment ?? 0m),
+                1);
+            var cashFactor = 1.18m + (1m - progress) * 0.04m;
+            var cashOccupied = decimal.Round(inventoryValue * cashFactor + workInProcess * 55_000m, 0);
+            return new WeeklyOperatingFact(
+                profile.WeekOffset,
+                service,
+                inventoryValue,
+                workInProcess,
+                flowTime,
+                cashOccupied,
+                "Complete",
+                actualDemand,
+                demandSpikeThreshold,
+                targetNetFlow);
+        }).ToList();
     }
 
     private static IReadOnlyList<HistoricalDdmrpParameterFact> BuildDdmrpParameterFacts(
@@ -94,12 +190,15 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             .SelectMany(sku =>
             {
                 var sourceSetting = skus.Single(item => item.Sku == sku);
+                var openingInventory = HistoricalOpeningInventoryFacts.Single(item => item.Sku == sku);
+                var historicalUnitCost = openingInventory.OpeningInventoryValue / openingInventory.OpeningQuantity;
                 var currentSetting = sourceSetting with
                 {
+                    UnitCost = historicalUnitCost,
                     ParameterSnapshotId = $"HIST-{sourceSetting.Sku}-V2",
                     ParameterEvidenceStatus = "Complete"
                 };
-                var priorSetting = sourceSetting with
+                var priorSetting = currentSetting with
                 {
                     Adu = decimal.Round(sourceSetting.Adu * 1.12m, 2),
                     LeadTimeFactor = Math.Min(1m, sourceSetting.LeadTimeFactor!.Value + 0.10m),
@@ -138,56 +237,61 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
     }
 
     private static IReadOnlyList<WeeklyBufferFact> BuildBufferFacts(
-        IReadOnlyList<HistoricalDdmrpParameterFact> parameterFacts)
+        IReadOnlyList<HistoricalDdmrpParameterFact> parameterFacts,
+        IReadOnlyList<AnnualWeekProfile> profiles)
     {
-        return HistoricalInventorySkus
-            .SelectMany(sku => Enumerable.Range(1, 52).Select(week =>
-            {
-                var weekOffset = -week;
-                var parameter = parameterFacts.Single(item =>
-                    item.Sku == sku &&
-                    item.EffectiveFromWeekOffset <= weekOffset &&
-                    weekOffset <= item.EffectiveThroughWeekOffset);
-                var sizing = DdmrpCalculator.CalculateSizing(parameter.Setting);
-                var targetNetFlow = (week % 8) switch
-                {
-                    0 => sizing.Zones.TopOfRed * 0.55m,
-                    1 => sizing.Zones.TopOfRed * 0.90m,
-                    2 => (sizing.Zones.TopOfRed + sizing.Zones.TopOfYellow) / 2m,
-                    3 => sizing.Zones.TopOfYellow * 0.95m,
-                    4 => (sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m,
-                    5 => sizing.Zones.TopOfGreen * 0.85m,
-                    6 => sizing.Zones.TopOfGreen * 1.12m,
-                    _ => sizing.Zones.TopOfGreen * 0.72m
-                };
-                var endingOnHand = decimal.Round(targetNetFlow * 0.72m, 1);
-                var openSupply = decimal.Round(targetNetFlow * 0.38m, 1);
-                var qualifiedDemand = decimal.Round(endingOnHand + openSupply - targetNetFlow, 1);
-                var endingNetFlow = endingOnHand + openSupply - qualifiedDemand;
-                var cause = targetNetFlow <= sizing.Zones.TopOfRed
-                    ? "供应交期延迟"
-                    : week % 11 == 0
-                        ? "需求超预期"
-                        : targetNetFlow > sizing.Zones.TopOfGreen
-                            ? "集中补货到货"
-                            : "计划补充与消耗";
+        var openingFacts = HistoricalOpeningInventoryFacts.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        var totalOpeningValue = openingFacts.Values.Sum(item => item.OpeningInventoryValue);
 
-                return new WeeklyBufferFact(
-                    sku,
-                    weekOffset,
-                    endingNetFlow,
-                    cause,
-                    "Complete",
-                    endingOnHand,
-                    openSupply,
-                    qualifiedDemand,
-                    parameter.ControlPoint,
-                    parameter.SnapshotId);
-            }))
-            .ToList();
+        return profiles.SelectMany(profile => HistoricalInventorySkus.Select(sku =>
+        {
+            var parameter = parameterFacts.Single(item =>
+                item.Sku == sku &&
+                item.EffectiveFromWeekOffset <= profile.WeekOffset &&
+                profile.WeekOffset <= item.EffectiveThroughWeekOffset);
+            var openingFact = openingFacts[sku];
+            var historicalUnitCost = openingFact.OpeningInventoryValue / openingFact.OpeningQuantity;
+            var inventoryShare = openingFacts[sku].OpeningInventoryValue / totalOpeningValue;
+            var endingOnHand = decimal.Round(
+                profile.InventoryValueTarget * inventoryShare / historicalUnitCost,
+                2);
+            var qualifiedDemand = decimal.Round(parameter.Setting.Adu * 7m * profile.DemandFactor, 2);
+            var demandSpikeThreshold = decimal.Round(parameter.Setting.Adu * 7m * 1.35m, 2);
+            var sizing = DdmrpCalculator.CalculateSizing(parameter.Setting);
+            var targetNetFlowPosition = decimal.Round(
+                (sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m,
+                2);
+            var normalSupplyFactor = Math.Clamp(1.06m - (profile.DemandFactor - 1m) * 0.18m, 0.86m, 1.22m);
+            var ownsEvent = InventoryEventOwners.TryGetValue(profile.WeekOffset, out var eventOwners) &&
+                eventOwners.Contains(sku);
+            var supplyFactor = ownsEvent && profile.Event is not null
+                ? profile.Event.SupplyFactor
+                : normalSupplyFactor;
+            if (profile.WeekOffset == -39 && sku == "AV-FPGA-203")
+            {
+                supplyFactor = 0.18m;
+            }
+
+            var openSupply = decimal.Round(qualifiedDemand * supplyFactor, 2);
+            var endingNetFlow = endingOnHand + openSupply - qualifiedDemand;
+            return new WeeklyBufferFact(
+                sku,
+                profile.WeekOffset,
+                endingNetFlow,
+                ownsEvent ? profile.EventName : "无事件",
+                "Complete",
+                endingOnHand,
+                openSupply,
+                qualifiedDemand,
+                parameter.ControlPoint,
+                parameter.SnapshotId,
+                demandSpikeThreshold,
+                targetNetFlowPosition);
+        })).ToList();
     }
 
-    private static IReadOnlyList<WeeklyCapacityFact> BuildCapacityFacts()
+    private static IReadOnlyList<WeeklyCapacityFact> BuildCapacityFacts(
+        IReadOnlyList<AnnualWeekProfile> profiles)
     {
         var resources = new[]
         {
@@ -197,75 +301,117 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             new CapacityFixture("RES-CLEAN", 150m, 135m, 125m, 4m, 120m, 4m, 104m, 4m, "洁净切换与等待损失"),
         };
 
-        return resources
-            .SelectMany(resource => Enumerable.Range(1, 52).Select(week =>
+        return profiles.SelectMany(profile => resources.Select(resource =>
+        {
+            var progress = (profile.WeekOffset + 52) / 51m;
+            var demonstrated = resource.RecentDemonstratedCapacity -
+                resource.DemonstratedAgeDelta * (1m - progress);
+            var plannedAvailableCapacity = resource.RecentPlannedCapacity -
+                resource.PlannedAgeDelta * (1m - progress);
+            var capacityFactor = 1m;
+            if (profile.WeekOffset == -33 && resource.ResourceCode == "RES-AIT")
             {
-                var age = (week - 1) / 51m;
-                var plannedAvailableCapacity = decimal.Round(resource.RecentPlannedCapacity - resource.PlannedAgeDelta * age, 1);
-                var committedLoadRatio = (week % 4) switch
+                capacityFactor = 0.68m;
+            }
+            else if (profile.WeekOffset == -29 && resource.ResourceCode == "RES-AIT")
+            {
+                capacityFactor = 1.04m;
+            }
+            else if (profile.WeekOffset == -16 && resource.ResourceCode is "RES-AIT" or "RES-CLEAN")
+            {
+                capacityFactor = 0.82m;
+            }
+            else if (profile.WeekOffset == -6 && resource.ResourceCode is "RES-AIT" or "RES-CLEAN")
+            {
+                capacityFactor = 1.03m;
+            }
+
+            demonstrated = decimal.Round(demonstrated * Math.Min(1m, capacityFactor + 0.12m), 1);
+            plannedAvailableCapacity = decimal.Round(plannedAvailableCapacity * capacityFactor, 1);
+            var resourceLoadShift = resource.ResourceCode switch
+            {
+                "RES-HARNESS" => 0.08m,
+                "RES-TVAC" => -0.04m,
+                "RES-CLEAN" => 0.02m,
+                _ => 0m,
+            };
+            var loadRatio = Math.Clamp(
+                0.55m + (profile.DemandFactor - 0.82m) * 0.70m + resourceLoadShift,
+                0.48m,
+                1.12m);
+            if (resource.ResourceCode == "RES-AIT")
+            {
+                loadRatio = profile.WeekOffset switch
                 {
-                    0 => 0.52m,
-                    1 => 0.68m,
-                    2 => 0.86m,
-                    _ => 1.04m,
+                    -52 => 0.52m,
+                    -46 => 0.68m,
+                    -33 => 1.04m,
+                    -29 => 0.86m,
+                    _ => loadRatio,
                 };
-                return new WeeklyCapacityFact(
-                    resource.ResourceCode,
-                    -week,
-                    resource.TheoreticalCapacity,
-                    resource.StandardCapacity,
-                    decimal.Round(resource.RecentDemonstratedCapacity - resource.DemonstratedAgeDelta * age, 1),
-                    plannedAvailableCapacity,
-                    decimal.Round(plannedAvailableCapacity * committedLoadRatio, 1),
-                    resource.LossReason,
-                    "Complete");
-            }))
-            .ToList();
+            }
+
+            var ownsEvent = CapacityEventOwners.TryGetValue(profile.WeekOffset, out var eventOwners) &&
+                eventOwners.Contains(resource.ResourceCode);
+            return new WeeklyCapacityFact(
+                resource.ResourceCode,
+                profile.WeekOffset,
+                resource.TheoreticalCapacity,
+                resource.StandardCapacity,
+                demonstrated,
+                plannedAvailableCapacity,
+                decimal.Round(plannedAvailableCapacity * loadRatio, 1),
+                ownsEvent ? profile.EventName : "无事件",
+                "Complete");
+        })).ToList();
     }
 
-    private static IReadOnlyList<WeeklyTimeBufferFact> BuildTimeBufferFacts()
+    private static IReadOnlyList<WeeklyTimeBufferFact> BuildTimeBufferFacts(
+        IReadOnlyList<AnnualWeekProfile> profiles,
+        IReadOnlyList<HistoryAbnormalCostEvent> abnormalCosts)
     {
-        return Enumerable.Range(1, 52)
-            .Select(week =>
+        return profiles.Select(profile =>
+        {
+            var early = profile.DemandFactor < 0.92m ? 2 : profile.DemandFactor < 1m ? 1 : 0;
+            var late = profile.DemandFactor > 1.20m ? 2 : profile.DemandFactor > 1.10m ? 1 : 0;
+            var red = profile.DemandFactor > 1.16m ? 2 : profile.DemandFactor > 1.02m ? 1 : 0;
+            var yellow = profile.DemandFactor >= 1m ? 2 : 1;
+            var green = Math.Max(3, 11 - early - late - red - yellow);
+            var counts = profile.WeekOffset switch
             {
-                var weekOffset = -week;
-                var counts = (week % 8) switch
-                {
-                    0 => (Early: 2, Green: 6, Yellow: 2, Red: 1, Late: 0),
-                    1 => (Early: 1, Green: 8, Yellow: 1, Red: 0, Late: 0),
-                    2 => (Early: 0, Green: 7, Yellow: 3, Red: 1, Late: 0),
-                    3 => (Early: 0, Green: 5, Yellow: 3, Red: 2, Late: 1),
-                    4 => (Early: 1, Green: 6, Yellow: 2, Red: 1, Late: 1),
-                    5 => (Early: 3, Green: 6, Yellow: 1, Red: 0, Late: 0),
-                    6 => (Early: 0, Green: 4, Yellow: 3, Red: 2, Late: 2),
-                    _ => (Early: 1, Green: 7, Yellow: 2, Red: 0, Late: 1),
-                };
-                var costEvent = AbnormalCosts.SingleOrDefault(item =>
-                    item.WeekOffset == weekOffset && TimeBufferCostEventIds.Contains(item.EventId));
-                var cause = costEvent is not null
-                    ? "异常成本事件已关联"
-                    : counts.Late > 0
-                        ? "试验件到位偏晚"
-                        : counts.Red > 0
-                            ? "准备活动进入红色时间带"
-                            : "准备活动按窗口推进";
+                -46 => (Early: 0, Green: 4, Yellow: 4, Red: 2, Late: 1),
+                -39 => (Early: 0, Green: 4, Yellow: 3, Red: 2, Late: 2),
+                -33 => (Early: 0, Green: 3, Yellow: 3, Red: 3, Late: 2),
+                -29 => (Early: 1, Green: 7, Yellow: 2, Red: 1, Late: 0),
+                -21 => (Early: 0, Green: 3, Yellow: 3, Red: 3, Late: 3),
+                -16 => (Early: 0, Green: 2, Yellow: 3, Red: 3, Late: 3),
+                -11 => (Early: 2, Green: 7, Yellow: 2, Red: 0, Late: 0),
+                -6 => (Early: 2, Green: 8, Yellow: 1, Red: 0, Late: 0),
+                _ => (Early: early, Green: green, Yellow: yellow, Red: red, Late: late),
+            };
+            var costEvent = abnormalCosts.SingleOrDefault(item =>
+                item.WeekOffset == profile.WeekOffset &&
+                item.TargetType == "时间缓冲" &&
+                item.TargetId == "MS-TB-001");
+            var explicitCause = profile.Event is { TargetType: "时间缓冲", TargetId: "MS-TB-001" }
+                ? profile.EventName
+                : "无事件";
 
-                return new WeeklyTimeBufferFact(
-                    "MS-TB-001",
-                    "热真空试验准备控制点",
-                    "试验件到位与热真空窗口准备",
-                    weekOffset,
-                    counts.Early,
-                    counts.Green,
-                    counts.Yellow,
-                    counts.Red,
-                    counts.Late,
-                    costEvent?.CostAmount,
-                    costEvent?.EventId,
-                    cause,
-                    "Complete");
-            })
-            .ToList();
+            return new WeeklyTimeBufferFact(
+                "MS-TB-001",
+                "热真空试验准备控制点",
+                "试验件到位与热真空窗口准备",
+                profile.WeekOffset,
+                counts.Early,
+                counts.Green,
+                counts.Yellow,
+                counts.Red,
+                counts.Late,
+                costEvent?.CostAmount,
+                costEvent?.EventId,
+                explicitCause,
+                "Complete");
+        }).ToList();
     }
 
     private IReadOnlyList<HistoricalCapacityProtectionFact> BuildCapacityProtectionFacts()
@@ -323,21 +469,61 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             new HistoryConstraintFact("当前 CCR", "RES-HARNESS", -3, "Red", 99.1m, "线束工位历史承诺负荷持续接近经验证能力", "HistoricalFact", "Complete"),
             new HistoryConstraintFact("高负荷资源", "RES-AIT", -5, "Yellow", 92.4m, "AIT 上游保护已被部分消耗", "HistoricalFact", "Complete"),
             new HistoryConstraintFact("场景潜在 CCR", "RES-TVAC", null, "Yellow", 86.5m, "热真空能力损失情景下可能转化为 CCR", "InternalScenarioDefinition", "Complete"),
-            new HistoryConstraintFact("事件型约束", "RES-CLEAN", -9, "Yellow", 88.2m, "洁净切换和质量复验造成短时能力损失", "HistoricalFact", "Complete"),
-            new HistoryConstraintFact("外部约束", "Microchip Space / 进口空间级 FPGA", -12, "Yellow", null, "供应承诺与进口提前期历史证据", "HistoricalFact", "Complete"),
+            new HistoryConstraintFact("事件型约束", "RES-CLEAN", -16, "Yellow", 88.2m, "返工和质量复验造成短时能力损失", "HistoricalFact", "Complete"),
+            new HistoryConstraintFact("外部约束", "Microchip Space / 进口空间级 FPGA", -39, "Yellow", null, "FPGA 进口延迟与供应承诺历史证据", "HistoricalFact", "Complete"),
         };
     }
 
     private static IReadOnlyList<HistoryAbnormalCostEvent> BuildAbnormalCosts()
     {
-        return new[]
-        {
-            new HistoryAbnormalCostEvent("HAC-2026-001", -4, 180_000m, "加急运输", "进口空间级 FPGA 交期恢复", "Complete"),
-            new HistoryAbnormalCostEvent("HAC-2026-002", -18, 240_000m, "临时外协", "线束工位短时负荷超过经验证能力", "Complete"),
-            new HistoryAbnormalCostEvent("HAC-2025-003", -34, 360_000m, "返工", "洁净装配质量复验", "Complete"),
-            new HistoryAbnormalCostEvent("HAC-2025-004", -47, 420_000m, "替代料认证", "关键进口器件替代方案认证", "Complete"),
-        };
+        return NamedEvents
+            .Where(item => item.Value is { EventId: not null, CostAmount: not null, CostType: not null })
+            .OrderBy(item => item.Key)
+            .Select(item => new HistoryAbnormalCostEvent(
+                item.Value.EventId!,
+                item.Key,
+                item.Value.CostAmount!.Value,
+                item.Value.CostType!,
+                item.Value.Name,
+                "Complete",
+                item.Value.TargetType,
+                item.Value.TargetId,
+                item.Value.ControlPoint,
+                item.Value.SourceAuthority))
+            .ToList();
     }
+
+    private sealed record NamedHistoryEvent(
+        string Name,
+        decimal DemandFactor,
+        decimal InventoryValueAdjustment,
+        decimal ServiceAdjustment,
+        decimal WorkInProcessAdjustment,
+        decimal FlowTimeAdjustment,
+        decimal SupplyFactor,
+        string? EventId,
+        decimal? CostAmount,
+        string? CostType,
+        string? TargetType = null,
+        string? TargetId = null,
+        string? ControlPoint = null,
+        string? SourceAuthority = null);
+
+    private sealed record AnnualWeekProfile(
+        int WeekOffset,
+        decimal DemandFactor,
+        decimal InventoryValueTarget,
+        NamedHistoryEvent? Event)
+    {
+        public string EventName => Event?.Name ?? "无事件";
+    }
+
+    private sealed record HistoricalOpeningInventoryFact(
+        string Sku,
+        decimal OpeningQuantity,
+        decimal OpeningInventoryValue,
+        string AsOfUtc,
+        string EvidenceStatus);
 
     private sealed record CapacityFixture(
         string ResourceCode,

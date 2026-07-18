@@ -198,13 +198,13 @@ export async function runHistoryBufferRendererFixtures(historyReview, alternateH
   const realCostWeeks = fixture.timeBuffers[0].points
     .filter(point => point.abnormalCost !== null && point.abnormalCost !== undefined)
     .map(point => point.weekOffset);
-  assert.deepEqual(realCostWeeks, [-18], "real six-month DTO should retain its single linked abnormal-cost week");
+  assert.deepEqual(realCostWeeks, [-16], "real six-month DTO should retain its single linked abnormal-cost week");
   const costMarkerWeeks = [...timeChart.matchAll(/<circle class="history-cost-marker" data-week-offset="(-?\d+)"/g)]
     .map(match => Number(match[1]));
   assert.deepEqual(costMarkerWeeks, realCostWeeks, "every real abnormal-cost point should have exactly one visible marker");
-  assert.equal(fixture.timeBuffers[0].points.find(point => point.weekOffset === -17)?.abnormalCost, null,
-    "week -17 should remain missing cost evidence");
-  assert.ok(!costMarkerWeeks.includes(-17), "missing week -17 must not be plotted as zero");
+  assert.equal(fixture.timeBuffers[0].points.find(point => point.weekOffset === -15)?.abnormalCost, null,
+    "week -15 should remain missing cost evidence");
+  assert.ok(!costMarkerWeeks.includes(-15), "missing week -15 must not be plotted as zero");
   assert.ok(!timeChart.includes("history-cost-line"), "one isolated abnormal-cost point must not create a cross-gap line");
   assert.ok(["is-theoretical", "is-standard", "is-demonstrated", "is-planned", "is-protection-start"].every(css => capacityChart.includes(css)));
   assert.ok(capacityChart.includes("is-consumed-protection"), "AIT should show upstream protection consumption");
