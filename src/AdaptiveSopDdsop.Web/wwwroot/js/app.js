@@ -2022,11 +2022,22 @@ function filterBufferTrendWorkspace(trend) {
   if (!trend) return null;
 
   const allowedSkus = new Set(valueOr(valueOr(state.filtered?.skus, state.data?.skus), []).map(item => item.sku));
-  const series = trend.series.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
-  const weeklyCells = trend.weeklyCells.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
+  const selectedWeekFrom = state.futureInventorySelection?.weekFrom;
+  const selectedWeekThrough = state.futureInventorySelection?.weekThrough;
+  const weekFrom = selectedWeekFrom === null || selectedWeekFrom === undefined ? null : Number(selectedWeekFrom);
+  const weekThrough = selectedWeekThrough === null || selectedWeekThrough === undefined ? null : Number(selectedWeekThrough);
+  const isSelectedWeek = item => {
+    const week = Number(item.week);
+    return (weekFrom === null || !Number.isFinite(weekFrom) || week >= weekFrom)
+      && (weekThrough === null || !Number.isFinite(weekThrough) || week <= weekThrough);
+  };
+  const series = trend.series.filter(item =>
+    (allowedSkus.size === 0 || allowedSkus.has(item.sku)) && isSelectedWeek(item));
+  const weeklyCells = trend.weeklyCells.filter(item =>
+    (allowedSkus.size === 0 || allowedSkus.has(item.sku)) && isSelectedWeek(item));
   const zoneBands = trend.zoneBands.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
   const skuDetails = trend.skuDetails.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
-  const replenishmentOrderCount = skuDetails.reduce((sum, detail) => sum + detail.replenishmentOrders.length, 0);
+  const replenishmentOrderCount = skuDetails.reduce((sum, detail) => sum + detail.replenishmentOrders.filter(isSelectedWeek).length, 0);
   const familySummaries = [...new Set(weeklyCells.map(item => item.family))].map(family => {
     const cells = weeklyCells.filter(item => item.family === family);
     return {
@@ -2037,7 +2048,7 @@ function filterBufferTrendWorkspace(trend) {
       overGreenWeekCount: cells.filter(item => item.status === "OverTopOfGreen").length,
       replenishmentOrderCount: skuDetails
         .filter(item => item.family === family)
-        .reduce((sum, item) => sum + item.replenishmentOrders.length, 0),
+        .reduce((sum, item) => sum + item.replenishmentOrders.filter(isSelectedWeek).length, 0),
     };
   }).sort((left, right) => right.redWeekCount - left.redWeekCount || right.yellowWeekCount - left.yellowWeekCount || left.family.localeCompare(right.family, "zh-CN"));
 
@@ -2061,14 +2072,14 @@ function filterBufferTrendWorkspace(trend) {
       redSkuCount: new Set(series.filter(item => item.status === "Red").map(item => item.sku)).size,
       yellowSkuCount: new Set(series.filter(item => item.status === "Yellow").map(item => item.sku)).size,
       shortageCount: series.filter(item => Number(item.endNetFlowBeforeReplenishment) <= 0).length,
-      onHandRedSkuCount: series.some(item => item.physicalPosition)
-        ? new Set(series.filter(item => item.physicalPosition?.onHandStatus === "Red").map(item => item.sku)).size
+      onHandRedSkuCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+        ? new Set(series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && item.physicalPosition.onHandStatus === "Red").map(item => item.sku)).size
         : null,
-      onHandYellowSkuCount: series.some(item => item.physicalPosition)
-        ? new Set(series.filter(item => item.physicalPosition?.onHandStatus === "Yellow").map(item => item.sku)).size
+      onHandYellowSkuCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+        ? new Set(series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && item.physicalPosition.onHandStatus === "Yellow").map(item => item.sku)).size
         : null,
-      onHandStockoutWeekCount: series.some(item => item.physicalPosition)
-        ? series.filter(item => Number(item.physicalPosition?.endingBacklog) > 0).length
+      onHandStockoutWeekCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+        ? series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && Number(item.physicalPosition.endingBacklog) > 0).length
         : null,
       averageInventoryValue: series.length ? series.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / series.length : 0,
       peakInventoryValue: series.length ? Math.max(...series.map(item => Number(item.inventoryValue))) : 0,
@@ -2391,7 +2402,9 @@ function renderBufferTrendChart(detail) {
     "buffer-on-hand-line",
     "buffer-on-hand-marker",
     'data-field="physicalPosition.endingOnHand"',
-    point => point.item?.physicalPosition?.endingOnHand,
+    point => point.item?.physicalPosition?.evidenceStatus === "Complete"
+      ? point.item.physicalPosition.endingOnHand
+      : null,
     "期末在手库存（执行风险）");
   const reviewMarkers = chartDomain
     .map(point => point.item?.isReplenishment

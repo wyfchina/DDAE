@@ -51,7 +51,7 @@ public sealed class BufferTrendWorkspaceService
                     Quantity = group.Sum(item => item.Quantity),
                     IsPrebuild = group.Any(item => item.Trigger == "PrebuildCampaign")
                 });
-        var physicalPoints = BuildCompletePhysicalPointMap(inventoryFlow);
+        var physicalPoints = BuildCompletePhysicalPointMap(caseId, inventoryFlow);
 
         var series = plan.BufferProjections
             .Where(point => skuMap.ContainsKey(point.Sku))
@@ -245,9 +245,10 @@ public sealed class BufferTrendWorkspaceService
         DdmrpCalculator.GetPositionStatus(point.EndNetFlowBeforeReplenishment, zones);
 
     private static IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> BuildCompletePhysicalPointMap(
+        string caseId,
         InventoryFlowProjectionResult? inventoryFlow)
     {
-        if (!IsComplete(inventoryFlow))
+        if (!IsComplete(inventoryFlow) || !string.Equals(inventoryFlow!.CaseId, caseId, StringComparison.Ordinal))
         {
             return new Dictionary<(string Sku, int Week), InventoryFlowPoint>();
         }

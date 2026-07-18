@@ -482,6 +482,35 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "second panel should render backend scenario physical on-hand");
   assert.ok(volatilityMarkup.includes("buffer-demand-area") && volatilityMarkup.includes('data-case-id="scenario"'),
     "third panel should retain independent scenario volatility");
+
+  const rangeScopedPhysicalEvidence = structuredClone(preview);
+  const scopedTrend = rangeScopedPhysicalEvidence.scenario.bufferTrend;
+  for (const series of [scopedTrend.series, ...scopedTrend.skuDetails.map(detail => detail.series)]) {
+    series.forEach(point => {
+      point.physicalPosition = {
+        ...point.physicalPosition,
+        evidenceStatus: point.week === 1 ? "Complete" : "EvidenceMissing",
+        onHandStatus: "Red",
+      };
+    });
+  }
+  runPreview(runtime, rangeScopedPhysicalEvidence);
+  const scopedWeekSelect = runtime.elements.get("buffer-week-range-select");
+  scopedWeekSelect.value = "2-3";
+  scopedWeekSelect.dispatchEvent({ type: "change", target: scopedWeekSelect });
+  const rangeScopedKpis = runtime.elements.get("buffer-trend-kpis").innerHTML;
+  assert.ok(rangeScopedKpis.includes("在手红区 SKU") && rangeScopedKpis.includes("证据缺失"),
+    "a selected range with no Complete physical positions must show missing physical KPI evidence, not zero");
+  assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes("buffer-net-flow-line")
+    && !runtime.elements.get("buffer-trend-chart").innerHTML.includes("buffer-on-hand-line"),
+  "EvidenceMissing physical-position objects must not render an upper on-hand line");
+  scopedWeekSelect.value = "3-4";
+  scopedWeekSelect.dispatchEvent({ type: "change", target: scopedWeekSelect });
+  const rangeScopedFamilies = readVm(runtime, "filterBufferTrendWorkspace(state.bufferTrend).familySummaries");
+  assert.ok(rangeScopedFamilies.every(item => item.replenishmentOrderCount === 0),
+    "family replenishment summaries must exclude orders outside the selected week range");
+  runPreview(runtime, preview);
+
   for (const [cssClass, field] of [
     ["physical-on-hand-line", "endingOnHand"],
     ["physical-frozen-receipt", "frozenReceiptQuantity"],

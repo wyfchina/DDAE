@@ -215,6 +215,7 @@ var tests = new (string Name, Action Run)[]
     ("Physical flow drives inventory metrics and budget", TestPhysicalFlowDrivesMetricsAndBudget),
     ("Buffer signal separates planning and physical positions", TestBufferSignalSeparatesPlanningAndPhysicalPositions),
     ("Buffer signal omits physical position when evidence is missing", TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing),
+    ("Buffer signal rejects cross-case physical evidence", TestBufferSignalRejectsCrossCasePhysicalEvidence),
     ("Buffer signal can recover NFP before physical receipt", TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt),
     ("Legacy preview keeps legacy reference labels", TestLegacyPreviewKeepsLegacyReference),
     ("Comparison omits physical delta when evidence missing", TestComparisonOmitsIncompletePhysicalDelta),
@@ -9510,6 +9511,25 @@ static void TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing()
         preview.BufferTrend.Kpis.OnHandYellowSkuCount is null &&
         preview.BufferTrend.Kpis.OnHandStockoutWeekCount is null,
         "missing physical flow must retain nullable physical KPIs rather than zeroes");
+}
+
+static void TestBufferSignalRejectsCrossCasePhysicalEvidence()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var preview = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(data))
+        .Preview(new ScenarioRunPreviewRequest(6)).Scenario;
+    var crossCaseFlow = (preview.InventoryFlow ?? throw new InvalidOperationException("complete physical flow should be present")) with
+    {
+        CaseId = "another-case"
+    };
+    var trend = BufferTrendWorkspaceService.Build(data, preview.CaseId, preview.Name, data.Skus, preview.Plan, crossCaseFlow);
+
+    AssertTrue(trend.Series.All(item => item.PhysicalPosition is null),
+        "a complete inventory flow for another case must not populate this case's physical positions");
+    AssertTrue(trend.Kpis.OnHandRedSkuCount is null &&
+        trend.Kpis.OnHandYellowSkuCount is null &&
+        trend.Kpis.OnHandStockoutWeekCount is null,
+        "cross-case physical evidence must leave all physical KPIs nullable");
 }
 
 static void TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt()
