@@ -4883,7 +4883,7 @@ function renderHistoryDdmrpSizingTrace(history) {
     ["需求调整因子", metricOrEvidenceMissing(setting.demandAdjustmentFactor)],
     ["区域调整因子", metricOrEvidenceMissing(setting.zoneAdjustmentFactor)],
     ["ADU 来源", metricOrEvidenceMissing(setting.aduSource || item.aduSource)],
-    ["DLT 来源", metricOrEvidenceMissing(setting.decoupledLeadTimeSource || item.decoupledLeadTimeSource)],
+    ["DLT 来源", metricOrEvidenceMissing(setting.dltSource)],
     ["参数变更原因", metricOrEvidenceMissing(item.parameterChangeReason)],
     ["生效周段", `第 ${number(item.effectiveFromWeekOffset)} 至 ${number(item.effectiveThroughWeekOffset)} 周`],
     ["订货周期", setting.orderCycleDays == null ? "证据缺失" : `${number(setting.orderCycleDays)} 天`],
@@ -6398,9 +6398,16 @@ document.addEventListener("click", event => {
   }
   if (!state.historyReview) return;
 
+  const inventoryWeek = event.target.closest("[data-history-inventory-week]");
+  if (inventoryWeek) {
+    state.selectedHistoryInventoryWeekOffset = Number(inventoryWeek.dataset.historyInventoryWeek);
+    syncHistorySelectionState(state.historyReview);
+    renderHistoryInventoryBuffer(state.historyReview);
+    return;
+  }
+
   const controlPoint = event.target.closest("[data-history-control-point]");
   const inventorySku = event.target.closest("[data-history-inventory-sku]");
-  const inventoryWeek = event.target.closest("[data-history-inventory-week]");
   const timeBuffer = event.target.closest("[data-history-time-buffer-id]");
   const sizingSnapshot = event.target.closest("[data-history-sizing-snapshot]");
   const capacityResource = event.target.closest("[data-history-capacity-resource]");
@@ -6413,8 +6420,6 @@ document.addEventListener("click", event => {
     state.selectedHistoryInventorySku = inventorySku.dataset.historyInventorySku;
     state.selectedHistoryInventoryWeekOffset = null;
     state.selectedHistorySizingSnapshot = null;
-  } else if (inventoryWeek) {
-    state.selectedHistoryInventoryWeekOffset = Number(inventoryWeek.dataset.historyInventoryWeek);
   } else if (timeBuffer) {
     state.selectedHistoryTimeBufferId = timeBuffer.dataset.historyTimeBufferId;
   } else if (sizingSnapshot) {
@@ -6427,10 +6432,10 @@ document.addEventListener("click", event => {
 
   syncHistorySelectionState(state.historyReview);
   renderHistoryWorkspaceOptions(state.historyReview);
-  if (controlPoint || inventorySku || inventoryWeek) {
+  if (controlPoint || inventorySku) {
     renderHistoryBufferOverview(state.historyReview);
     renderHistoryInventoryBuffer(state.historyReview);
-    if (!inventoryWeek) renderHistoryDdmrpSizingTrace(state.historyReview);
+    renderHistoryDdmrpSizingTrace(state.historyReview);
   } else if (timeBuffer) {
     renderHistoryTimeBuffer(state.historyReview);
   } else if (sizingSnapshot) {

@@ -321,7 +321,8 @@ public static class HistoryReviewProjectionBuilder
                     averageOnHand,
                     snapshot.SourceAuthority,
                     snapshot.AsOfUtc,
-                    evidenceStatus);
+                    evidenceStatus,
+                    snapshot.ChangeReason);
             })
             .ToList();
     }

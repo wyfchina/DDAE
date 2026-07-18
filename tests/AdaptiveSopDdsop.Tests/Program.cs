@@ -2277,6 +2277,15 @@ static void TestHistoryReviewUsesEffectiveParameterSnapshot()
     AssertEqual(2, snapshots.Count, "annual historical snapshot count for selected material");
     AssertEqual($"HIST-{sku}-V1", snapshots[0].SnapshotId, "prior sizing snapshot ID");
     AssertEqual($"HIST-{sku}-V2", snapshots[1].SnapshotId, "current sizing snapshot ID");
+    AssertEqual<string?>(null, snapshots[0].ParameterChangeReason, "V1 sizing snapshot must retain its missing source reason");
+    AssertEqual("DDMRP 参数快照更新", snapshots[1].ParameterChangeReason, "V2 sizing snapshot must carry its seeded source reason");
+    using (var snapshotJson = JsonDocument.Parse(JsonSerializer.Serialize(
+        snapshots[1], new JsonSerializerOptions(JsonSerializerDefaults.Web))))
+    {
+        AssertEqual("DDMRP 参数快照更新", snapshotJson.RootElement
+            .GetProperty("parameterChangeReason").GetString(),
+            "history API snapshot JSON must serialize the source parameter-change reason");
+    }
     var priorSizing = snapshots[0].Sizing ?? throw new InvalidOperationException("prior sizing evidence is missing");
     var currentSizing = snapshots[1].Sizing ?? throw new InvalidOperationException("current sizing evidence is missing");
     var expectedPrior = ExpectedRollingHistorySizing(facts, sku, -27);
@@ -6786,6 +6795,11 @@ static void TestHistoryVisualRenderersUseBackendEvidence()
     var sizingBody = SourceFunctionBody(script, "renderHistoryDdmrpSizingTrace");
     AssertTrue(sizingBody.Contains("item.sizingLines", StringComparison.Ordinal),
         "historical DDMRP table should render backend sizing lines");
+    AssertTrue(sizingBody.Contains("setting.dltSource", StringComparison.Ordinal)
+        && !sizingBody.Contains("decoupledLeadTimeSource", StringComparison.Ordinal),
+        "historical DDMRP trace must render the serialized backend DLT source without nonexistent fallbacks");
+    AssertTrue(sizingBody.Contains("item.parameterChangeReason", StringComparison.Ordinal),
+        "historical DDMRP trace must render the serialized snapshot parameter-change reason");
     AssertTrue(sizingBody.Contains("renderHistoryDdmrpZoneSvg(item)", StringComparison.Ordinal),
         "historical DDMRP trace should render the backend zone result");
     foreach (var forbidden in new[] { "leadTimeFactor *", "variabilityFactor *", "Math.max(item.minimumOrderQuantity", "\"EvidenceMissing\"", "\"Trace\"" })

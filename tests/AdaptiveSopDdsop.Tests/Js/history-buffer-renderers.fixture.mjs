@@ -184,7 +184,7 @@ function createStandaloneHistoryReview(weeks = 26) {
       targetNetFlowPosition: null,
     };
   });
-  const makeSnapshot = (sku, name, controlPoint, multiplier = 1) => ({
+  const makeSnapshot = (sku, name, controlPoint, multiplier = 1, parameterChangeReason = null) => ({
     snapshotId: `HIST-${sku}-V2`,
     controlPoint,
     sku,
@@ -202,6 +202,8 @@ function createStandaloneHistoryReview(weeks = 26) {
       minimumOrderQuantity: 50 * multiplier,
       demandAdjustmentFactor: 1,
       zoneAdjustmentFactor: 1,
+      aduSource: "后端 ADU 台账",
+      dltSource: "后端 DLT 台账",
     },
     sizing: {
       zones: {
@@ -220,6 +222,7 @@ function createStandaloneHistoryReview(weeks = 26) {
     sourceAuthority: "registered validation data",
     asOfUtc: "2026-06-01T23:59:59Z",
     evidenceStatus: "Complete",
+    parameterChangeReason,
   });
   const timePoints = Array.from({ length: weeks }, (_, index) => {
     const weekOffset = -weeks + index;
@@ -278,7 +281,7 @@ function createStandaloneHistoryReview(weeks = 26) {
     { controlPoint: "关键进口 FPGA 库存控制点", sku: "AV-FPGA-203", name: "抗辐照 FPGA", detailWindowWeeks: 3, points: makeInventoryPoints(0.24, "HIST-AV-FPGA-203-V2"), distribution: [], evidenceStatus: "Complete" },
   ];
   const ddmrpSizingSnapshots = [
-    makeSnapshot("AV-COM-201", "星载通信机", "星载电子半成品库存控制点"),
+    makeSnapshot("AV-COM-201", "星载通信机", "星载电子半成品库存控制点", 1, "DDMRP 参数快照更新"),
     makeSnapshot("AV-OBC-202", "星载计算机", "星载电子半成品库存控制点", .72),
     makeSnapshot("AV-FPGA-203", "抗辐照 FPGA", "关键进口 FPGA 库存控制点", 0.24),
   ];
@@ -306,24 +309,7 @@ function createStandaloneHistoryReview(weeks = 26) {
 
 function rendererFixtureWithInventoryGap(historyReview) {
   const fixture = structuredClone(historyReview);
-  let comparableSku = fixture.inventoryBuffers.find(item =>
-    item.controlPoint === fixture.inventoryBuffers[0].controlPoint && item.sku === "AV-OBC-202");
-  if (!comparableSku) {
-    comparableSku = structuredClone(fixture.inventoryBuffers[0]);
-    fixture.inventoryBuffers.push(comparableSku);
-  }
-  comparableSku.sku = "AV-OBC-202";
-  comparableSku.name = "星载计算机";
-  comparableSku.points = comparableSku.points.map((point, index) => ({
-    ...point,
-    parameterSnapshotId: "HIST-AV-OBC-202-V2",
-    actualDemand: Math.max(0, Number(point.actualDemand || 0) + (index % 2 ? 17 : -11)),
-    demandSpikeThreshold: Math.max(1, Number(point.demandSpikeThreshold || 1) - 4),
-    weeklyEvent: index === comparableSku.points.length - 1 ? "计算机模块放行" : (point.weeklyEvent || "无事件"),
-    parameterChangeReason: index === comparableSku.points.length - 1 ? "模块放行后复核参数" : (point.parameterChangeReason || "本周无参数变更"),
-    evidenceChecks: point.evidenceChecks || [{ label: "库存结转恒等式", detail: "后端结转校验", status: "Complete" }],
-  }));
-  const inventoryPoints = fixture.inventoryBuffers[0].points;
+  const inventoryPoints = fixture.inventoryBuffers.find(item => item.sku === "AV-COM-201").points;
   const gap = inventoryPoints[Math.floor(inventoryPoints.length / 2)];
   Object.assign(gap, {
     endingOnHand: null,
@@ -349,6 +335,14 @@ export async function runHistoryBufferRendererFixtures(
   assert.ok(historyReview?.timeBuffers?.length, "real history DTO should include time buffers");
   assert.ok(historyReview?.capacityBuffers?.length, "real history DTO should include capacity buffers");
   assert.ok(annualHistoryReview?.observedTrendWeeks === 52, "annual history DTO should expose 52 weeks");
+  const comInventory = historyReview.inventoryBuffers.find(item => item.sku === "AV-COM-201");
+  const obcInventory = historyReview.inventoryBuffers.find(item =>
+    item.sku === "AV-OBC-202" && item.controlPoint === comInventory?.controlPoint);
+  assert.ok(comInventory && obcInventory, "passed DTO must contain COM and OBC under one control point");
+  assert.notEqual(
+    JSON.stringify(comInventory.points.map(point => point.actualDemand)),
+    JSON.stringify(obcInventory.points.map(point => point.actualDemand)),
+    "passed DTO must preserve distinct same-control-point demand shapes");
   for (const inventory of historyReview.inventoryBuffers) {
     const snapshotIds = new Set(historyReview.ddmrpSizingSnapshots
       .filter(snapshot => snapshot.sku === inventory.sku && snapshot.controlPoint === inventory.controlPoint)
@@ -381,6 +375,8 @@ export async function runHistoryBufferRendererFixtures(
   fixture.inventoryBuffers[0].points[0].actualDemand = 0;
   runtime.context.__historyFixture = fixture;
   vm.runInContext("renderHistoryReview(__historyFixture)", runtime.context);
+  clickHistorySelector(runtime, "[data-history-control-point]", { historyControlPoint: comInventory.controlPoint });
+  clickHistorySelector(runtime, "[data-history-inventory-sku]", { historyInventorySku: "AV-COM-201" });
   const historicalInput = runtime.elements.get("history-ddmrp-input-summary").innerHTML;
   const sizingTable = runtime.elements.get("history-ddmrp-sizing-body").innerHTML;
   const zoneChart = runtime.elements.get("history-ddmrp-zone-chart").innerHTML;
@@ -392,6 +388,10 @@ export async function runHistoryBufferRendererFixtures(
   const capacityChart = runtime.elements.get("history-capacity-buffer-chart").innerHTML;
   assert.ok(historicalInput.includes("登记校验证据"), "historical source should localize registered validation evidence");
   assert.ok(!historicalInput.includes("registered validation data"), "historical source must not expose ordinary English wording");
+  const selectedSizingSnapshot = fixture.ddmrpSizingSnapshots.find(item =>
+    item.sku === "AV-COM-201" && item.parameterChangeReason);
+  assert.ok(historicalInput.includes(selectedSizingSnapshot.setting.dltSource), "historical sizing should render the serialized backend DLT source");
+  assert.ok(historicalInput.includes(selectedSizingSnapshot.parameterChangeReason), "historical sizing should render the serialized snapshot change reason");
   assert.ok(sizingTable.includes("生效") || zoneChart.includes("生效周段"), "historical snapshot evidence should remain visible");
   assert.ok(zoneChart.includes("生效周段") && zoneChart.includes("证据"));
   assert.ok((inventoryPositionChart.match(/history-series-line is-on-hand/g) || []).length >= 2, "inventory gap should split the line");
@@ -412,8 +412,24 @@ export async function runHistoryBufferRendererFixtures(
   const obcDemandPath = obcVolatilityChart.match(/class="history-demand-area"[^>]*d="([^"]+)"/)?.[1];
   assert.equal(comAxisMaximum, obcAxisMaximum, "same control point must share the demand axis maximum");
   assert.notEqual(comDemandPath, obcDemandPath, "SKU selection must change the demand curve");
-  assert.ok(obcVolatilityChart.includes("AV-OBC-202") && obcVolatilityChart.includes("星载计算机"),
+  assert.ok(obcVolatilityChart.includes("AV-OBC-202") && obcVolatilityChart.includes(obcInventory.name),
     "SKU selection must change the demand chart title");
+  const clickHandlerSource = source.slice(
+    source.indexOf('document.addEventListener("click", event => {'),
+    source.indexOf('document.addEventListener("keydown", event => {'),
+  );
+  const weekClickStart = clickHandlerSource.indexOf("if (inventoryWeek) {");
+  const weekClickEnd = clickHandlerSource.indexOf("const controlPoint =", weekClickStart);
+  const weekClickBody = clickHandlerSource.slice(weekClickStart, weekClickEnd);
+  assert.ok(weekClickBody.includes("state.selectedHistoryInventoryWeekOffset = Number(inventoryWeek.dataset.historyInventoryWeek)")
+    && weekClickBody.includes("syncHistorySelectionState(state.historyReview)")
+    && weekClickBody.includes("renderHistoryInventoryBuffer(state.historyReview)")
+    && weekClickBody.includes("return;"),
+  "weekly selection should update state and render the inventory buffer only");
+  assert.ok(!weekClickBody.includes("renderHistoryWorkspaceOptions")
+    && !weekClickBody.includes("renderHistoryBufferOverview")
+    && !weekClickBody.includes("renderHistoryDdmrpSizingTrace"),
+  "weekly selection must not refresh selectors, overview, or sizing evidence");
   assert.ok(inventoryPositionChart.includes("history-evidence-gap") && inventoryVolatilityChart.includes("history-evidence-gap"),
     "both inventory charts should mark the backend evidence gap");
   assert.ok(inventoryPositionChart.includes("history-zone-fill is-red")

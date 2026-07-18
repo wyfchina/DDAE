@@ -27,4 +27,13 @@
 
 ## Concerns
 
-None. The fixture injects a second same-control-point SKU when the real backend DTO does not contain one, so the shared-axis/selectable-SKU contract stays exercised without changing backend data.
+None.
+
+## Review follow-up
+
+- Corrected historical DLT display to use the serialized `setting.dltSource` field only.
+- Added the compatible optional `ParameterChangeReason` tail to `HistoryDdmrpSizingSnapshotView` and projected the source snapshot `ChangeReason`; V2 serializes the seeded reason while V1 remains null.
+- Isolated history-week clicks so they sync the selected week and render only the inventory buffer before returning.
+- Removed the comparator-SKU fabrication from the renderer fixture. It now requires the supplied DTO to contain AV-COM-201 and AV-OBC-202 at the same control point with different real demand shapes; only COM evidence is gap-poisoned.
+
+Follow-up verification: bundled Node fixture `9/9` groups passed; Release harness `250` tests passed; `git diff --check` passed.

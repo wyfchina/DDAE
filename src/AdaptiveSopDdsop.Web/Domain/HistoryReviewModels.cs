@@ -33,7 +33,8 @@ public sealed record HistoryDdmrpSizingSnapshotView(
     int EffectiveFromWeekOffset, int EffectiveThroughWeekOffset,
     SkuBufferSetting Setting, DdmrpSizingResult? Sizing,
     IReadOnlyList<BufferSizingLine> SizingLines, decimal? AverageOnHand,
-    string SourceAuthority, string AsOfUtc, string EvidenceStatus);
+    string SourceAuthority, string AsOfUtc, string EvidenceStatus,
+    string? ParameterChangeReason = null);
 
 public sealed record HistoryTimeBufferPoint(
     int WeekOffset, string PeriodStartDate, int? EarlyCount, int? GreenCount,
