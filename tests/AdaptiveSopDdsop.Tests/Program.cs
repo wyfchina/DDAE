@@ -59,6 +59,9 @@ var tests = new (string Name, Action Run)[]
     ("History events remain scoped to owned objects", TestHistoryEventsRemainScopedToOwnedObjects),
     ("History event display text is Chinese", TestHistoryEventDisplayTextIsChinese),
     ("History review projects stock time capacity and sizing views from explicit facts", TestHistoryReviewProjectsExplicitBufferViews),
+    ("History operating outcomes no longer publish remaining protection", TestHistoryOperatingOutcomesDoNotOwnProtection),
+    ("History capacity summary exposes balance minimum exhaustion and overload", TestHistoryCapacitySummaryExposesProtectionRisk),
+    ("History capacity summary keeps exception counts empty for missing weekly evidence", TestHistoryCapacitySummaryDoesNotSubstituteMissingWeeklyEvidence),
     ("History capacity summaries average weekly protection consumption", TestHistoryCapacitySummariesAverageWeeklyProtectionConsumption),
     ("History capacity protection rejects self-referential resource evidence", TestHistoryCapacityProtectionRejectsSelfReference),
     ("Historical CCR role wins when a resource is also upstream", TestHistoricalCcrRoleWinsOverUpstreamRole),
@@ -493,7 +496,7 @@ static void TestHistoryReviewNoLongerOwnsStandardDdmrpReference()
         .GetParameters()
         .Single(item => item.Name == "StandardDdmrpReference");
     AssertTrue(typeof(HistoryReviewWorkspace).GetConstructors().Single().GetParameters()
-        .Last().Name == "HistoryThroughUtc", "lineage cutoff remains the final compatible record parameter");
+        .Last().Name == "CapacityProtectionSummary", "capacity protection summary is appended as the compatible workspace tail");
     AssertEqual(typeof(HistoryDdmrpSizingSnapshotView), constructorParameter.ParameterType, "legacy field type remains compatible");
     AssertTrue(constructorParameter.HasDefaultValue && constructorParameter.DefaultValue is null, "legacy field remains optional");
 
@@ -2098,10 +2101,81 @@ static void TestHistoryCapacitySummariesAverageWeeklyProtectionConsumption()
     AssertEqual<decimal?>(expectedProtective, layer.ProtectiveCapacity, "average weekly protective capacity");
     AssertEqual<decimal?>(expectedConsumed, layer.ConsumedProtection, "average weekly consumed protection");
     AssertEqual<decimal?>(expectedRemaining, layer.RemainingProtection, "average weekly remaining protection");
+    var summary = review.CapacityProtectionSummary
+        ?? throw new InvalidOperationException("historical capacity protection summary is missing");
     AssertEqual<decimal?>(
-        decimal.Round(expectedRemaining * 100m / expectedProtective, 1),
-        review.OperatingOutcomes.RemainingProtectionPercent,
-        "remaining protection percentage from weekly protection aggregates");
+        expectedProtective,
+        summary.AverageProtectionBand,
+        "summary average weekly protection band");
+    AssertEqual<decimal?>(
+        expectedRemaining,
+        summary.AverageUnusedProtection,
+        "summary average weekly unused protection");
+}
+
+static void TestHistoryOperatingOutcomesDoNotOwnProtection()
+{
+    var review = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(SeedData.Create()),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var historyReviewBody = SourceFunctionBody(script, "renderHistoryReview");
+    var kpiStart = historyReviewBody.IndexOf("byId(\"history-review-kpis\")", StringComparison.Ordinal);
+    var kpiEnd = historyReviewBody.IndexOf("].map(item => stageKpi", kpiStart, StringComparison.Ordinal);
+    var operatingKpiList = kpiStart >= 0 && kpiEnd > kpiStart
+        ? historyReviewBody.Substring(kpiStart, kpiEnd - kpiStart)
+        : string.Empty;
+
+    AssertTrue(review.OperatingOutcomes.RemainingProtectionPercent is null,
+        "operating outcomes must retain the compatible property as null");
+    AssertTrue(!operatingKpiList.Contains("剩余保护", StringComparison.Ordinal),
+        "historical operating-result KPIs must not render remaining protection");
+    AssertTrue(!operatingKpiList.Contains("outcomes.remainingProtectionPercent", StringComparison.Ordinal),
+        "historical operating-result KPIs must not read remaining protection");
+}
+
+static void TestHistoryCapacitySummaryExposesProtectionRisk()
+{
+    var review = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(SeedData.Create()),
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    var summary = review.CapacityProtectionSummary
+        ?? throw new InvalidOperationException("historical capacity protection summary is missing");
+
+    AssertEqual("RES-AIT", summary.ResourceCode, "summary upstream resource");
+    AssertEqual("RES-HARNESS", summary.ProtectedCcrResourceCode, "summary protected CCR resource");
+    AssertEqual<decimal?>(31.5m, summary.AverageProtectionBand, "summary average protection band");
+    AssertEqual<decimal?>(29.2m, summary.AverageUnusedProtection, "summary average unused protection");
+    AssertEqual<decimal?>(92.6m, summary.BalancePercent, "summary protection balance");
+    AssertEqual<decimal?>(0m, summary.MinimumBalancePercent, "summary minimum weekly balance");
+    AssertTrue(summary.ExhaustedWeekCount > 0, "summary should expose at least one exhausted week");
+    AssertTrue(summary.OverloadWeekCount > 0, "summary should expose at least one overload week");
+    AssertEqual("Complete", summary.EvidenceStatus, "summary evidence status");
+}
+
+static void TestHistoryCapacitySummaryDoesNotSubstituteMissingWeeklyEvidence()
+{
+    var source = new CapacityFactTransformingHistoryOperatingFactSource(
+        new SeedHistoryOperatingFactSource(SeedData.Create()),
+        facts => facts.Select(item => item.ResourceCode == "RES-AIT" && item.WeekOffset == -1
+            ? item with { PlannedAvailableCapacity = null }
+            : item).ToList());
+    var review = new HistoryReviewWorkspaceService(
+        source,
+        new SeedScenarioWorkspaceDataSource(SeedData.Create())).GetReview(6);
+    var summary = review.CapacityProtectionSummary
+        ?? throw new InvalidOperationException("historical capacity protection summary is missing");
+
+    AssertEqual("EvidenceMissing", summary.EvidenceStatus, "missing weekly capacity evidence status");
+    AssertTrue(
+        summary.AverageProtectionBand is null &&
+        summary.AverageUnusedProtection is null &&
+        summary.BalancePercent is null &&
+        summary.MinimumBalancePercent is null,
+        "missing weekly capacity evidence must leave summary quantities null");
+    AssertEqual<int?>(null, summary.ExhaustedWeekCount, "missing weekly capacity evidence exhausted-week count");
+    AssertEqual<int?>(null, summary.OverloadWeekCount, "missing weekly capacity evidence overload-week count");
 }
 
 static void TestHistoryCapacityProtectionRejectsSelfReference()
@@ -12578,6 +12652,26 @@ internal sealed class OpeningOnHandContinuityPoisonHistoryOperatingFactSource : 
                     : item)
                 .ToList()
         };
+    }
+}
+
+internal sealed class CapacityFactTransformingHistoryOperatingFactSource : IHistoryOperatingFactSource
+{
+    private readonly IHistoryOperatingFactSource _inner;
+    private readonly Func<IReadOnlyList<WeeklyCapacityFact>, IReadOnlyList<WeeklyCapacityFact>> _transform;
+
+    public CapacityFactTransformingHistoryOperatingFactSource(
+        IHistoryOperatingFactSource inner,
+        Func<IReadOnlyList<WeeklyCapacityFact>, IReadOnlyList<WeeklyCapacityFact>> transform)
+    {
+        _inner = inner;
+        _transform = transform;
+    }
+
+    public HistoryFactSet Load(HistoryFactRequest request)
+    {
+        var facts = _inner.Load(request);
+        return facts with { CapacityFacts = _transform(facts.CapacityFacts) };
     }
 }
 

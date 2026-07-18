@@ -66,6 +66,17 @@ public sealed record HistoryCapacityBufferView(
     string RelationshipRole, IReadOnlyList<HistoryCapacityPoint> Points,
     IReadOnlyList<HistoryDistributionBucket> Distribution, string EvidenceStatus);
 
+public sealed record HistoryCapacityProtectionSummary(
+    string ResourceCode,
+    string? ProtectedCcrResourceCode,
+    decimal? AverageProtectionBand,
+    decimal? AverageUnusedProtection,
+    decimal? BalancePercent,
+    decimal? MinimumBalancePercent,
+    int? ExhaustedWeekCount,
+    int? OverloadWeekCount,
+    string EvidenceStatus);
+
 public sealed record HistoryReviewProjection(
     IReadOnlyList<HistoryInventoryBufferView> InventoryBuffers,
     IReadOnlyList<HistoryDdmrpSizingSnapshotView> DdmrpSizingSnapshots,

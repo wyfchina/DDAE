@@ -77,7 +77,8 @@ public sealed record HistoryReviewWorkspace(
     IReadOnlyList<HistoryCapacityBufferView>? CapacityBuffers = null,
     HistoryDdmrpSizingSnapshotView? StandardDdmrpReference = null,
     string FactSetId = "",
-    string HistoryThroughUtc = "");
+    string HistoryThroughUtc = "",
+    HistoryCapacityProtectionSummary? CapacityProtectionSummary = null);
 
 public sealed class HistoryReviewWorkspaceService
 {
@@ -123,12 +124,12 @@ public sealed class HistoryReviewWorkspaceService
             annualHistory.AbnormalCosts);
         var zoneResidence = BuildZoneResidence(projection.InventoryBuffers, projectionDetailWeeks);
         var capacity = BuildCapacityProtection(projection.CapacityBuffers, history.CapacityFacts);
+        var capacityProtectionSummary = BuildCapacityProtectionSummary(projection.CapacityBuffers);
         var relationships = BuildProtectionRelationships(projection, capacity, definitions.Resources);
         var exposure = BuildConstraintExposure(history.ConstraintFacts, definitions.Resources);
         var outcomes = BuildOperatingOutcomes(
             history,
-            annualHistory.AbnormalCosts,
-            capacity);
+            annualHistory.AbnormalCosts);
         var observedTrendWeeks = history.OperatingFacts
             .Select(item => item.WeekOffset)
             .Distinct()
@@ -150,7 +151,8 @@ public sealed class HistoryReviewWorkspaceService
             projection.TimeBuffers,
             projection.CapacityBuffers,
             FactSetId: history.FactSetId,
-            HistoryThroughUtc: history.AsOfUtc);
+            HistoryThroughUtc: history.AsOfUtc,
+            CapacityProtectionSummary: capacityProtectionSummary);
     }
 
     private static HistoryFactSet SliceAnnualHistory(HistoryFactSet annual, int requestedWeeks)
@@ -191,8 +193,7 @@ public sealed class HistoryReviewWorkspaceService
 
     private static HistoryOperatingOutcomes BuildOperatingOutcomes(
         HistoryFactSet history,
-        IReadOnlyList<HistoryAbnormalCostEvent> annualAbnormalCostLedger,
-        IReadOnlyList<CapacityProtectionLayer> capacity)
+        IReadOnlyList<HistoryAbnormalCostEvent> annualAbnormalCostLedger)
     {
         var service = AverageOrNull(history.OperatingFacts, item => item.ServiceLevelPercent, 1);
         var inventory = AverageOrNull(history.OperatingFacts, item => item.InventoryValue, 0);
@@ -206,20 +207,6 @@ public sealed class HistoryReviewWorkspaceService
             ? null
             : decimal.Round(costEvents.Sum(item => item.CostAmount), 0);
 
-        var protectedLayers = capacity
-            .Where(item =>
-                item.RelationshipRole == "UpstreamProtection" &&
-                item.EvidenceStatus == Complete &&
-                item.ProtectiveCapacity is > 0 &&
-                item.RemainingProtection is not null)
-            .ToList();
-        decimal? remainingProtectionPercent = protectedLayers.Count == 0
-            ? null
-            : decimal.Round(
-                protectedLayers.Sum(item => item.RemainingProtection!.Value) * 100m /
-                protectedLayers.Sum(item => item.ProtectiveCapacity!.Value),
-                1);
-
         var evidenceStatus = new[]
         {
             service,
@@ -228,7 +215,6 @@ public sealed class HistoryReviewWorkspaceService
             flowTime,
             cash,
             abnormalCost,
-            remainingProtectionPercent,
         }.All(item => item is not null)
             ? Complete
             : EvidenceMissing;
@@ -240,7 +226,7 @@ public sealed class HistoryReviewWorkspaceService
             flowTime,
             cash,
             abnormalCost,
-            remainingProtectionPercent,
+            null,
             evidenceStatus);
     }
 
@@ -368,6 +354,58 @@ public sealed class HistoryReviewWorkspaceService
                     view.EvidenceStatus);
             })
             .ToList();
+    }
+
+    private static HistoryCapacityProtectionSummary? BuildCapacityProtectionSummary(
+        IReadOnlyList<HistoryCapacityBufferView> capacityViews)
+    {
+        var selected = capacityViews
+            .Where(item =>
+                item.RelationshipRole == "UpstreamProtection" &&
+                !string.IsNullOrWhiteSpace(item.ProtectedCcrResourceCode))
+            .ToList();
+        if (selected.Count != 1)
+        {
+            return null;
+        }
+
+        var view = selected[0];
+        var measures = view.Points.Select(item => item.Measure).ToList();
+        var complete = view.EvidenceStatus == Complete &&
+            measures.Count > 0 &&
+            measures.All(item => item is
+            {
+                EvidenceStatus: Complete,
+                ProtectionCapacity: > 0m,
+                RemainingProtection: >= 0m,
+                Overload: >= 0m
+            });
+        if (!complete)
+        {
+            return new HistoryCapacityProtectionSummary(
+                view.ResourceCode,
+                view.ProtectedCcrResourceCode,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                EvidenceMissing);
+        }
+
+        var weeklyMeasures = measures.Select(item => item!).ToList();
+        var protectionCapacity = weeklyMeasures.Sum(item => item.ProtectionCapacity!.Value);
+        return new HistoryCapacityProtectionSummary(
+            view.ResourceCode,
+            view.ProtectedCcrResourceCode,
+            decimal.Round(weeklyMeasures.Average(item => item.ProtectionCapacity!.Value), 1),
+            decimal.Round(weeklyMeasures.Average(item => item.RemainingProtection!.Value), 1),
+            decimal.Round(weeklyMeasures.Sum(item => item.RemainingProtection!.Value) * 100m / protectionCapacity, 1),
+            decimal.Round(weeklyMeasures.Min(item => item.RemainingProtection!.Value * 100m / item.ProtectionCapacity!.Value), 1),
+            weeklyMeasures.Count(item => item.RemainingProtection == 0m),
+            weeklyMeasures.Count(item => item.Overload > 0m),
+            Complete);
     }
 
     private static decimal? CapacityPointAverage(

@@ -5240,7 +5240,6 @@ function renderHistoryReview(history) {
     ["流动时间", metricOrEvidenceMissing(outcomes.averageFlowTimeDays, value => `${number(value)} 天`), `累计提前期详细证据窗口：${history.detailWindowWeeks} 周`],
     ["现金占用", metricOrEvidenceMissing(outcomes.cashOccupied, money), "历史经营结果"],
     ["异常费用", metricOrEvidenceMissing(outcomes.expediteCost, money), "可追溯异常处置"],
-    ["剩余保护", metricOrEvidenceMissing(outcomes.remainingProtectionPercent, percent), "上游能力保护余额"],
   ].map(item => stageKpi(...item)).join("");
 
   byId("history-protection-body").innerHTML = history.protectionRelationships.length
