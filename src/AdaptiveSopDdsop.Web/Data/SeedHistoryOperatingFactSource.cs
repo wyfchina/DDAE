@@ -44,7 +44,7 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
     private static readonly IReadOnlyList<AnnualWeekProfile> AnnualProfiles = BuildAnnualProfiles();
 
     private readonly ValidationData _data;
-    private readonly IInternalDemoOperatingFactSource _operatingFactSource;
+    private readonly InternalDemoOperatingFactSet _sharedFacts;
     private readonly IReadOnlyList<WeeklyOperatingFact> _operatingFacts;
     private readonly IReadOnlyList<WeeklyBufferFact> _bufferFacts;
     private readonly IReadOnlyList<WeeklyTimeBufferFact> _timeBufferFacts;
@@ -63,11 +63,10 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
         IInternalDemoOperatingFactSource operatingFacts)
     {
         _data = data;
-        _operatingFactSource = operatingFacts;
-        var sharedFacts = _operatingFactSource.Load();
+        _sharedFacts = operatingFacts.Load();
         _ddmrpParameterFacts = BuildDdmrpParameterFacts(data.Skus);
-        _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts, sharedFacts.InventoryMovements);
-        _operatingFacts = BuildOperatingFacts(sharedFacts.OperatingFacts);
+        _bufferFacts = BuildBufferFacts(_ddmrpParameterFacts, _sharedFacts.InventoryMovements);
+        _operatingFacts = BuildOperatingFacts(_sharedFacts.OperatingFacts);
         _abnormalCosts = BuildAbnormalCosts();
         _timeBufferFacts = BuildTimeBufferFacts(AnnualProfiles, _abnormalCosts);
         _capacityFacts = BuildCapacityFacts(AnnualProfiles);
@@ -93,12 +92,12 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
             ConstraintFacts.Where(item => item.WeekOffset is null || InWindow(item.WeekOffset.Value)).ToList(),
             _abnormalCosts.Where(item => InWindow(item.WeekOffset)).ToList(),
             "DDAE Internal Operating Fact Set",
-            _operatingFactSource.Load().Header.HistoryThroughUtc,
-            $"DemoFixture / SharedOperatingFactSet={_operatingFactSource.Load().Header.FactSetId} / AnnualSource=52 / ViewWeeks={weeks}",
+            _sharedFacts.Header.HistoryThroughUtc,
+            $"DemoFixture / SharedOperatingFactSet={_sharedFacts.Header.FactSetId} / AnnualSource=52 / ViewWeeks={weeks}",
             _timeBufferFacts.Where(item => InWindow(item.WeekOffset)).ToList(),
             _ddmrpParameterFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList(),
             _capacityProtectionFacts.Where(item => HistoricalRangeOverlapsWindow(item.EffectiveFromWeekOffset, item.EffectiveThroughWeekOffset)).ToList(),
-            _operatingFactSource.Load().Header.FactSetId);
+            _sharedFacts.Header.FactSetId);
     }
 
     private static IReadOnlyList<AnnualWeekProfile> BuildAnnualProfiles()

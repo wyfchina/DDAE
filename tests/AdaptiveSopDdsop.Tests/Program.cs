@@ -52,6 +52,7 @@ var tests = new (string Name, Action Run)[]
     ("History event costs are explicit evidence", TestHistoryEventCostsAreExplicitEvidence),
     ("History magnitudes reconcile across views", TestHistoryMagnitudesReconcileAcrossViews),
     ("History facts use the shared twelve-SKU operating ledger", TestHistoryFactsUseSharedEnterpriseLedger),
+    ("History facts retain one atomic shared fact-set lineage", TestHistoryFactsRetainAtomicSharedFactSetLineage),
     ("History buffer facts expose continuous stock movement", TestHistoryBufferFactsExposeContinuousMovement),
     ("History and scenario share the same fact-set cutoff", TestHistoryAndScenarioShareFactSetCutoff),
     ("History abnormal costs retain object ownership", TestHistoryAbnormalCostsRetainObjectOwnership),
@@ -1748,6 +1749,38 @@ static void TestHistoryFactsUseSharedEnterpriseLedger()
         .Join(data.Skus, movement => movement.Sku, sku => sku.Sku,
             (movement, sku) => movement.EndingOnHand * sku.UnitCost).Sum();
     AssertEqual(decimal.Round(expectedInventory, 0), lastWeek.InventoryValue!.Value, "twelve-SKU inventory value");
+}
+
+static void TestHistoryFactsRetainAtomicSharedFactSetLineage()
+{
+    var data = SeedData.Create();
+    var initial = new SeedInternalDemoOperatingFactSource(data).Load() with
+    {
+        Header = new InternalDemoFactSetHeader(
+            "FACT-SET-FIRST",
+            "DemoFixture",
+            "First shared fact set",
+            "2026-06-30T00:00:00.0000000+00:00",
+            "2026-06-30T08:00:00.0000000+00:00"),
+    };
+    var later = initial with
+    {
+        Header = initial.Header with { FactSetId = "FACT-SET-LATER", HistoryThroughUtc = "2030-01-01T00:00:00.0000000+00:00" },
+        OperatingFacts = initial.OperatingFacts.Select(item => item with { InventoryValue = 1m }).ToList(),
+    };
+    var shared = new CountingInternalDemoOperatingFactSource(initial, later);
+    var source = new SeedHistoryOperatingFactSource(data, shared);
+    var facts = source.Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 30)));
+
+    AssertEqual(1, shared.LoadCount, "history source must load the shared fact set once");
+    AssertEqual(initial.Header.FactSetId, facts.FactSetId, "captured fact-set id");
+    AssertEqual(initial.Header.HistoryThroughUtc, facts.AsOfUtc, "captured history cutoff");
+    AssertTrue(facts.EvidenceLabel.Contains(initial.Header.FactSetId, StringComparison.Ordinal),
+        "captured evidence label lineage");
+    AssertEqual(
+        initial.OperatingFacts.Single(item => item.WeekOffset == -1).InventoryValue,
+        facts.OperatingFacts.Single(item => item.WeekOffset == -1).InventoryValue,
+        "captured operating facts");
 }
 
 static void TestHistoryBufferFactsExposeContinuousMovement()
@@ -12268,6 +12301,28 @@ internal sealed class TrackingScenarioWorkspaceDataSource : IScenarioWorkspaceDa
     {
         LoadCount++;
         return _inner.Load(request);
+    }
+}
+
+internal sealed class CountingInternalDemoOperatingFactSource : IInternalDemoOperatingFactSource
+{
+    private readonly InternalDemoOperatingFactSet _initial;
+    private readonly InternalDemoOperatingFactSet _later;
+
+    public CountingInternalDemoOperatingFactSource(
+        InternalDemoOperatingFactSet initial,
+        InternalDemoOperatingFactSet later)
+    {
+        _initial = initial;
+        _later = later;
+    }
+
+    public int LoadCount { get; private set; }
+
+    public InternalDemoOperatingFactSet Load()
+    {
+        LoadCount++;
+        return LoadCount == 1 ? _initial : _later;
     }
 }
 
