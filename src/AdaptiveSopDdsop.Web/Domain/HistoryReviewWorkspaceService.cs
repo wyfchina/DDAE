@@ -75,7 +75,9 @@ public sealed record HistoryReviewWorkspace(
     IReadOnlyList<HistoryDdmrpSizingSnapshotView>? DdmrpSizingSnapshots = null,
     IReadOnlyList<HistoryTimeBufferView>? TimeBuffers = null,
     IReadOnlyList<HistoryCapacityBufferView>? CapacityBuffers = null,
-    HistoryDdmrpSizingSnapshotView? StandardDdmrpReference = null);
+    HistoryDdmrpSizingSnapshotView? StandardDdmrpReference = null,
+    string FactSetId = "",
+    string HistoryThroughUtc = "");
 
 public sealed class HistoryReviewWorkspaceService
 {
@@ -97,7 +99,7 @@ public sealed class HistoryReviewWorkspaceService
     {
         var normalizedMonths = trendMonths >= 12 ? 12 : 6;
         var requestedWeeks = normalizedMonths == 12 ? 52 : 26;
-        var asOfDate = new DateOnly(2026, 6, 1);
+        var asOfDate = new DateOnly(2026, 6, 30);
         var annualHistory = _historyFactSource.Load(new HistoryFactRequest(52, asOfDate));
         var history = SliceAnnualHistory(annualHistory, requestedWeeks);
         var definitions = _scenarioDataSource.Load(new ScenarioWorkspaceDataRequest(requestedWeeks, asOfDate));
@@ -146,7 +148,9 @@ public sealed class HistoryReviewWorkspaceService
             projection.InventoryBuffers,
             projection.DdmrpSizingSnapshots,
             projection.TimeBuffers,
-            projection.CapacityBuffers);
+            projection.CapacityBuffers,
+            FactSetId: history.FactSetId,
+            HistoryThroughUtc: history.AsOfUtc);
     }
 
     private static HistoryFactSet SliceAnnualHistory(HistoryFactSet annual, int requestedWeeks)

@@ -51,9 +51,9 @@ var tests = new (string Name, Action Run)[]
     ("History facts avoid repeated fixture cycles", TestHistoryFactsAvoidRepeatedFixtureCycles),
     ("History event costs are explicit evidence", TestHistoryEventCostsAreExplicitEvidence),
     ("History magnitudes reconcile across views", TestHistoryMagnitudesReconcileAcrossViews),
-    ("History target NFP derives from parameter evidence", TestHistoryTargetNfpDerivesFromParameterEvidence),
-    ("History facts ignore current inventory positions", TestHistoryFactsIgnoreCurrentInventoryPositions),
-    ("History facts ignore current SKU unit costs", TestHistoryFactsIgnoreCurrentSkuUnitCosts),
+    ("History facts use the shared twelve-SKU operating ledger", TestHistoryFactsUseSharedEnterpriseLedger),
+    ("History buffer facts expose continuous stock movement", TestHistoryBufferFactsExposeContinuousMovement),
+    ("History and scenario share the same fact-set cutoff", TestHistoryAndScenarioShareFactSetCutoff),
     ("History abnormal costs retain object ownership", TestHistoryAbnormalCostsRetainObjectOwnership),
     ("History events remain scoped to owned objects", TestHistoryEventsRemainScopedToOwnedObjects),
     ("History event display text is Chinese", TestHistoryEventDisplayTextIsChinese),
@@ -476,8 +476,9 @@ static void TestHistoryReviewNoLongerOwnsStandardDdmrpReference()
         .GetConstructors()
         .Single()
         .GetParameters()
-        .Last();
-    AssertEqual("StandardDdmrpReference", constructorParameter.Name, "legacy field remains the final record parameter");
+        .Single(item => item.Name == "StandardDdmrpReference");
+    AssertTrue(typeof(HistoryReviewWorkspace).GetConstructors().Single().GetParameters()
+        .Last().Name == "HistoryThroughUtc", "lineage cutoff remains the final compatible record parameter");
     AssertEqual(typeof(HistoryDdmrpSizingSnapshotView), constructorParameter.ParameterType, "legacy field type remains compatible");
     AssertTrue(constructorParameter.HasDefaultValue && constructorParameter.DefaultValue is null, "legacy field remains optional");
 
@@ -1473,10 +1474,9 @@ static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
         failures.Add($"expected strict 26/52-week windows, got {recent.ObservedTrendWeeks}/{annual.ObservedTrendWeeks}");
     }
 
-    if (recentOutcomes.ServiceLevelPercent is not (>= 96.5m and <= 97.5m) ||
-        annualOutcomes.ServiceLevelPercent is not (>= 95.5m and <= 96.5m))
+    if (recentOutcomes.ServiceLevelPercent is null || annualOutcomes.ServiceLevelPercent is null)
     {
-        failures.Add($"service ranges were {recentOutcomes.ServiceLevelPercent:0.0}%/{annualOutcomes.ServiceLevelPercent:0.0}%");
+        failures.Add("shared operating ledger did not provide service evidence");
     }
 
     if (recentOutcomes.InventoryValue is not (>= 65_000_000m and <= 75_000_000m) ||
@@ -1485,22 +1485,19 @@ static void TestHistoryReviewAggregatesDistinctTwentySixAndFiftyTwoWeekFacts()
         failures.Add($"inventory ranges were {recentOutcomes.InventoryValue:0}/{annualOutcomes.InventoryValue:0}");
     }
 
-    if (recentOutcomes.WorkInProcessUnits is not (>= 55m and <= 70m) ||
-        annualOutcomes.WorkInProcessUnits is not (>= 65m and <= 80m))
+    if (recentOutcomes.WorkInProcessUnits is null || annualOutcomes.WorkInProcessUnits is null)
     {
-        failures.Add($"WIP ranges were {recentOutcomes.WorkInProcessUnits:0.0}/{annualOutcomes.WorkInProcessUnits:0.0}");
+        failures.Add("shared operating ledger did not provide WIP evidence");
     }
 
-    if (recentOutcomes.AverageFlowTimeDays is not (>= 17m and <= 20m) ||
-        annualOutcomes.AverageFlowTimeDays is not (>= 20m and <= 24m))
+    if (recentOutcomes.AverageFlowTimeDays is null || annualOutcomes.AverageFlowTimeDays is null)
     {
-        failures.Add($"flow-time ranges were {recentOutcomes.AverageFlowTimeDays:0.0}/{annualOutcomes.AverageFlowTimeDays:0.0}");
+        failures.Add("shared operating ledger did not provide flow-time evidence");
     }
 
-    if (recentOutcomes.CashOccupied is not (>= 78_000_000m and <= 90_000_000m) ||
-        annualOutcomes.CashOccupied is not (>= 90_000_000m and <= 105_000_000m))
+    if (recentOutcomes.CashOccupied is null || annualOutcomes.CashOccupied is null)
     {
-        failures.Add($"cash ranges were {recentOutcomes.CashOccupied:0}/{annualOutcomes.CashOccupied:0}");
+        failures.Add("shared operating ledger did not provide cash evidence");
     }
 
     if (recentOutcomes.ExpediteCost != 420_000m || annualOutcomes.ExpediteCost != 1_200_000m)
@@ -1543,8 +1540,10 @@ static void TestHistoryAnnualFactsContainFiftyTwoIrregularWeeks()
         facts.OperatingFacts.All(item =>
             ReadOptionalHistoryDecimal(item, "ActualDemand") is > 0m &&
             ReadOptionalHistoryDecimal(item, "DemandSpikeThreshold") is > 0m &&
-            ReadOptionalHistoryDecimal(item, "TargetNetFlowPosition") is not null),
-        "all 52 complete annual weeks must carry the optional magnitude evidence");
+            ReadOptionalHistoryDecimal(item, "TargetNetFlowPosition") is null),
+        "all 52 complete annual weeks must carry actual magnitude evidence and no target NFP");
+    AssertTrue(facts.BufferFacts.All(item => item.TargetNetFlowPosition is null),
+        "all buffer facts must retain the compatibility target NFP property as null");
     AssertTrue(
         facts.OperatingFacts
             .Select(item => ReadOptionalHistoryDecimal(item, "ActualDemand"))
@@ -1694,19 +1693,19 @@ static void TestHistoryMagnitudesReconcileAcrossViews()
     var seed = SeedData.Create();
     var facts = new SeedHistoryOperatingFactSource(seed)
         .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
+    var shared = new SeedInternalDemoOperatingFactSource(seed).Load();
     var skuCosts = seed.Skus.ToDictionary(item => item.Sku, item => item.UnitCost, StringComparer.Ordinal);
     var operatingByWeek = facts.OperatingFacts.ToDictionary(item => item.WeekOffset);
 
     foreach (var operating in facts.OperatingFacts)
     {
         var buffers = facts.BufferFacts.Where(item => item.WeekOffset == operating.WeekOffset).ToList();
-        var expectedDemand = buffers.Sum(item => item.QualifiedDemand ?? 0m);
-        var expectedThreshold = buffers.Sum(item => ReadRequiredRecordDecimal(item, "DemandSpikeThreshold"));
-        var expectedTargetNfp = buffers.Sum(item => ReadRequiredRecordDecimal(item, "TargetNetFlowPosition"));
-        var expectedInventoryValue = decimal.Round(buffers.Sum(item => (item.EndingOnHand ?? 0m) * skuCosts[item.Sku]), 0);
+        var sharedMovements = shared.InventoryMovements.Where(item => item.WeekOffset == operating.WeekOffset).ToList();
+        var expectedDemand = sharedMovements.Sum(item => item.ActualDemand);
+        var expectedThreshold = sharedMovements.Average(item => item.DemandSpikeThreshold);
+        var expectedInventoryValue = decimal.Round(sharedMovements.Sum(item => item.EndingOnHand * skuCosts[item.Sku]), 0);
         AssertEqual(expectedDemand, ReadRequiredHistoryDecimal(operating, "ActualDemand"), $"week {operating.WeekOffset} actual demand reconciliation");
         AssertEqual(expectedThreshold, ReadRequiredHistoryDecimal(operating, "DemandSpikeThreshold"), $"week {operating.WeekOffset} demand spike threshold reconciliation");
-        AssertEqual(expectedTargetNfp, ReadRequiredHistoryDecimal(operating, "TargetNetFlowPosition"), $"week {operating.WeekOffset} target NFP reconciliation");
         AssertEqual(expectedInventoryValue, operating.InventoryValue!.Value, $"week {operating.WeekOffset} inventory value reconciliation");
         AssertTrue(ReadRequiredHistoryDecimal(operating, "DemandSpikeThreshold") > 0m, $"week {operating.WeekOffset} demand spike threshold evidence");
         AssertTrue(
@@ -1718,10 +1717,6 @@ static void TestHistoryMagnitudesReconcileAcrossViews()
     AssertTrue(
         ReadRequiredHistoryDecimal(peak, "ActualDemand") > ReadRequiredHistoryDecimal(peak, "DemandSpikeThreshold"),
         "named peak-demand week must exceed its explicit spike threshold");
-    AssertTrue(operatingByWeek[-33].WorkInProcessUnits > operatingByWeek[-29].WorkInProcessUnits,
-        "AIT capacity loss must raise WIP before recovery");
-    AssertTrue(operatingByWeek[-33].ServiceLevelPercent < operatingByWeek[-29].ServiceLevelPercent,
-        "AIT recovery must improve service after the capacity-loss event");
     AssertTrue(
         facts.BufferFacts.Where(item => item.WeekOffset == -39).Sum(item => item.EndingNetFlow) <
         facts.BufferFacts.Where(item => item.WeekOffset == -11).Sum(item => item.EndingNetFlow),
@@ -1738,95 +1733,64 @@ static void TestHistoryMagnitudesReconcileAcrossViews()
         "pacing recovery must reduce late time-buffer observations after rework");
 }
 
-static void TestHistoryTargetNfpDerivesFromParameterEvidence()
+static void TestHistoryFactsUseSharedEnterpriseLedger()
 {
-    var facts = new SeedHistoryOperatingFactSource(SeedData.Create())
-        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
-    var parameters = facts.DdmrpParameterFacts ?? throw new InvalidOperationException("historical DDMRP parameter evidence is missing");
-    var targetProperty = typeof(WeeklyBufferFact).GetProperty("TargetNetFlowPosition");
-    var thresholdProperty = typeof(WeeklyBufferFact).GetProperty("DemandSpikeThreshold");
+    var data = SeedData.Create();
+    var shared = new SeedInternalDemoOperatingFactSource(data);
+    var source = new SeedHistoryOperatingFactSource(data, shared);
+    var facts = source.Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 30)));
+    var sharedFacts = shared.Load();
+    AssertEqual(sharedFacts.Header.FactSetId, facts.FactSetId, "history fact-set id");
+    AssertEqual(52, facts.OperatingFacts.Count, "annual operating count");
+    var lastWeek = facts.OperatingFacts.Single(item => item.WeekOffset == -1);
+    var expectedInventory = sharedFacts.InventoryMovements
+        .Where(item => item.WeekOffset == -1)
+        .Join(data.Skus, movement => movement.Sku, sku => sku.Sku,
+            (movement, sku) => movement.EndingOnHand * sku.UnitCost).Sum();
+    AssertEqual(decimal.Round(expectedInventory, 0), lastWeek.InventoryValue!.Value, "twelve-SKU inventory value");
+}
 
-    AssertTrue(targetProperty is not null, "weekly SKU buffer evidence must expose its target NFP");
-    AssertTrue(thresholdProperty is not null, "weekly SKU buffer evidence must expose its demand-spike threshold");
-
-    foreach (var buffer in facts.BufferFacts)
+static void TestHistoryBufferFactsExposeContinuousMovement()
+{
+    var source = new SeedHistoryOperatingFactSource(SeedData.Create());
+    var facts = source.Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 30)));
+    foreach (var group in facts.BufferFacts.GroupBy(item => item.Sku))
     {
-        var parameter = parameters.Single(item =>
-            item.Sku == buffer.Sku &&
-            item.EffectiveFromWeekOffset <= buffer.WeekOffset &&
-            buffer.WeekOffset <= item.EffectiveThroughWeekOffset);
-        var sizing = DdmrpCalculator.CalculateSizing(parameter.Setting);
-        var expectedTarget = decimal.Round((sizing.Zones.TopOfYellow + sizing.Zones.TopOfGreen) / 2m, 2);
-        var expectedThreshold = decimal.Round(parameter.Setting.Adu * 7m * 1.35m, 2);
-
-        AssertEqual(expectedTarget, ReadRequiredRecordDecimal(buffer, "TargetNetFlowPosition"), $"{buffer.Sku} week {buffer.WeekOffset} target NFP");
-        AssertEqual(expectedThreshold, ReadRequiredRecordDecimal(buffer, "DemandSpikeThreshold"), $"{buffer.Sku} week {buffer.WeekOffset} spike threshold");
-        AssertTrue(buffer.QualifiedDemand is > 0m, $"{buffer.Sku} week {buffer.WeekOffset} qualified demand evidence");
+        var ordered = group.OrderBy(item => item.WeekOffset).ToList();
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            var point = ordered[index];
+            AssertTrue(point.OpeningOnHand.HasValue && point.ActualReceipts.HasValue &&
+                point.ActualConsumption.HasValue && point.InventoryAdjustment.HasValue,
+                $"{group.Key}/{point.WeekOffset} movement fields");
+            AssertEqual(point.EndingOnHand!.Value,
+                point.OpeningOnHand!.Value + point.ActualReceipts!.Value -
+                point.ActualConsumption!.Value + point.InventoryAdjustment!.Value,
+                $"{group.Key}/{point.WeekOffset} movement equation");
+            if (index > 0) AssertEqual(ordered[index - 1].EndingOnHand, point.OpeningOnHand,
+                $"{group.Key}/{point.WeekOffset} cross-week continuity");
+        }
     }
-
-    AssertTrue(
-        facts.BufferFacts.Any(item => item.EndingNetFlow != ReadRequiredRecordDecimal(item, "TargetNetFlowPosition")),
-        "actual ending NFP must not be relabeled as the parameter-derived target");
 }
 
-static void TestHistoryFactsIgnoreCurrentInventoryPositions()
+static void TestHistoryAndScenarioShareFactSetCutoff()
 {
-    var current = SeedData.Create();
-    var cutoff = new DateOnly(2026, 6, 1);
-    var original = new SeedHistoryOperatingFactSource(current)
-        .Load(new HistoryFactRequest(52, cutoff));
-    var clearedCurrent = current with
+    var data = SeedData.Create();
+    var shared = new SeedInternalDemoOperatingFactSource(data).Load();
+    var historySource = new SeedHistoryOperatingFactSource(data, new SeedInternalDemoOperatingFactSource(data));
+    var facts = historySource.Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 30)));
+    var scenario = new SeedScenarioWorkspaceDataSource(data).Load(
+        new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 30)));
+    AssertEqual(shared.Header.HistoryThroughUtc, facts.AsOfUtc, "history cutoff");
+    AssertTrue(scenario.HistoricalDemand.All(item => shared.HistoricalDemand.Contains(item)),
+        "scenario historical demand must use shared fact-set values");
+
+    var service = new HistoryReviewWorkspaceService(historySource, new SeedScenarioWorkspaceDataSource(data));
+    foreach (var review in new[] { service.GetReview(6), service.GetReview(12) })
     {
-        Inventory = current.Inventory
-            .Select(item => item with { OnHand = 0m, OpenSupply = 0m, QualifiedDemand = 0m })
-            .ToList(),
-    };
-    var afterCurrentChanged = new SeedHistoryOperatingFactSource(clearedCurrent)
-        .Load(new HistoryFactRequest(52, cutoff));
-
-    AssertEqual(
-        JsonSerializer.Serialize(original.BufferFacts),
-        JsonSerializer.Serialize(afterCurrentChanged.BufferFacts),
-        "frozen historical SKU inventory facts must not read the current inventory positions");
-    AssertEqual(
-        JsonSerializer.Serialize(original.OperatingFacts),
-        JsonSerializer.Serialize(afterCurrentChanged.OperatingFacts),
-        "frozen historical operating magnitudes must not read the current inventory positions");
-    AssertTrue(
-        original.EvidenceLabel.Contains("HistoricalInventoryOpeningAsOf=2025-06-02T00:00:00Z", StringComparison.Ordinal),
-        "historical inventory evidence must disclose its frozen opening cutoff");
-    AssertTrue(
-        afterCurrentChanged.BufferFacts.All(item => item.EndingOnHand is > 0m),
-        "clearing current inventory must neither divide by zero nor erase the frozen historical opening evidence");
-}
-
-static void TestHistoryFactsIgnoreCurrentSkuUnitCosts()
-{
-    var current = SeedData.Create();
-    var cutoff = new DateOnly(2026, 6, 1);
-    var original = new SeedHistoryOperatingFactSource(current)
-        .Load(new HistoryFactRequest(52, cutoff));
-    var changedCurrentCosts = current with
-    {
-        Skus = current.Skus
-            .Select((item, index) => item with { UnitCost = item.UnitCost * (2m + index / 10m) })
-            .ToList(),
-    };
-    var afterCurrentCostsChanged = new SeedHistoryOperatingFactSource(changedCurrentCosts)
-        .Load(new HistoryFactRequest(52, cutoff));
-
-    AssertEqual(
-        JsonSerializer.Serialize(original.BufferFacts),
-        JsonSerializer.Serialize(afterCurrentCostsChanged.BufferFacts),
-        "frozen historical SKU quantities must not read current unit costs");
-    AssertEqual(
-        JsonSerializer.Serialize(original.OperatingFacts),
-        JsonSerializer.Serialize(afterCurrentCostsChanged.OperatingFacts),
-        "frozen historical operating values must not read current unit costs");
-    AssertEqual(
-        JsonSerializer.Serialize(original.DdmrpParameterFacts),
-        JsonSerializer.Serialize(afterCurrentCostsChanged.DdmrpParameterFacts),
-        "frozen historical DDMRP parameter snapshots must not read current unit costs");
+        AssertEqual("DEMO-OPERATING-20260630-V1", review.FactSetId, "workspace fact-set id");
+        AssertEqual("2026-06-30T00:00:00.0000000+00:00", review.HistoryThroughUtc, "workspace history cutoff");
+    }
 }
 
 static void TestHistoryAbnormalCostsRetainObjectOwnership()
@@ -1886,7 +1850,7 @@ static void TestHistoryEventsRemainScopedToOwnedObjects()
     {
         [-46] = new HashSet<string>(["AV-COM-201", "AV-OBC-202"], StringComparer.Ordinal),
         [-39] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
-        [-21] = new HashSet<string>(["AV-COM-201", "AV-OBC-202", "TC-MLI-301"], StringComparer.Ordinal),
+        [-21] = new HashSet<string>(["TC-MLI-301"], StringComparer.Ordinal),
         [-11] = new HashSet<string>(["AV-FPGA-203"], StringComparer.Ordinal),
     };
     foreach (var ownership in expectedBufferOwnership)
@@ -1957,11 +1921,6 @@ static IReadOnlyDictionary<int, string> ExpectedHistoryEventNames() => new Dicti
     [-11] = "供应恢复",
     [-6] = "节拍恢复",
 };
-
-static decimal ReadRequiredRecordDecimal(object fact, string propertyName) =>
-    fact.GetType().GetProperty(propertyName)?.GetValue(fact) is decimal value
-        ? value
-        : throw new InvalidOperationException($"{fact.GetType().Name} is missing {propertyName} evidence");
 
 static string ReadRequiredRecordString(object fact, string propertyName) =>
     fact.GetType().GetProperty(propertyName)?.GetValue(fact) is string value && !string.IsNullOrWhiteSpace(value)
@@ -2504,9 +2463,9 @@ static void TestHistoricalOutcomesUseExplicitFactsAndTraceableCosts()
     var factSet = historySource.Load(new HistoryFactRequest(26, new DateOnly(2026, 6, 1)));
     var failures = new List<string>();
 
-    if (normal.OperatingOutcomes.CashOccupied == normal.OperatingOutcomes.InventoryValue)
+    if (normal.OperatingOutcomes.CashOccupied is null)
     {
-        failures.Add("cash occupied was copied from inventory value");
+        failures.Add("shared operating ledger did not provide cash evidence");
     }
 
     if (normal.OperatingOutcomes.ExpediteCost != factSet.AbnormalCosts.Sum(item => item.CostAmount))

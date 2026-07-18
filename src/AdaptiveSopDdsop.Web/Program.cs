@@ -15,7 +15,9 @@ builder.Services.AddSingleton<IScenarioWorkspaceDataSource>(sp =>
         sp.GetRequiredService<ValidationData>(),
         sp.GetRequiredService<IInternalDemoOperatingFactSource>()));
 builder.Services.AddSingleton<IHistoryOperatingFactSource>(sp =>
-    new SeedHistoryOperatingFactSource(sp.GetRequiredService<ValidationData>()));
+    new SeedHistoryOperatingFactSource(
+        sp.GetRequiredService<ValidationData>(),
+        sp.GetRequiredService<IInternalDemoOperatingFactSource>()));
 builder.Services.AddSingleton<ScenarioRunPreviewService>();
 builder.Services.AddSingleton<HistoryReviewWorkspaceService>();
 builder.Services.AddSingleton<DdmrpStandardReferenceService>();

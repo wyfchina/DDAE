@@ -26,7 +26,13 @@ public sealed record WeeklyBufferFact(
     string ControlPoint = "",
     string? ParameterSnapshotId = null,
     decimal? DemandSpikeThreshold = null,
-    decimal? TargetNetFlowPosition = null);
+    decimal? TargetNetFlowPosition = null,
+    decimal? OpeningOnHand = null,
+    decimal? ActualReceipts = null,
+    decimal? ActualConsumption = null,
+    decimal? InventoryAdjustment = null,
+    decimal? ActualDemand = null,
+    string? ParameterChangeReason = null);
 
 public sealed record WeeklyTimeBufferFact(
     string BufferId,
@@ -111,7 +117,8 @@ public sealed record HistoryFactSet(
     string EvidenceLabel,
     IReadOnlyList<WeeklyTimeBufferFact>? TimeBufferFacts = null,
     IReadOnlyList<HistoricalDdmrpParameterFact>? DdmrpParameterFacts = null,
-    IReadOnlyList<HistoricalCapacityProtectionFact>? CapacityProtectionFacts = null);
+    IReadOnlyList<HistoricalCapacityProtectionFact>? CapacityProtectionFacts = null,
+    string FactSetId = "");
 
 public interface IHistoryOperatingFactSource
 {
