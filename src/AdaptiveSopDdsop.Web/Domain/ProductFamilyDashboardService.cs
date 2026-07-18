@@ -48,7 +48,7 @@ public sealed class ProductFamilyDashboardService
             data.Skus,
             plan,
             supplierCapacity,
-            CompareBudget(data, data.Skus, bufferRun.BufferProjections, inventoryFlow),
+            CompareBudget(data, "baseline", data.Skus, bufferRun.BufferProjections, inventoryFlow),
             inventoryFlow);
     }
 
@@ -62,14 +62,30 @@ public sealed class ProductFamilyDashboardService
         IReadOnlyList<BudgetComparison> budget,
         InventoryFlowProjectionResult? inventoryFlow = null)
     {
-        var skuMap = skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        var expectedPhysicalKeys = plan.BufferProjections
+            .Select(item => (item.Sku, item.Week))
+            .ToList();
+        var physicalPoints = InventoryFlowEvidenceValidator.BuildCompletePointMap(
+            caseId,
+            inventoryFlow,
+            expectedPhysicalKeys);
+        var physicalComplete = physicalPoints.Count == expectedPhysicalKeys.Count && expectedPhysicalKeys.Count > 0;
         var families = data.Families
             .Where(family => skus.Any(sku => sku.Family == family.Code))
             .OrderBy(family => family.Code, StringComparer.Ordinal)
             .ToList();
         var weeklyCells = families
             .SelectMany(family => Enumerable.Range(1, data.Request.HorizonWeeks)
-                .Select(week => BuildWeeklyCell(data, family, skus, plan, supplierCapacity, budget, inventoryFlow, week)))
+                .Select(week => BuildWeeklyCell(
+                    data,
+                    family,
+                    skus,
+                    plan,
+                    supplierCapacity,
+                    budget,
+                    physicalPoints,
+                    physicalComplete,
+                    week)))
             .ToList();
         var summaries = families
             .Select(family => BuildSummary(
@@ -78,7 +94,8 @@ public sealed class ProductFamilyDashboardService
                 skus,
                 plan,
                 weeklyCells.Where(item => item.Family == family.Code).ToList(),
-                inventoryFlow))
+                physicalPoints,
+                physicalComplete))
             .OrderByDescending(item => StatusRank(item.Status))
             .ThenByDescending(item => item.SupplyGap + item.CapacityGap)
             .ThenByDescending(item => item.RedWeekCount)
@@ -92,7 +109,8 @@ public sealed class ProductFamilyDashboardService
                 plan,
                 supplierCapacity,
                 weeklyCells.Where(item => item.Family == family.Code).ToList(),
-                inventoryFlow))
+                physicalPoints,
+                physicalComplete))
             .ToList();
         var selectedFamily = summaries.FirstOrDefault()?.Family ?? families.FirstOrDefault()?.Code ?? string.Empty;
 
@@ -103,7 +121,7 @@ public sealed class ProductFamilyDashboardService
             summaries,
             weeklyCells,
             details,
-            InitialComparison(inventoryFlow),
+            InitialComparison(physicalComplete),
             selectedFamily);
     }
 
@@ -113,10 +131,25 @@ public sealed class ProductFamilyDashboardService
         InventoryFlowProjectionResult? baselineInventoryFlow = null,
         InventoryFlowProjectionResult? scenarioInventoryFlow = null)
     {
-        var physicalComplete = IsComplete(baselineInventoryFlow) && IsComplete(scenarioInventoryFlow);
+        var physicalComplete = HasCompleteInventoryAmounts(baseline) &&
+            HasCompleteInventoryAmounts(scenario) &&
+            baselineInventoryFlow is { Status: "Complete", Summary: not null, Points: not null } &&
+            scenarioInventoryFlow is { Status: "Complete", Summary: not null, Points: not null } &&
+            string.Equals(baselineInventoryFlow.CaseId, baseline.CaseId, StringComparison.Ordinal) &&
+            string.Equals(scenarioInventoryFlow.CaseId, scenario.CaseId, StringComparison.Ordinal);
         var serviceDelta = decimal.Round(Average(scenario.Summaries, item => item.ServiceLevelPercent) - Average(baseline.Summaries, item => item.ServiceLevelPercent), 1);
-        var inventoryDelta = decimal.Round(Average(scenario.Summaries, item => item.AverageInventoryValue) - Average(baseline.Summaries, item => item.AverageInventoryValue), 0);
-        var budgetDelta = decimal.Round(scenario.Summaries.Sum(item => item.BudgetInventoryVariance) - baseline.Summaries.Sum(item => item.BudgetInventoryVariance), 0);
+        decimal? inventoryDelta = physicalComplete
+            ? decimal.Round(
+                AverageNullable(scenario.Summaries, item => item.AverageInventoryValue)!.Value -
+                AverageNullable(baseline.Summaries, item => item.AverageInventoryValue)!.Value,
+                0)
+            : null;
+        decimal? budgetDelta = physicalComplete
+            ? decimal.Round(
+                scenario.Summaries.Sum(item => item.BudgetInventoryVariance!.Value) -
+                baseline.Summaries.Sum(item => item.BudgetInventoryVariance!.Value),
+                0)
+            : null;
         return new ProductFamilyDashboardComparison(
             serviceDelta,
             decimal.Round(Average(scenario.Summaries, item => item.FlowIndex) - Average(baseline.Summaries, item => item.FlowIndex), 1),
@@ -126,8 +159,8 @@ public sealed class ProductFamilyDashboardService
             scenario.Summaries.Sum(item => item.RedWeekCount) - baseline.Summaries.Sum(item => item.RedWeekCount),
             budgetDelta,
             physicalComplete ? serviceDelta : null,
-            physicalComplete ? inventoryDelta : null,
-            physicalComplete ? budgetDelta : null,
+            inventoryDelta,
+            budgetDelta,
             physicalComplete ? "Complete" : "EvidenceMissing",
             physicalComplete
                 ? "Both product-family cases use complete physical inventory projections."
@@ -148,19 +181,17 @@ public sealed class ProductFamilyDashboardService
         DemandDrivenPlanResult plan,
         IReadOnlyList<SupplierCapacityComparison> supplierCapacity,
         IReadOnlyList<BudgetComparison> budget,
-        InventoryFlowProjectionResult? inventoryFlow,
+        IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> physicalPoints,
+        bool physicalComplete,
         int week)
     {
         var familySkus = skus.Where(item => item.Family == family.Code).ToList();
         var familySkuSet = familySkus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
-        var inventoryValue = IsComplete(inventoryFlow)
-            ? inventoryFlow!.Points
+        decimal? inventoryValue = physicalComplete
+            ? physicalPoints.Values
                 .Where(item => item.Week == week && familySkuSet.Contains(item.Sku))
                 .Sum(item => item.EndingInventoryValue)
-            : plan.BufferProjections
-                .Where(item => item.Week == week && familySkuSet.Contains(item.Sku))
-                .Join(familySkus, point => point.Sku, sku => sku.Sku, (point, sku) => point.EndNetFlowAfterReplenishment * sku.UnitCost)
-                .Sum();
+            : null;
         var redSkuCount = plan.BufferProjections
             .Where(item => item.Week == week && familySkuSet.Contains(item.Sku) && item.BufferStatus == "Red")
             .Select(item => item.Sku)
@@ -174,9 +205,16 @@ public sealed class ProductFamilyDashboardService
         var capacityGap = FamilyCapacityGap(family.Code, familySkuSet, data.ResourceRoutings, plan.ReplenishmentOrders, data.Resources, week);
         var peakLoad = FamilyPeakLoadPercent(familySkuSet, data.ResourceRoutings, plan.ReplenishmentOrders, data.Resources, week);
         var supplyGap = FamilySupplyGap(familySkuSet, data.SupplierItemSources, plan.ReplenishmentOrders, supplierCapacity, week);
-        var budgetVariance = budget
+        var budgetRows = budget
             .Where(item => item.Family == family.Code && item.Week == week)
-            .Sum(item => item.BudgetInventoryVariance);
+            .ToList();
+        decimal? budgetVariance = !physicalComplete
+            ? null
+            : budgetRows.Count == 0
+                ? 0m
+                : budgetRows.All(item => item.BudgetInventoryVariance.HasValue)
+                    ? budgetRows.Sum(item => item.BudgetInventoryVariance!.Value)
+                    : null;
         var demand = data.Demand
             .Where(item => item.Week == week && familySkuSet.Contains(item.Sku))
             .Sum(item => item.BaselineDemand);
@@ -185,7 +223,7 @@ public sealed class ProductFamilyDashboardService
             .Sum(item => item.Quantity);
         var status = redSkuCount > 0 || supplyGap > 0m || capacityGap > 0m
             ? "Red"
-            : yellowSkuCount > 0 || budgetVariance > 0m || peakLoad > 85m
+            : yellowSkuCount > 0 || budgetVariance is > 0m || peakLoad > 85m
                 ? "Yellow"
                 : "Green";
 
@@ -194,13 +232,13 @@ public sealed class ProductFamilyDashboardService
             week,
             decimal.Round(demand, 0),
             decimal.Round(replenishmentQuantity, 0),
-            decimal.Round(inventoryValue, 0),
+            inventoryValue.HasValue ? decimal.Round(inventoryValue.Value, 0) : null,
             redSkuCount,
             yellowSkuCount,
             decimal.Round(supplyGap, 0),
             decimal.Round(capacityGap, 1),
             decimal.Round(peakLoad, 1),
-            decimal.Round(budgetVariance, 0),
+            budgetVariance.HasValue ? decimal.Round(budgetVariance.Value, 0) : null,
             status);
     }
 
@@ -210,7 +248,8 @@ public sealed class ProductFamilyDashboardService
         IReadOnlyList<SkuBufferSetting> skus,
         DemandDrivenPlanResult plan,
         IReadOnlyList<ProductFamilyWeeklyCell> weeklyCells,
-        InventoryFlowProjectionResult? inventoryFlow)
+        IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> physicalPoints,
+        bool physicalComplete)
     {
         var familySkus = skus.Where(item => item.Family == family.Code).ToList();
         var familySkuSet = familySkus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
@@ -219,22 +258,29 @@ public sealed class ProductFamilyDashboardService
             .Select(item => item.ServiceLevelPercent)
             .DefaultIfEmpty(family.TargetServiceLevel)
             .Average();
-        var physicalPoints = inventoryFlow?.Points
+        var familyPhysicalPoints = physicalPoints.Values
             .Where(item => familySkuSet.Contains(item.Sku))
-            .ToList() ?? new List<InventoryFlowPoint>();
-        var physicalDemand = physicalPoints.Sum(item => item.Demand);
-        var service = IsComplete(inventoryFlow)
+            .ToList();
+        var physicalDemand = familyPhysicalPoints.Sum(item => item.Demand);
+        var service = physicalComplete
             ? physicalDemand == 0m
                 ? 0m
-                : physicalPoints.Sum(item => item.FulfilledNewDemandOnTime) * 100m / physicalDemand
+                : familyPhysicalPoints.Sum(item => item.FulfilledNewDemandOnTime) * 100m / physicalDemand
             : legacyService;
         var redSkuCount = plan.BufferProjections
             .Where(item => familySkuSet.Contains(item.Sku) && item.BufferStatus == "Red")
             .Select(item => item.Sku)
             .Distinct(StringComparer.Ordinal)
             .Count();
-        var averageInventory = weeklyCells.Count == 0 ? 0m : weeklyCells.Average(item => item.InventoryValue);
-        var peakInventory = weeklyCells.Count == 0 ? 0m : weeklyCells.Max(item => item.InventoryValue);
+        decimal? averageInventory = physicalComplete && weeklyCells.Count > 0 && weeklyCells.All(item => item.InventoryValue.HasValue)
+            ? weeklyCells.Average(item => item.InventoryValue!.Value)
+            : null;
+        decimal? peakInventory = physicalComplete && weeklyCells.Count > 0 && weeklyCells.All(item => item.InventoryValue.HasValue)
+            ? weeklyCells.Max(item => item.InventoryValue!.Value)
+            : null;
+        decimal? budgetInventoryVariance = physicalComplete && weeklyCells.All(item => item.BudgetInventoryVariance.HasValue)
+            ? weeklyCells.Sum(item => item.BudgetInventoryVariance!.Value)
+            : null;
         var peakLoad = weeklyCells.Count == 0 ? 0m : weeklyCells.Max(item => item.PeakLoadPercent);
         var flowIndex = CalculateFamilyFlowIndex(family, legacyService, weeklyCells);
         var status = weeklyCells.Any(item => item.Status == "Red")
@@ -254,8 +300,8 @@ public sealed class ProductFamilyDashboardService
             family.TargetFlowIndex,
             decimal.Round(service, 1),
             flowIndex,
-            decimal.Round(averageInventory, 0),
-            decimal.Round(peakInventory, 0),
+            averageInventory.HasValue ? decimal.Round(averageInventory.Value, 0) : null,
+            peakInventory.HasValue ? decimal.Round(peakInventory.Value, 0) : null,
             redSkuCount,
             weeklyCells.Count(item => item.Status == "Red"),
             weeklyCells.Count(item => item.Status == "Yellow"),
@@ -264,7 +310,7 @@ public sealed class ProductFamilyDashboardService
             decimal.Round(weeklyCells.Sum(item => item.SupplyGap), 0),
             decimal.Round(weeklyCells.Sum(item => item.CapacityGap), 1),
             decimal.Round(peakLoad, 1),
-            decimal.Round(weeklyCells.Sum(item => item.BudgetInventoryVariance), 0),
+            budgetInventoryVariance.HasValue ? decimal.Round(budgetInventoryVariance.Value, 0) : null,
             status,
             RecommendSummaryAction(status, weeklyCells, redSkuCount));
     }
@@ -276,7 +322,8 @@ public sealed class ProductFamilyDashboardService
         DemandDrivenPlanResult plan,
         IReadOnlyList<SupplierCapacityComparison> supplierCapacity,
         IReadOnlyList<ProductFamilyWeeklyCell> weeklyCells,
-        InventoryFlowProjectionResult? inventoryFlow)
+        IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> physicalPoints,
+        bool physicalComplete)
     {
         var familySkus = skus.Where(item => item.Family == family.Code).ToList();
         var familySkuSet = familySkus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
@@ -289,7 +336,7 @@ public sealed class ProductFamilyDashboardService
             weeklyCells,
             riskItems,
             recommendations,
-            BuildBufferSummaries(family.Code, plan, familySkus, inventoryFlow),
+            BuildBufferSummaries(family.Code, plan, familySkus, physicalPoints, physicalComplete),
             BuildRccpContributions(data, familySkuSet, plan),
             BuildSupplierRequirements(data, familySkuSet, plan));
     }
@@ -365,20 +412,18 @@ public sealed class ProductFamilyDashboardService
         string family,
         DemandDrivenPlanResult plan,
         IReadOnlyList<SkuBufferSetting> familySkus,
-        InventoryFlowProjectionResult? inventoryFlow)
+        IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> physicalPoints,
+        bool physicalComplete)
     {
         var familySkuSet = familySkus.Select(item => item.Sku).ToHashSet(StringComparer.Ordinal);
-        var physicalValues = inventoryFlow?.Points.ToDictionary(
-            item => (item.Sku, item.Week),
-            item => item.EndingInventoryValue);
         var inventoryValues = plan.BufferProjections
             .Where(item => familySkuSet.Contains(item.Sku))
-            .Join(familySkus, point => point.Sku, sku => sku.Sku, (point, sku) => new
+            .Select(point => new
             {
                 point.BufferStatus,
-                Value = IsComplete(inventoryFlow)
-                    ? physicalValues![(point.Sku, point.Week)]
-                    : point.EndNetFlowAfterReplenishment * sku.UnitCost
+                Value = physicalComplete
+                    ? physicalPoints[(point.Sku, point.Week)].EndingInventoryValue
+                    : (decimal?)null
             })
             .ToList();
 
@@ -386,7 +431,9 @@ public sealed class ProductFamilyDashboardService
         {
             new BufferFamilySummary(
                 family,
-                inventoryValues.Count == 0 ? 0m : decimal.Round(inventoryValues.Average(item => item.Value), 0),
+                physicalComplete && inventoryValues.Count > 0
+                    ? decimal.Round(inventoryValues.Average(item => item.Value!.Value), 0)
+                    : null,
                 inventoryValues.Count(item => item.BufferStatus == "Red"),
                 inventoryValues.Count(item => item.BufferStatus == "Yellow"),
                 inventoryValues.Count(item => item.BufferStatus == "OverTopOfGreen"),
@@ -536,22 +583,25 @@ public sealed class ProductFamilyDashboardService
 
     private static IReadOnlyList<BudgetComparison> CompareBudget(
         ScenarioWorkspaceDataSet data,
+        string caseId,
         IReadOnlyList<SkuBufferSetting> skus,
         IReadOnlyList<BufferProjectionPoint> projections,
         InventoryFlowProjectionResult? inventoryFlow = null)
     {
         var skuMap = skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+        var physicalPoints = InventoryFlowEvidenceValidator.BuildCompletePointMap(
+            caseId,
+            inventoryFlow,
+            projections.Select(item => (item.Sku, item.Week)).ToList());
+        var physicalComplete = physicalPoints.Count == projections.Count && projections.Count > 0;
         return data.BudgetBenchmarks.Select(benchmark =>
         {
-            var projectedInventory = IsComplete(inventoryFlow)
-                ? inventoryFlow!.Points
+            decimal? projectedInventory = physicalComplete
+                ? physicalPoints.Values
                     .Where(item => item.Week == benchmark.Week)
                     .Where(item => skuMap.TryGetValue(item.Sku, out var sku) && sku.Family == benchmark.Family)
                     .Sum(item => item.EndingInventoryValue)
-                : projections
-                    .Where(item => item.Week == benchmark.Week)
-                    .Where(item => skuMap.TryGetValue(item.Sku, out var sku) && sku.Family == benchmark.Family)
-                    .Sum(item => item.EndNetFlowAfterReplenishment * skuMap[item.Sku].UnitCost);
+                : null;
             return new BudgetComparison(
                 benchmark.Family,
                 benchmark.Week,
@@ -559,8 +609,10 @@ public sealed class ProductFamilyDashboardService
                 benchmark.LastYearRevenue,
                 benchmark.BudgetInventoryValue,
                 benchmark.LastYearInventoryValue,
-                decimal.Round(projectedInventory, 0),
-                decimal.Round(projectedInventory - benchmark.BudgetInventoryValue, 0));
+                projectedInventory.HasValue ? decimal.Round(projectedInventory.Value, 0) : null,
+                projectedInventory.HasValue
+                    ? decimal.Round(projectedInventory.Value - benchmark.BudgetInventoryValue, 0)
+                    : null);
         }).ToList();
     }
 
@@ -606,28 +658,47 @@ public sealed class ProductFamilyDashboardService
         return summaries.Count == 0 ? 0m : summaries.Average(selector);
     }
 
-    private static ProductFamilyDashboardComparison InitialComparison(InventoryFlowProjectionResult? inventoryFlow)
+    private static decimal? AverageNullable(
+        IReadOnlyList<ProductFamilySummary> summaries,
+        Func<ProductFamilySummary, decimal?> selector)
     {
-        var complete = IsComplete(inventoryFlow);
+        var values = summaries.Select(selector).ToList();
+        return values.Count > 0 && values.All(item => item.HasValue)
+            ? values.Average(item => item!.Value)
+            : null;
+    }
+
+    private static bool HasCompleteInventoryAmounts(ProductFamilyDashboardResult dashboard) =>
+        dashboard.Summaries.Count > 0 &&
+        dashboard.Summaries.All(item =>
+            item.AverageInventoryValue.HasValue &&
+            item.PeakInventoryValue.HasValue &&
+            item.BudgetInventoryVariance.HasValue) &&
+        dashboard.WeeklyCells.Count > 0 &&
+        dashboard.WeeklyCells.All(item =>
+            item.InventoryValue.HasValue &&
+            item.BudgetInventoryVariance.HasValue) &&
+        dashboard.Details.SelectMany(item => item.BufferSummaries)
+            .All(item => item.AverageInventoryValue.HasValue);
+
+    private static ProductFamilyDashboardComparison InitialComparison(bool physicalComplete)
+    {
         return new ProductFamilyDashboardComparison(
             0m,
             0m,
-            0m,
+            physicalComplete ? 0m : null,
             0m,
             0m,
             0,
-            0m,
-            complete ? 0m : null,
-            complete ? 0m : null,
-            complete ? 0m : null,
-            complete ? "Complete" : "EvidenceMissing",
-            complete
+            physicalComplete ? 0m : null,
+            physicalComplete ? 0m : null,
+            physicalComplete ? 0m : null,
+            physicalComplete ? 0m : null,
+            physicalComplete ? "Complete" : "EvidenceMissing",
+            physicalComplete
                 ? "Reference case uses a complete physical inventory projection; physical deltas are zero."
                 : "Reference case lacks complete inventory-flow evidence; physical deltas are omitted.");
     }
-
-    private static bool IsComplete(InventoryFlowProjectionResult? inventoryFlow) =>
-        inventoryFlow is { Status: "Complete", Summary: not null };
 
     private static int StatusRank(string status)
     {

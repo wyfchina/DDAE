@@ -302,6 +302,7 @@ function makePreview() {
       baselineSnapshotId: "BASE-20260717-001",
     }],
     plan: {
+      bufferProjections: ["SKU-A", "SKU-B"].flatMap(sku => [1, 2, 3, 4].map(week => ({ sku, week }))),
       traces: ["SKU-A", "SKU-B"].flatMap(sku => [1, 2, 3, 4].map(week => ({
         sku,
         week,
@@ -706,6 +707,182 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(!runtime.elements.get("inventory-flow-evidence").innerHTML.includes("LegacyReference"),
     "current EvidenceMissing trace source must come from current flow validation, not legacy metric fallback");
 
+  const missingInventoryUi = structuredClone(preview);
+  const missingMetrics = {
+    serviceLevelPercent: 96,
+    flowIndex: 88,
+    averageInventoryValue: null,
+    peakLoadPercent: 85,
+    averageLoadPercent: 72,
+    redSkuCount: 0,
+    supplyGap: 0,
+    replenishmentValue: 1000,
+    replenishmentOrderCount: 1,
+  };
+  missingInventoryUi.request = { horizonWeeks: 4, templateId: null };
+  missingInventoryUi.baseline.metrics = { ...missingMetrics };
+  missingInventoryUi.scenario.metrics = { ...missingMetrics };
+  missingInventoryUi.comparison = {
+    serviceLevelDelta: 0,
+    flowIndexDelta: 0,
+    averageInventoryValueDelta: null,
+    peakLoadPercentDelta: 0,
+    averageLoadPercentDelta: 0,
+    redSkuCountDelta: 0,
+    supplyGapDelta: 0,
+    replenishmentValueDelta: 0,
+    replenishmentOrderCountDelta: 0,
+  };
+  missingInventoryUi.scenario.inventoryFlow.status = "EvidenceMissing";
+  missingInventoryUi.scenario.budget = [{
+    family: "FAM-A",
+    week: 1,
+    budgetRevenue: 1000,
+    lastYearRevenue: 900,
+    budgetInventoryValue: 500,
+    lastYearInventoryValue: 450,
+    projectedInventoryValue: null,
+    budgetInventoryVariance: null,
+  }];
+  const familyCell = {
+    family: "FAM-A",
+    week: 1,
+    demand: 10,
+    replenishmentQuantity: 5,
+    inventoryValue: null,
+    redSkuCount: 0,
+    yellowSkuCount: 0,
+    supplyGap: 0,
+    capacityGap: 0,
+    peakLoadPercent: 70,
+    budgetInventoryVariance: null,
+    status: "Green",
+  };
+  missingInventoryUi.scenario.productFamilyDashboard = {
+    caseId: "scenario",
+    name: "缺失物理库存证据",
+    horizonWeeks: 1,
+    selectedFamily: "FAM-A",
+    summaries: [{
+      family: "FAM-A",
+      name: "产品族甲",
+      skuCount: 1,
+      targetServiceLevel: 95,
+      targetFlowIndex: 85,
+      serviceLevelPercent: 96,
+      flowIndex: 88,
+      averageInventoryValue: null,
+      peakInventoryValue: null,
+      redSkuCount: 0,
+      redWeekCount: 0,
+      yellowWeekCount: 0,
+      replenishmentOrderCount: 1,
+      replenishmentValue: 1000,
+      supplyGap: 0,
+      capacityGap: 0,
+      peakLoadPercent: 70,
+      budgetInventoryVariance: null,
+      status: "Green",
+      recommendedAction: "保持",
+    }],
+    weeklyCells: [familyCell],
+    details: [{
+      family: "FAM-A",
+      name: "产品族甲",
+      weeklyCells: [familyCell],
+      riskItems: [],
+      recommendations: [],
+      bufferSummaries: [{ family: "FAM-A", averageInventoryValue: null }],
+      rccpContributions: [],
+      supplierRequirements: [],
+    }],
+    comparison: {
+      serviceLevelDelta: 0,
+      flowIndexDelta: 0,
+      averageInventoryValueDelta: null,
+      supplyGapDelta: 0,
+      capacityGapDelta: 0,
+      redWeekDelta: 0,
+      budgetInventoryVarianceDelta: null,
+      physicalDeltaEvidenceStatus: "EvidenceMissing",
+    },
+  };
+  runtime.context.__missingInventoryUi = missingInventoryUi;
+  vm.runInContext(`
+    state.preview = __missingInventoryUi;
+    state.data = null;
+    state.filtered = null;
+    renderPreviewKpis(__missingInventoryUi);
+    renderPreviewComparison(__missingInventoryUi);
+    renderPreviewBudget(__missingInventoryUi);
+    renderProductFamilyDashboard(__missingInventoryUi.scenario.productFamilyDashboard);
+    showScenarioSavePanel(__missingInventoryUi);
+    __missingInventoryAdoption = evaluateAdoption(__missingInventoryUi);
+  `, runtime.context);
+  for (const id of [
+    "workspace-kpis",
+    "scenario-comparison-result",
+    "budget-comparison-body",
+    "product-family-kpis",
+    "product-family-card-grid",
+    "product-family-weekly-grid",
+    "product-family-detail-summary",
+  ]) {
+    assert.ok(runtime.elements.get(id).innerHTML.includes("证据缺失"),
+      `${id} must show missing inventory evidence instead of a zero amount`);
+  }
+  assert.equal(runtime.elements.get("selector:#save-scenario").disabled, true,
+    "missing physical inventory evidence must disable scenario saving");
+  assert.deepEqual(readVm(runtime, "__missingInventoryAdoption.status"), "Red",
+    "missing physical inventory evidence must block adoption instead of passing a zero budget");
+  assert.ok(readVm(runtime, "__missingInventoryAdoption.message").includes("物理库存证据不完整"),
+    "adoption blocker must explain the missing physical inventory evidence");
+
+  const poisonedSaveEvidence = structuredClone(preview);
+  poisonedSaveEvidence.request = { horizonWeeks: 4, templateId: null };
+  poisonedSaveEvidence.baseline.metrics = { ...missingMetrics, averageInventoryValue: 9000 };
+  poisonedSaveEvidence.scenario.metrics = { ...missingMetrics, averageInventoryValue: 9000 };
+  poisonedSaveEvidence.scenario.budget = [{
+    family: "FAM-A",
+    week: 1,
+    budgetInventoryValue: 8000,
+    projectedInventoryValue: 9000,
+    budgetInventoryVariance: 1000,
+  }];
+  poisonedSaveEvidence.scenario.inventoryFlow.points = poisonedSaveEvidence.scenario.inventoryFlow.points.slice(1);
+  runtime.context.__poisonedSaveEvidence = poisonedSaveEvidence;
+  vm.runInContext(`
+    state.preview = __poisonedSaveEvidence;
+    showScenarioSavePanel(__poisonedSaveEvidence);
+    __poisonedAdoption = evaluateAdoption(__poisonedSaveEvidence);
+  `, runtime.context);
+  assert.equal(runtime.elements.get("selector:#save-scenario").disabled, true,
+    "a Complete envelope with one missing SKU-week must still disable scenario saving");
+  assert.deepEqual(readVm(runtime, "__poisonedAdoption.status"), "Red",
+    "partial physical key coverage must block adoption even when stale amounts are non-null");
+
+  poisonedSaveEvidence.scenario.inventoryFlow.points = structuredClone(preview.scenario.inventoryFlow.points);
+  poisonedSaveEvidence.baseline.inventoryFlow.points = poisonedSaveEvidence.baseline.inventoryFlow.points.slice(1);
+  runtime.context.__poisonedSaveEvidence = poisonedSaveEvidence;
+  vm.runInContext(`
+    showScenarioSavePanel(__poisonedSaveEvidence);
+    __poisonedAdoption = evaluateAdoption(__poisonedSaveEvidence);
+  `, runtime.context);
+  assert.equal(runtime.elements.get("selector:#save-scenario").disabled, true,
+    "partial baseline physical evidence must disable scenario saving");
+  assert.deepEqual(readVm(runtime, "__poisonedAdoption.status"), "Red",
+    "partial baseline physical evidence must block adoption as well as saving");
+
+  poisonedSaveEvidence.baseline.inventoryFlow.points = structuredClone(preview.baseline.inventoryFlow.points);
+  poisonedSaveEvidence.scenario.inventoryFlow.points = [
+    ...structuredClone(preview.scenario.inventoryFlow.points),
+    structuredClone(preview.scenario.inventoryFlow.points[0]),
+  ];
+  runtime.context.__poisonedSaveEvidence = poisonedSaveEvidence;
+  vm.runInContext("showScenarioSavePanel(__poisonedSaveEvidence);", runtime.context);
+  assert.equal(runtime.elements.get("selector:#save-scenario").disabled, true,
+    "a Complete envelope with duplicate SKU-week evidence must disable scenario saving");
+
   const missingUpper = structuredClone(preview);
   missingUpper.scenario.bufferTrend.skuDetails.forEach(detail => detail.series.forEach(point => { delete point.physicalPosition; }));
   missingUpper.scenario.bufferTrend.series.forEach(point => { delete point.physicalPosition; });
@@ -715,6 +892,41 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "missing physical position must leave NFP visible while omitting the upper on-hand path");
   assert.ok(runtime.elements.get("buffer-trend-kpis").innerHTML.includes("证据缺失"),
     "physical KPI strips must display missing evidence rather than zero when no physical positions remain");
+
+  const partialUpper = structuredClone(preview);
+  const partialDetail = partialUpper.scenario.bufferTrend.skuDetails.find(item =>
+    item.sku === partialUpper.scenario.bufferTrend.selectedSku)
+    ?? partialUpper.scenario.bufferTrend.skuDetails[0];
+  const partialPoint = partialDetail.series[0];
+  partialPoint.physicalPosition = null;
+  partialPoint.inventoryValue = null;
+  const partialSeriesPoint = partialUpper.scenario.bufferTrend.series.find(item =>
+    item.sku === partialPoint.sku && item.week === partialPoint.week);
+  partialSeriesPoint.physicalPosition = null;
+  partialSeriesPoint.inventoryValue = null;
+  const partialWeeklyCell = partialUpper.scenario.bufferTrend.weeklyCells.find(item =>
+    item.sku === partialPoint.sku && item.week === partialPoint.week);
+  partialWeeklyCell.inventoryValue = null;
+  partialUpper.scenario.bufferTrend.comparison.averageInventoryValueDelta = 12345;
+  partialUpper.scenario.bufferTrend.comparison.peakInventoryValueDelta = 23456;
+  partialUpper.scenario.bufferTrend.comparison.physicalAverageInventoryValueDelta = 12345;
+  partialUpper.scenario.bufferTrend.comparison.physicalPeakInventoryValueDelta = 23456;
+  partialUpper.scenario.bufferTrend.comparison.physicalDeltaEvidenceStatus = "Complete";
+  runPreview(runtime, partialUpper);
+  const partialKpis = runtime.elements.get("buffer-trend-kpis").innerHTML;
+  assert.match(partialKpis, /<span>平均库存金额<\/span><strong>证据缺失<\/strong>/,
+    "one missing physical week must invalidate the aggregate average inventory amount");
+  assert.match(partialKpis, /<span>峰值库存金额<\/span><strong>证据缺失<\/strong>/,
+    "one missing physical week must invalidate the aggregate peak inventory amount");
+  assert.match(partialKpis, /<span>在手红区 SKU<\/span><strong>证据缺失<\/strong>/,
+    "one missing physical week must invalidate aggregate on-hand status KPIs");
+  assert.ok(runtime.elements.get("buffer-family-summary-body").innerHTML.includes("证据缺失"),
+    "one missing physical week must invalidate family inventory-value summaries");
+  const partialComparison = runtime.elements.get("buffer-comparison-strip").innerHTML;
+  assert.match(partialComparison, /<span>平均库存金额变化<\/span><strong>证据缺失<\/strong>/,
+    "partial physical evidence must not expose a poisoned average inventory delta");
+  assert.match(partialComparison, /<span>峰值库存金额变化<\/span><strong>证据缺失<\/strong>/,
+    "partial physical evidence must not expose a poisoned peak inventory delta");
 
   const gap = structuredClone(preview);
   const gapWeek = gap.scenario.inventoryFlow.points.find(item => item.sku === gap.scenario.bufferTrend.selectedSku)?.week + 1;
@@ -866,7 +1078,7 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.ok(hostileMarkup.includes("&lt;image") && !hostileMarkup.includes("&amp;lt;image"),
     "hostile future inventory values should be escaped exactly once");
 
-  console.log("12/12 future inventory flow chart fixture groups passed");
+  console.log("13/13 future inventory flow chart fixture groups passed");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -49,6 +49,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         var runNumber = $"SR-{createdAt:yyyyMMdd}-{NextSequence():0000}";
         var createdBy = string.IsNullOrWhiteSpace(request.CreatedBy) ? "计划员" : request.CreatedBy.Trim();
         var preview = _previewService.Preview(request.PreviewRequest) with { IsPersisted = true };
+        EnsurePhysicalInventoryEvidence(preview);
         var summary = BuildSummary(runId, runNumber, request, createdBy, createdAtText, preview);
         var requestJson = JsonSerializer.Serialize(request.PreviewRequest, JsonOptions);
         var resultJson = JsonSerializer.Serialize(preview, JsonOptions);
@@ -115,6 +116,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         var runNumber = $"SR-{createdAt:yyyyMMdd}-{NextSequence():0000}";
         var createdBy = string.IsNullOrWhiteSpace(request.CreatedBy) ? "计划员" : request.CreatedBy.Trim();
         var preview = selectedCase.Preview with { IsPersisted = true };
+        EnsurePhysicalInventoryEvidence(preview);
         var saveRequest = new ScenarioRunSaveRequest(
             request.Name,
             request.Description,
@@ -437,11 +439,34 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             preview.Request.AdoptionConstraintMode,
             metrics.ServiceLevelPercent,
             metrics.FlowIndex,
-            metrics.AverageInventoryValue,
+            metrics.AverageInventoryValue!.Value,
             metrics.PeakLoadPercent,
             metrics.SupplyGap,
             metrics.RedSkuCount,
             metrics.ReplenishmentOrderCount);
+    }
+
+    private static void EnsurePhysicalInventoryEvidence(ScenarioRunPreviewResult preview)
+    {
+        var baselineExpectedKeys = preview.Baseline.Plan.BufferProjections
+            .Select(item => (item.Sku, item.Week))
+            .ToList();
+        var scenarioExpectedKeys = preview.Scenario.Plan.BufferProjections
+            .Select(item => (item.Sku, item.Week))
+            .ToList();
+        if (!preview.Baseline.Metrics.AverageInventoryValue.HasValue ||
+            !preview.Scenario.Metrics.AverageInventoryValue.HasValue ||
+            !InventoryFlowEvidenceValidator.IsComplete(
+                preview.Baseline.CaseId,
+                preview.Baseline.InventoryFlow,
+                baselineExpectedKeys) ||
+            !InventoryFlowEvidenceValidator.IsComplete(
+                preview.Scenario.CaseId,
+                preview.Scenario.InventoryFlow,
+                scenarioExpectedKeys))
+        {
+            throw new InvalidOperationException("物理库存投影证据不完整，场景仅可预览，不得保存或进入治理决策。");
+        }
     }
 
     private static IReadOnlyList<ScenarioRunAuditEvent> BuildAuditEvents(

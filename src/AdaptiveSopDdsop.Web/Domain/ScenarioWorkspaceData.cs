@@ -213,7 +213,7 @@ public sealed record ScenarioRunPreviewRequest(
 public sealed record ScenarioPreviewMetrics(
     decimal ServiceLevelPercent,
     decimal FlowIndex,
-    decimal AverageInventoryValue,
+    decimal? AverageInventoryValue,
     decimal PeakLoadPercent,
     decimal AverageLoadPercent,
     int RedSkuCount,
@@ -237,8 +237,8 @@ public sealed record BudgetComparison(
     decimal LastYearRevenue,
     decimal BudgetInventoryValue,
     decimal LastYearInventoryValue,
-    decimal ProjectedInventoryValue,
-    decimal BudgetInventoryVariance);
+    decimal? ProjectedInventoryValue,
+    decimal? BudgetInventoryVariance);
 
 public sealed record RccpResourceSummary(
     string ResourceCode,
@@ -443,10 +443,10 @@ public sealed record BufferTrendKpis(
     int RedSkuCount,
     int YellowSkuCount,
     int ShortageCount,
-    decimal AverageInventoryValue,
-    decimal PeakInventoryValue,
+    decimal? AverageInventoryValue,
+    decimal? PeakInventoryValue,
     int ReplenishmentOrderCount,
-    decimal InventoryValueDelta,
+    decimal? InventoryValueDelta,
     int? OnHandRedSkuCount = null,
     int? OnHandYellowSkuCount = null,
     int? OnHandStockoutWeekCount = null);
@@ -471,7 +471,7 @@ public sealed record BufferTrendSeriesPoint(
     decimal TopOfYellow,
     decimal TopOfGreen,
     decimal TargetInventory,
-    decimal InventoryValue,
+    decimal? InventoryValue,
     decimal ReplenishmentQuantity,
     bool IsReplenishment,
     bool IsPrebuild,
@@ -487,8 +487,8 @@ public sealed record BufferZoneBand(
     decimal TopOfGreen);
 
 public sealed record BufferTrendComparison(
-    decimal AverageInventoryValueDelta,
-    decimal PeakInventoryValueDelta,
+    decimal? AverageInventoryValueDelta,
+    decimal? PeakInventoryValueDelta,
     int RedWeekDelta,
     int ReplenishmentOrderCountDelta,
     decimal ReplenishmentQuantityDelta,
@@ -499,7 +499,7 @@ public sealed record BufferTrendComparison(
 
 public sealed record BufferFamilySummary(
     string Family,
-    decimal AverageInventoryValue,
+    decimal? AverageInventoryValue,
     int RedWeekCount,
     int YellowWeekCount,
     int OverGreenWeekCount,
@@ -511,7 +511,7 @@ public sealed record BufferWeeklyCell(
     string Family,
     int Week,
     decimal EndNetFlow,
-    decimal InventoryValue,
+    decimal? InventoryValue,
     string Status);
 
 public sealed record SingleSkuSimulationActivity(
@@ -615,8 +615,8 @@ public sealed record ProductFamilySummary(
     decimal TargetFlowIndex,
     decimal ServiceLevelPercent,
     decimal FlowIndex,
-    decimal AverageInventoryValue,
-    decimal PeakInventoryValue,
+    decimal? AverageInventoryValue,
+    decimal? PeakInventoryValue,
     int RedSkuCount,
     int RedWeekCount,
     int YellowWeekCount,
@@ -625,7 +625,7 @@ public sealed record ProductFamilySummary(
     decimal SupplyGap,
     decimal CapacityGap,
     decimal PeakLoadPercent,
-    decimal BudgetInventoryVariance,
+    decimal? BudgetInventoryVariance,
     string Status,
     string RecommendedAction);
 
@@ -634,13 +634,13 @@ public sealed record ProductFamilyWeeklyCell(
     int Week,
     decimal Demand,
     decimal ReplenishmentQuantity,
-    decimal InventoryValue,
+    decimal? InventoryValue,
     int RedSkuCount,
     int YellowSkuCount,
     decimal SupplyGap,
     decimal CapacityGap,
     decimal PeakLoadPercent,
-    decimal BudgetInventoryVariance,
+    decimal? BudgetInventoryVariance,
     string Status);
 
 public sealed record ProductFamilyRiskItem(
@@ -669,11 +669,11 @@ public sealed record ProductFamilyDetail(
 public sealed record ProductFamilyDashboardComparison(
     decimal ServiceLevelDelta,
     decimal FlowIndexDelta,
-    decimal AverageInventoryValueDelta,
+    decimal? AverageInventoryValueDelta,
     decimal SupplyGapDelta,
     decimal CapacityGapDelta,
     int RedWeekDelta,
-    decimal BudgetInventoryVarianceDelta,
+    decimal? BudgetInventoryVarianceDelta,
     decimal? PhysicalServiceLevelDelta = null,
     decimal? PhysicalAverageInventoryValueDelta = null,
     decimal? PhysicalBudgetInventoryVarianceDelta = null,
@@ -698,7 +698,7 @@ public sealed record ScenarioRunPreviewCase(
 public sealed record ScenarioComparisonMetrics(
     decimal ServiceLevelDelta,
     decimal FlowIndexDelta,
-    decimal AverageInventoryValueDelta,
+    decimal? AverageInventoryValueDelta,
     decimal PeakLoadPercentDelta,
     decimal AverageLoadPercentDelta,
     int RedSkuCountDelta,

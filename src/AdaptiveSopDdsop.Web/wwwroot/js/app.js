@@ -983,7 +983,21 @@ function evaluateAdoption(result) {
   const targetFlow = targetFlowIndex();
   const serviceGap = targetServiceLevel() - Number(metrics.serviceLevelPercent);
   const flowGap = targetFlowIndex() - Number(metrics.flowIndex);
-  const budgetOver = result.scenario.budget.reduce((sum, item) => sum + Math.max(0, Number(item.budgetInventoryVariance)), 0);
+  const inventoryEvidenceComplete = hasCompletePhysicalInventoryEvidence(result.baseline)
+    && hasCompletePhysicalInventoryEvidence(result.scenario)
+    && metrics.averageInventoryValue !== null
+    && metrics.averageInventoryValue !== undefined
+    && Number.isFinite(Number(metrics.averageInventoryValue));
+  const budgetEvidenceComplete = result.scenario.budget.length > 0
+    && result.scenario.budget.every(item => item.projectedInventoryValue !== null
+      && item.projectedInventoryValue !== undefined
+      && item.budgetInventoryVariance !== null
+      && item.budgetInventoryVariance !== undefined
+      && Number.isFinite(Number(item.projectedInventoryValue))
+      && Number.isFinite(Number(item.budgetInventoryVariance)));
+  const budgetOver = budgetEvidenceComplete
+    ? result.scenario.budget.reduce((sum, item) => sum + Math.max(0, Number(item.budgetInventoryVariance)), 0)
+    : null;
   const totalBudget = result.scenario.budget.reduce((sum, item) => sum + Number(item.budgetInventoryValue), 0);
   const budgetOverPercent = totalBudget > 0 ? budgetOver * 100 / totalBudget : 0;
   const peakLoad = Number(metrics.peakLoadPercent);
@@ -994,12 +1008,17 @@ function evaluateAdoption(result) {
   const serviceRule = rule("服务红线", `${percent(metrics.serviceLevelPercent)} / 红区 SKU ${number(redSkuCount)}`, `目标 ${percent(targetService)}，服务缺口 <= 3 点且红区 SKU = 0`, "服务水平或红区 SKU 未满足采纳口径。", "先处理红区 SKU、客户承诺或需求优先级。");
   const flowRule = rule("流速红线", `${percent(metrics.flowIndex)} / 补货释放峰值 ${percent(peakLoad)}`, `目标 ${percent(targetFlow)}，流速缺口 <= 5 点且补货释放峰值 <= 120%`, "流速不足或补货释放峰值超过流速优先硬约束。", "重排补货节奏，检查提前建库、产能调整或需求取舍。");
   const budgetRule = rule("库存预算红线", percent(budgetOverPercent), "<= 5%", "预览库存金额超过预算容忍度。", "需要财务确认预算或降低预建库存。");
+  const inventoryEvidenceRule = rule("库存证据", "证据缺失", "完整物理库存投影", "无法用净流量位置替代在手库存金额。", "补全冻结到货、期初积压和逐周库存守恒证据后重新运行。");
   const capacityRule = rule("产能硬约束", percent(peakLoad), "<= 120%", "补货订单释放周的资源负荷超过硬约束。", "需要增班、外协、调整日历或削峰。");
   const supplyRule = rule("供应硬约束", number(supplyGap), "= 0", "供应承诺能力不能覆盖不受限需求。", "需要供应商协调、替代料、提前下单或需求取舍。");
 
   const fail = (message, violations) => ({ status: "Red", label: "阻断采纳", message, violations });
   const warn = (message, warnings = []) => ({ status: "Yellow", label: "需要协调", message, violations: warnings });
   const pass = (message) => ({ status: "Green", label: "可采纳预览", message, violations: [] });
+
+  if (!inventoryEvidenceComplete || !budgetEvidenceComplete) {
+    return fail("物理库存证据不完整，不能进行库存预算判断、保存或采纳。", [inventoryEvidenceRule]);
+  }
 
   if (mode === "ServiceFirst") {
     if (serviceGap > 3 || redSkuCount > 0) return fail(`服务优先口径：服务缺口 ${number(Math.max(0, serviceGap))} 点，红区 SKU ${number(redSkuCount)}。`, [serviceRule]);
@@ -1301,7 +1320,7 @@ function renderKpis(data) {
     ? data.historicalDemand.reduce((sum, item) => sum + Number(item.serviceLevelPercent), 0) / data.historicalDemand.length
     : 0;
   const redSkuCount = valueOr(trend?.kpis?.redSkuCount, 0);
-  const averageInventoryValue = valueOr(trend?.kpis?.averageInventoryValue, 0);
+  const averageInventoryValue = trend?.kpis?.averageInventoryValue;
   const peakLoad = valueOr(rccp?.maxPeakLoadPercent, 0);
   const averageLoad = valueOr(rccp?.averageLoadPercent, 0);
   const supplyGap = valueOr(supplier?.totalSupplyGap, 0);
@@ -1309,7 +1328,7 @@ function renderKpis(data) {
   byId("workspace-kpis").innerHTML = [
     ["服务水平", percent(service), "历史实际平均"],
     ["目标流速", percent(targetFlowIndex()), "当前产品族目标"],
-    ["平均库存金额", money(averageInventoryValue), "来自缓冲趋势服务"],
+    ["平均库存金额", metricOrEvidenceMissing(averageInventoryValue, money), "来自缓冲趋势服务"],
     ["补货释放峰值", percent(peakLoad), "预计补货订单的释放周压力"],
     ["平均负荷", percent(averageLoad), "来自 RCCP 服务"],
     ["红区 SKU", number(redSkuCount), "来自缓冲趋势服务"],
@@ -1354,12 +1373,16 @@ function renderProductFamilyDashboard(dashboard) {
   const yellowFamilies = summaries.filter(item => item.status === "Yellow").length;
   const totalSupplyGap = summaries.reduce((sum, item) => sum + Number(item.supplyGap), 0);
   const totalCapacityGap = summaries.reduce((sum, item) => sum + Number(item.capacityGap), 0);
-  const averageInventory = summaries.length ? summaries.reduce((sum, item) => sum + Number(item.averageInventoryValue), 0) / summaries.length : 0;
+  const inventoryEvidenceComplete = summaries.length > 0
+    && summaries.every(item => isFiniteChartValue(item.averageInventoryValue));
+  const averageInventory = inventoryEvidenceComplete
+    ? summaries.reduce((sum, item) => sum + Number(item.averageInventoryValue), 0) / summaries.length
+    : null;
   const comparison = valueOr(filteredDashboard.comparison, {});
   byId("product-family-kpis").innerHTML = [
     ["红色产品族", number(redFamilies), "存在红区 SKU、供应缺口或产能超载"],
     ["黄色产品族", number(yellowFamilies), "存在黄区 SKU、预算偏差或负荷预警"],
-    ["平均库存金额", money(averageInventory), `变化 ${money(valueOr(comparison.averageInventoryValueDelta, 0))}`],
+    ["平均库存金额", metricOrEvidenceMissing(averageInventory, money), `变化 ${metricOrEvidenceMissing(comparison.averageInventoryValueDelta, money)}`],
     ["供应缺口", number(totalSupplyGap), `变化 ${number(valueOr(comparison.supplyGapDelta, 0))}`],
     ["产能缺口", number(totalCapacityGap), `变化 ${number(valueOr(comparison.capacityGapDelta, 0))}`],
     ["红色周变化", number(valueOr(comparison.redWeekDelta, 0)), "预览方案 - 基准方案"],
@@ -1384,7 +1407,7 @@ function renderProductFamilyCards(dashboard) {
         <small>${escapeHtml(item.family)} / ${number(item.skuCount)} 个 SKU</small>
         <span class="family-metric"><span>服务</span><b>${percent(item.serviceLevelPercent)}</b><i>目标 ${percent(item.targetServiceLevel)}</i></span>
         <span class="family-metric"><span>流速</span><b>${percent(item.flowIndex)}</b><i>目标 ${percent(item.targetFlowIndex)}</i></span>
-        <span class="family-metric"><span>库存</span><b>${money(item.averageInventoryValue)}</b><i>峰值 ${money(item.peakInventoryValue)}</i></span>
+        <span class="family-metric"><span>库存</span><b>${metricOrEvidenceMissing(item.averageInventoryValue, money)}</b><i>峰值 ${metricOrEvidenceMissing(item.peakInventoryValue, money)}</i></span>
         <span class="family-metric"><span>缺口</span><b>${number(Number(item.supplyGap) + Number(item.capacityGap))}</b><i>${escapeHtml(item.recommendedAction)}</i></span>
       </button>
     `).join("")}`
@@ -1404,7 +1427,7 @@ function renderProductFamilyWeeklyGrid(dashboard) {
               ${weeks.map(week => {
                 const cell = dashboard.weeklyCells.find(item => item.family === summary.family && item.week === week);
                 return cell
-                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-product-family="${escapeHtml(cell.family)}" data-product-family-week="${cell.week}"><strong>${statusLabel(cell.status)}</strong><span>库存 ${money(cell.inventoryValue)}</span><small>供 ${number(cell.supplyGap)} / 产 ${number(cell.capacityGap)}</small></button></td>`
+                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-product-family="${escapeHtml(cell.family)}" data-product-family-week="${cell.week}"><strong>${statusLabel(cell.status)}</strong><span>库存 ${metricOrEvidenceMissing(cell.inventoryValue, money)}</span><small>供 ${number(cell.supplyGap)} / 产 ${number(cell.capacityGap)}</small></button></td>`
                   : `<td class="empty-cell">-</td>`;
               }).join("")}
             </tr>
@@ -1433,8 +1456,8 @@ function renderSelectedProductFamily(dashboard) {
     ["状态", `<span class="${statusClass(summary.status)}">${statusLabel(summary.status)}</span>`],
     ["服务 / 目标", `${percent(summary.serviceLevelPercent)} / ${percent(summary.targetServiceLevel)}`],
     ["流速 / 目标", `${percent(summary.flowIndex)} / ${percent(summary.targetFlowIndex)}`],
-    ["平均库存", money(summary.averageInventoryValue)],
-    ["预算偏差", money(summary.budgetInventoryVariance)],
+    ["平均库存", metricOrEvidenceMissing(summary.averageInventoryValue, money)],
+    ["预算偏差", metricOrEvidenceMissing(summary.budgetInventoryVariance, money)],
     ["供应缺口", number(summary.supplyGap)],
     ["产能缺口", number(summary.capacityGap)],
   ].map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("");
@@ -1773,7 +1796,7 @@ function renderPreviewKpis(result) {
   byId("workspace-kpis").innerHTML = [
     ["服务水平", percent(metrics.serviceLevelPercent), `Δ ${percent(result.comparison.serviceLevelDelta)}`],
     ["流速指数", percent(metrics.flowIndex), `目标 ${percent(targetFlowIndex())} / Δ ${percent(result.comparison.flowIndexDelta)}`],
-    ["平均库存金额", money(metrics.averageInventoryValue), `Δ ${money(result.comparison.averageInventoryValueDelta)}`],
+    ["平均库存金额", metricOrEvidenceMissing(metrics.averageInventoryValue, money), `Δ ${metricOrEvidenceMissing(result.comparison.averageInventoryValueDelta, money)}`],
     ["补货释放峰值", percent(metrics.peakLoadPercent), `Δ ${percent(result.comparison.peakLoadPercentDelta)}`],
     ["平均负荷", percent(metrics.averageLoadPercent), `Δ ${percent(result.comparison.averageLoadPercentDelta)}`],
     ["红区 SKU", number(metrics.redSkuCount), `Δ ${number(result.comparison.redSkuCountDelta)}`],
@@ -1816,7 +1839,7 @@ function renderPreviewComparison(result) {
       <div class="comparison-metrics">
         <div><span>服务水平</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div>
         <div><span>流速指数</span><strong>${percent(metrics.flowIndex)}</strong></div>
-        <div><span>平均库存</span><strong>${money(metrics.averageInventoryValue)}</strong></div>
+        <div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div>
         <div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div>
         <div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div>
         <div><span>补货订单</span><strong>${number(metrics.replenishmentOrderCount)}</strong></div>
@@ -1839,7 +1862,7 @@ function renderMultiScenarioComparison(result) {
       `<strong>${escapeHtml(item.profileName)}</strong><br><small>${escapeHtml(item.profileId)}</small>`,
       `${number(item.serviceLevelDelta)}pp`,
       `${number(item.flowIndexDelta)}pp`,
-      money(item.averageInventoryValueDelta),
+      metricOrEvidenceMissing(item.averageInventoryValueDelta, money),
       `${number(item.peakLoadPercentDelta)}pp`,
       number(item.redSkuCountDelta),
       number(item.supplyGapDelta),
@@ -1855,7 +1878,7 @@ function renderMultiScenarioComparison(result) {
       `<strong>${escapeHtml(item.actionType)}</strong><br><small>${escapeHtml(item.candidateId)}</small>`,
       escapeHtml(item.target),
       `${number(item.serviceImpactPercent)}pp`,
-      money(item.inventoryImpactValue),
+      metricOrEvidenceMissing(item.inventoryImpactValue, money),
       `${number(item.peakLoadImpactPercent)}pp`,
       number(item.supplyGapImpact),
       number(item.replenishmentOrderImpact),
@@ -2035,6 +2058,12 @@ function filterBufferTrendWorkspace(trend) {
     (allowedSkus.size === 0 || allowedSkus.has(item.sku)) && isSelectedWeek(item));
   const weeklyCells = trend.weeklyCells.filter(item =>
     (allowedSkus.size === 0 || allowedSkus.has(item.sku)) && isSelectedWeek(item));
+  const physicalInventoryEvidenceComplete = series.length > 0
+    && series.every(item => item.physicalPosition?.evidenceStatus === "Complete"
+      && isFiniteChartValue(item.inventoryValue));
+  const physicalInventoryValues = physicalInventoryEvidenceComplete
+    ? series.map(item => Number(item.inventoryValue))
+    : [];
   const zoneBands = trend.zoneBands.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
   const skuDetails = trend.skuDetails.filter(item => allowedSkus.size === 0 || allowedSkus.has(item.sku));
   const replenishmentOrderCount = skuDetails.reduce((sum, detail) => sum + detail.replenishmentOrders.filter(isSelectedWeek).length, 0);
@@ -2042,7 +2071,11 @@ function filterBufferTrendWorkspace(trend) {
     const cells = weeklyCells.filter(item => item.family === family);
     return {
       family,
-      averageInventoryValue: cells.length ? cells.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / cells.length : 0,
+      averageInventoryValue: physicalInventoryEvidenceComplete
+        && cells.length > 0
+        && cells.every(item => isFiniteChartValue(item.inventoryValue))
+        ? cells.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / cells.length
+        : null,
       redWeekCount: cells.filter(item => item.status === "Red").length,
       yellowWeekCount: cells.filter(item => item.status === "Yellow").length,
       overGreenWeekCount: cells.filter(item => item.status === "OverTopOfGreen").length,
@@ -2068,23 +2101,29 @@ function filterBufferTrendWorkspace(trend) {
     familySummaries,
     skuDetails,
     selectedSku,
+    physicalInventoryEvidenceStatus: physicalInventoryEvidenceComplete ? "Complete" : "EvidenceMissing",
     kpis: {
       redSkuCount: new Set(series.filter(item => item.status === "Red").map(item => item.sku)).size,
       yellowSkuCount: new Set(series.filter(item => item.status === "Yellow").map(item => item.sku)).size,
       shortageCount: series.filter(item => Number(item.endNetFlowBeforeReplenishment) <= 0).length,
-      onHandRedSkuCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+      onHandRedSkuCount: physicalInventoryEvidenceComplete
         ? new Set(series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && item.physicalPosition.onHandStatus === "Red").map(item => item.sku)).size
         : null,
-      onHandYellowSkuCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+      onHandYellowSkuCount: physicalInventoryEvidenceComplete
         ? new Set(series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && item.physicalPosition.onHandStatus === "Yellow").map(item => item.sku)).size
         : null,
-      onHandStockoutWeekCount: series.some(item => item.physicalPosition?.evidenceStatus === "Complete")
+      onHandStockoutWeekCount: physicalInventoryEvidenceComplete
         ? series.filter(item => item.physicalPosition?.evidenceStatus === "Complete" && Number(item.physicalPosition.endingBacklog) > 0).length
         : null,
-      averageInventoryValue: series.length ? series.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / series.length : 0,
-      peakInventoryValue: series.length ? Math.max(...series.map(item => Number(item.inventoryValue))) : 0,
+      averageInventoryValue: physicalInventoryEvidenceComplete
+        ? physicalInventoryValues.reduce((sum, item) => sum + item, 0) / physicalInventoryValues.length
+        : null,
+      peakInventoryValue: physicalInventoryEvidenceComplete ? Math.max(...physicalInventoryValues) : null,
       replenishmentOrderCount,
-      inventoryValueDelta: valueOr(trend.comparison?.averageInventoryValueDelta, 0),
+      inventoryValueDelta: physicalInventoryEvidenceComplete
+        && trend.comparison?.physicalDeltaEvidenceStatus === "Complete"
+        ? valueOr(trend.comparison?.physicalAverageInventoryValueDelta, trend.comparison?.averageInventoryValueDelta)
+        : null,
     }
   };
 }
@@ -2119,8 +2158,8 @@ function renderBufferTrendWorkspace(trend) {
     ["在手红区 SKU", filteredTrend.kpis.onHandRedSkuCount === null ? "证据缺失" : number(filteredTrend.kpis.onHandRedSkuCount), "期末在手库存位置"],
     ["净流量≤0周", number(filteredTrend.kpis.shortageCount), "补货前净流量小于等于 0"],
     ["在手短缺周", filteredTrend.kpis.onHandStockoutWeekCount === null ? "证据缺失" : number(filteredTrend.kpis.onHandStockoutWeekCount), "期末积压大于 0"],
-    ["平均库存金额", money(filteredTrend.kpis.averageInventoryValue), `变化 ${money(filteredTrend.kpis.inventoryValueDelta)}`],
-    ["峰值库存金额", money(filteredTrend.kpis.peakInventoryValue), "计划范围内最高"],
+    ["平均库存金额", metricOrEvidenceMissing(filteredTrend.kpis.averageInventoryValue, money), `变化 ${metricOrEvidenceMissing(filteredTrend.kpis.inventoryValueDelta, money)}`],
+    ["峰值库存金额", metricOrEvidenceMissing(filteredTrend.kpis.peakInventoryValue, money), "计划范围内最高"],
     ["补货订单", number(filteredTrend.kpis.replenishmentOrderCount), "按订货周期复核生成"],
   ].map(([label, value, note]) => `<div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join("");
 
@@ -2269,6 +2308,26 @@ function isFiniteChartValue(value) {
   return value !== null && value !== undefined &&
     !(typeof value === "string" && value.trim() === "") &&
     Number.isFinite(Number(value));
+}
+
+function hasCompletePhysicalInventoryEvidence(previewCase) {
+  const caseId = typeof previewCase?.caseId === "string" ? previewCase.caseId : "";
+  const flow = previewCase?.inventoryFlow;
+  const expectedPoints = previewCase?.plan?.bufferProjections;
+  if (!caseId || flow?.status !== "Complete" || flow?.caseId !== caseId || !flow?.summary
+    || !Array.isArray(flow.points) || !Array.isArray(expectedPoints) || expectedPoints.length === 0) {
+    return false;
+  }
+
+  const keyOf = item => `${String(valueOr(item?.sku, ""))}\u0000${String(valueOr(item?.week, ""))}`;
+  const expectedKeys = expectedPoints.map(keyOf);
+  const actualKeys = flow.points.map(keyOf);
+  const expectedSet = new Set(expectedKeys);
+  const actualSet = new Set(actualKeys);
+  return expectedSet.size === expectedKeys.length
+    && actualSet.size === actualKeys.length
+    && expectedSet.size === actualSet.size
+    && expectedKeys.every(key => actualSet.has(key));
 }
 
 function hasValidBufferZoneEvidence(item) {
@@ -2670,9 +2729,17 @@ function renderBufferVolatilityChart(detail) {
 
 function renderBufferComparison(trend) {
   const comparison = valueOr(trend.comparison, {});
+  const physicalEvidenceComplete = trend.physicalInventoryEvidenceStatus === "Complete"
+    && comparison.physicalDeltaEvidenceStatus === "Complete";
+  const averageInventoryValueDelta = physicalEvidenceComplete
+    ? valueOr(comparison.physicalAverageInventoryValueDelta, comparison.averageInventoryValueDelta)
+    : null;
+  const peakInventoryValueDelta = physicalEvidenceComplete
+    ? valueOr(comparison.physicalPeakInventoryValueDelta, comparison.peakInventoryValueDelta)
+    : null;
   const deltas = [
-    Number(valueOr(comparison.averageInventoryValueDelta, 0)),
-    Number(valueOr(comparison.peakInventoryValueDelta, 0)),
+    Number(valueOr(averageInventoryValueDelta, 0)),
+    Number(valueOr(peakInventoryValueDelta, 0)),
     Number(valueOr(comparison.redWeekDelta, 0)),
     Number(valueOr(comparison.replenishmentOrderCountDelta, 0)),
     Number(valueOr(comparison.replenishmentQuantityDelta, 0)),
@@ -2680,12 +2747,14 @@ function renderBufferComparison(trend) {
   const hasPreview = state.baselineBufferTrend?.caseId && trend.caseId !== state.baselineBufferTrend.caseId;
   const note = !hasPreview
     ? "尚未运行预览，变化按 0 显示"
-    : deltas.every(value => value === 0)
-      ? "预览与基准一致"
-      : "预览方案 - 基准方案";
+    : !physicalEvidenceComplete
+      ? "物理库存证据缺失；其他变化仍可用"
+      : deltas.every(value => value === 0)
+        ? "预览与基准一致"
+        : "预览方案 - 基准方案";
   byId("buffer-comparison-strip").innerHTML = [
-    ["平均库存金额变化", money(valueOr(comparison.averageInventoryValueDelta, 0))],
-    ["峰值库存金额变化", money(valueOr(comparison.peakInventoryValueDelta, 0))],
+    ["平均库存金额变化", metricOrEvidenceMissing(averageInventoryValueDelta, money)],
+    ["峰值库存金额变化", metricOrEvidenceMissing(peakInventoryValueDelta, money)],
     ["红区周变化", number(valueOr(comparison.redWeekDelta, 0))],
     ["补货订单变化", number(valueOr(comparison.replenishmentOrderCountDelta, 0))],
     ["补货数量变化", number(valueOr(comparison.replenishmentQuantityDelta, 0))],
@@ -2706,7 +2775,7 @@ function renderBufferHeatmap(trend) {
               ${weeks.map(week => {
                 const cell = trend.weeklyCells.find(item => item.sku === detail.sku && item.week === week);
                 return cell
-                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-buffer-sku="${escapeHtml(cell.sku)}"><strong>${escapeHtml(statusLabel(cell.status))}</strong><span>${money(cell.inventoryValue)}</span></button></td>`
+                  ? `<td><button class="${bufferCellClass(cell.status)}" type="button" data-buffer-sku="${escapeHtml(cell.sku)}"><strong>${escapeHtml(statusLabel(cell.status))}</strong><span>${metricOrEvidenceMissing(cell.inventoryValue, money)}</span></button></td>`
                   : `<td class="empty-cell">-</td>`;
               }).join("")}
             </tr>
@@ -2720,7 +2789,7 @@ function renderBufferFamilySummary(trend) {
   byId("buffer-family-summary-body").innerHTML = trend.familySummaries.length
     ? trend.familySummaries.map(item => row([
       escapeHtml(item.family),
-      money(item.averageInventoryValue),
+      metricOrEvidenceMissing(item.averageInventoryValue, money),
       number(item.redWeekCount),
       number(item.yellowWeekCount),
       number(item.overGreenWeekCount),
@@ -2827,7 +2896,7 @@ function renderBufferSkuDetail(detail, previewCase = null) {
       number(item.demand),
       `${number(item.endNetFlowBeforeReplenishment)} / ${number(item.endNetFlowAfterReplenishment)}`,
       `${number(item.topOfRed)} / ${number(item.topOfYellow)} / ${number(item.topOfGreen)}`,
-      money(item.inventoryValue),
+      metricOrEvidenceMissing(item.inventoryValue, money),
       item.isReplenishment ? (item.isPrebuild ? "提前建库订单" : "订货周期补货订单") : "-",
       `<span class="${statusClass(item.status)}">${escapeHtml(statusLabel(item.status))}</span>`,
     ])).join("")
@@ -2965,14 +3034,19 @@ function renderPreviewSupply(result) {
 function renderPreviewBudget(result) {
   byId("budget-comparison-body").innerHTML = result.scenario.budget.length
     ? result.scenario.budget.slice(0, 60).map(item => {
-      const status = item.budgetInventoryVariance > 0 ? "Yellow" : "Green";
+      const evidenceComplete = isFiniteChartValue(item.projectedInventoryValue)
+        && isFiniteChartValue(item.budgetInventoryVariance);
+      const status = evidenceComplete && item.budgetInventoryVariance > 0 ? "Yellow" : "Green";
+      const variance = evidenceComplete
+        ? `<span class="${statusClass(status)}">${money(item.budgetInventoryVariance)}</span>`
+        : `<span class="status-chip is-paused">证据缺失</span>`;
       return row([
         item.family,
         `第 ${item.week} 周`,
         money(item.budgetInventoryValue),
         money(item.lastYearInventoryValue),
-        money(item.projectedInventoryValue),
-        `<span class="${statusClass(status)}">${money(item.budgetInventoryVariance)}</span>`,
+        metricOrEvidenceMissing(item.projectedInventoryValue, money),
+        variance,
       ]);
     }).join("")
     : emptyRow("没有预算对照数据", 6);
@@ -3021,16 +3095,27 @@ function renderPreviewResult(result) {
 
 function showScenarioSavePanel(result) {
   saveControls.panel.hidden = false;
+  const physicalInventoryComplete = hasCompletePhysicalInventoryEvidence(result.baseline)
+    && hasCompletePhysicalInventoryEvidence(result.scenario)
+    && isFiniteChartValue(result.baseline?.metrics?.averageInventoryValue)
+    && isFiniteChartValue(result.scenario?.metrics?.averageInventoryValue);
   const template = state.data?.scenarioTemplates?.find(item => item.templateId === result.request.templateId);
   const templateName = valueOr(template?.name, "场景预览");
   const now = new Date().toLocaleString("zh-CN", { hour12: false });
   if (!saveControls.name.value) {
     saveControls.name.value = `${templateName} ${now}`;
   }
-  saveControls.status.className = "status-chip is-paused";
-  saveControls.status.textContent = "预览结果，未保存";
-  byId("preview-persistence-chip").className = "status-chip is-paused";
-  byId("preview-persistence-chip").textContent = "预览结果，未保存";
+  saveControls.button.disabled = !physicalInventoryComplete;
+  saveControls.status.className = physicalInventoryComplete ? "status-chip is-paused" : "status-chip is-invalid";
+  saveControls.status.textContent = physicalInventoryComplete
+    ? "预览结果，未保存"
+    : "物理库存证据缺失，禁止保存";
+  byId("preview-persistence-chip").className = physicalInventoryComplete
+    ? "status-chip is-paused"
+    : "status-chip is-invalid";
+  byId("preview-persistence-chip").textContent = physicalInventoryComplete
+    ? "预览结果，未保存"
+    : "物理库存证据缺失，禁止保存";
 }
 
 function renderSavedScenarioRuns(runs) {
@@ -3145,6 +3230,14 @@ async function saveScenarioRun() {
   if (!state.preview) {
     saveControls.status.className = "status-chip is-warning";
     saveControls.status.textContent = "请先运行预览";
+    return;
+  }
+  if (!hasCompletePhysicalInventoryEvidence(state.preview.baseline)
+    || !hasCompletePhysicalInventoryEvidence(state.preview.scenario)
+    || !isFiniteChartValue(state.preview.baseline?.metrics?.averageInventoryValue)
+    || !isFiniteChartValue(state.preview.scenario?.metrics?.averageInventoryValue)) {
+    saveControls.status.className = "status-chip is-invalid";
+    saveControls.status.textContent = "物理库存证据缺失，禁止保存";
     return;
   }
 
@@ -4580,7 +4673,6 @@ function renderHistoryInventoryBuffer(history) {
     renderHistoryInventoryEvidenceDetail(history, null, null);
     return;
   }
-
   const weekScale = historyWeekXScale(item.points);
   renderHistoryInventoryPositionChart(history, item, weekScale);
   renderHistoryInventoryVolatilityChart(history, item, weekScale, historyDemandAxisMaximum(history, item.controlPoint));
@@ -6050,11 +6142,27 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
         .sort((left, right) => left.week - right.week);
       const projectionWeekKeys = points.map(point => point.week);
       const projectionWeeksUnique = new Set(projectionWeekKeys).size === projectionWeekKeys.length;
+      const expectedHorizonWeeks = Number(item.preview?.request?.horizonWeeks);
+      const horizonIsValid = Number.isInteger(expectedHorizonWeeks) && expectedHorizonWeeks > 0;
+      const projectionWeekSet = new Set(projectionWeekKeys);
+      const missingWeekCandidate = horizonIsValid
+        ? Array.from({ length: expectedHorizonWeeks }, (_, index) => index + 1)
+          .find(week => !projectionWeekSet.has(week))
+        : undefined;
+      const firstMissingWeek = missingWeekCandidate === undefined ? null : missingWeekCandidate;
+      const outOfRangeWeekCandidate = horizonIsValid
+        ? projectionWeekKeys.find(week => !Number.isInteger(week) || week < 1 || week > expectedHorizonWeeks)
+        : undefined;
+      const firstOutOfRangeWeek = outOfRangeWeekCandidate === undefined ? null : outOfRangeWeekCandidate;
+      const projectionCoversHorizon = horizonIsValid
+        && projectionWeekKeys.length === expectedHorizonWeeks
+        && firstMissingWeek === null
+        && firstOutOfRangeWeek === null;
       const completeEnvelope = breach.evidenceStatus === "Complete"
         && definitionMatches.length === 1
         && definitionMatches[0].evidenceStatus === "Complete"
-        && points.length > 0
         && projectionWeeksUnique
+        && projectionCoversHorizon
         && points.every(point => point.evidenceStatus === "Complete");
       const baseResult = {
         key: `${item.responseId}|${breach.target}`,
@@ -6071,8 +6179,12 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
               : definitionMatches[0].evidenceStatus !== "Complete" ? "冻结时间缓冲定义证据缺失"
                 : points.length === 0 ? "后端未返回周度侵入证据"
                   : !projectionWeeksUnique ? "周度证据包含重复周"
-                    : points.some(point => point.evidenceStatus !== "Complete") ? "周度侵入证据不完整"
-                      : "后端证据完整",
+                    : !horizonIsValid ? "后端未提供有效展望期"
+                      : firstOutOfRangeWeek !== null ? `周度证据包含展望期外的第 ${firstOutOfRangeWeek} 周`
+                        : firstMissingWeek !== null ? `周度证据缺少第 ${firstMissingWeek} 周`
+                          : !projectionCoversHorizon ? "周度证据未完整覆盖展望期"
+                            : points.some(point => point.evidenceStatus !== "Complete") ? "周度侵入证据不完整"
+                              : "后端证据完整",
       };
       if (breach.evidenceStatus === "NotApplicable") {
         return { ...baseResult, effectiveEvidenceStatus: "NotApplicable" };
@@ -6220,7 +6332,7 @@ function renderFutureComparison(result) {
     const allBreachEvidenceNotApplicable = item.breaches.length > 0 && item.breaches.every(breach => breach.evidenceStatus === "NotApplicable");
     const breached = item.breaches.filter(breach => breach.evidenceStatus === "Complete" && breach.isBreached).length;
     const breachCountLabel = !breachEvidenceComplete ? "证据缺失" : allBreachEvidenceNotApplicable ? "不适用" : number(breached);
-    return `<div class="comparison-column ${item.responseId === "NO_RESPONSE" ? "no-response-case" : "is-recommended"}"><h3>${escapeHtml(item.name)}</h3><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${money(metrics.averageInventoryValue)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
+    return `<div class="comparison-column ${item.responseId === "NO_RESPONSE" ? "no-response-case" : "is-recommended"}"><h3>${escapeHtml(item.name)}</h3><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
   }).join("");
   const breachRows = cases.flatMap(item => item.breaches.map(breach => ({ caseName: item.name, ...breach })));
   byId("future-breach-body").innerHTML = breachRows.length

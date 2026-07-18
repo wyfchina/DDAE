@@ -51,7 +51,12 @@ public sealed class BufferTrendWorkspaceService
                     Quantity = group.Sum(item => item.Quantity),
                     IsPrebuild = group.Any(item => item.Trigger == "PrebuildCampaign")
                 });
-        var physicalPoints = BuildCompletePhysicalPointMap(caseId, inventoryFlow);
+        var expectedPhysicalKeys = plan.BufferProjections
+            .Where(point => skuMap.ContainsKey(point.Sku))
+            .Select(point => (point.Sku, point.Week))
+            .ToList();
+        var physicalPoints = BuildCompletePhysicalPointMap(caseId, inventoryFlow, expectedPhysicalKeys);
+        var physicalEvidenceComplete = expectedPhysicalKeys.Count > 0 && physicalPoints.Count == expectedPhysicalKeys.Count;
 
         var series = plan.BufferProjections
             .Where(point => skuMap.ContainsKey(point.Sku))
@@ -86,11 +91,9 @@ public sealed class BufferTrendWorkspaceService
                     timePhasedZones.TopOfYellow,
                     timePhasedZones.TopOfGreen,
                     0m,
-                    decimal.Round(
-                        physicalPoint is not null
-                            ? physicalPoint.EndingInventoryValue
-                            : point.EndNetFlowAfterReplenishment * sku.UnitCost,
-                        0),
+                    physicalPoint is not null
+                        ? decimal.Round(physicalPoint.EndingInventoryValue, 0)
+                        : null,
                     decimal.Round(order?.Quantity ?? 0m, 0),
                     (order?.Quantity ?? 0m) > 0,
                     order?.IsPrebuild ?? false,
@@ -122,7 +125,9 @@ public sealed class BufferTrendWorkspaceService
             .GroupBy(item => item.Family)
             .Select(group => new BufferFamilySummary(
                 group.Key,
-                decimal.Round(group.Average(item => item.InventoryValue), 0),
+                group.All(item => item.InventoryValue.HasValue)
+                    ? decimal.Round(group.Average(item => item.InventoryValue!.Value), 0)
+                    : null,
                 group.Count(item => item.Status == "Red"),
                 group.Count(item => item.Status == "Yellow"),
                 group.Count(item => item.Status == "OverTopOfGreen"),
@@ -173,10 +178,10 @@ public sealed class BufferTrendWorkspaceService
             caseId,
             name,
             data.Request.HorizonWeeks,
-            CalculateKpis(series, plan.ReplenishmentOrders, 0m),
+            CalculateKpis(series, plan.ReplenishmentOrders, physicalEvidenceComplete ? 0m : null),
             series,
             zoneBands,
-            InitialComparison(inventoryFlow),
+            InitialComparison(physicalEvidenceComplete),
             familySummaries,
             weeklyCells,
             details,
@@ -189,9 +194,22 @@ public sealed class BufferTrendWorkspaceService
         InventoryFlowProjectionResult? baselineInventoryFlow = null,
         InventoryFlowProjectionResult? scenarioInventoryFlow = null)
     {
-        var physicalComplete = IsComplete(baselineInventoryFlow) && IsComplete(scenarioInventoryFlow);
-        var averageInventoryDelta = decimal.Round(scenario.Kpis.AverageInventoryValue - baseline.Kpis.AverageInventoryValue, 0);
-        var peakInventoryDelta = decimal.Round(scenario.Kpis.PeakInventoryValue - baseline.Kpis.PeakInventoryValue, 0);
+        var physicalComplete = HasCompletePhysicalSeries(baseline.Series)
+            && HasCompletePhysicalSeries(scenario.Series)
+            && baselineInventoryFlow is { Status: "Complete", Summary: not null, Points: not null }
+            && scenarioInventoryFlow is { Status: "Complete", Summary: not null, Points: not null }
+            && string.Equals(baselineInventoryFlow.CaseId, baseline.CaseId, StringComparison.Ordinal)
+            && string.Equals(scenarioInventoryFlow.CaseId, scenario.CaseId, StringComparison.Ordinal);
+        decimal? averageInventoryDelta = physicalComplete
+            ? decimal.Round(
+                scenario.Kpis.AverageInventoryValue!.Value - baseline.Kpis.AverageInventoryValue!.Value,
+                0)
+            : null;
+        decimal? peakInventoryDelta = physicalComplete
+            ? decimal.Round(
+                scenario.Kpis.PeakInventoryValue!.Value - baseline.Kpis.PeakInventoryValue!.Value,
+                0)
+            : null;
         return new BufferTrendComparison(
             averageInventoryDelta,
             peakInventoryDelta,
@@ -200,8 +218,8 @@ public sealed class BufferTrendWorkspaceService
             decimal.Round(
                 scenario.Series.Sum(item => item.ReplenishmentQuantity) - baseline.Series.Sum(item => item.ReplenishmentQuantity),
                 0),
-            physicalComplete ? averageInventoryDelta : null,
-            physicalComplete ? peakInventoryDelta : null,
+            averageInventoryDelta,
+            peakInventoryDelta,
             physicalComplete ? "Complete" : "EvidenceMissing",
             physicalComplete
                 ? "Both buffer-trend cases use complete physical inventory projections."
@@ -218,7 +236,6 @@ public sealed class BufferTrendWorkspaceService
             Kpis = trend.Kpis with
             {
                 InventoryValueDelta = comparison.PhysicalAverageInventoryValueDelta
-                    ?? comparison.AverageInventoryValueDelta
             }
         };
     }
@@ -226,16 +243,20 @@ public sealed class BufferTrendWorkspaceService
     private static BufferTrendKpis CalculateKpis(
         IReadOnlyList<BufferTrendSeriesPoint> series,
         IReadOnlyList<ProjectedReplenishmentOrder> orders,
-        decimal inventoryValueDelta)
+        decimal? inventoryValueDelta)
     {
+        var physicalComplete = HasCompletePhysicalSeries(series);
+        var physicalValues = physicalComplete
+            ? series.Select(item => item.InventoryValue!.Value).ToList()
+            : new List<decimal>();
         return new BufferTrendKpis(
             series.Where(item => item.Status == "Red").Select(item => item.Sku).Distinct().Count(),
             series.Where(item => item.Status == "Yellow").Select(item => item.Sku).Distinct().Count(),
             series.Count(item => item.EndNetFlowBeforeReplenishment <= 0),
-            series.Count == 0 ? 0m : decimal.Round(series.Average(item => item.InventoryValue), 0),
-            series.Count == 0 ? 0m : decimal.Round(series.Max(item => item.InventoryValue), 0),
+            physicalComplete ? decimal.Round(physicalValues.Average(), 0) : null,
+            physicalComplete ? decimal.Round(physicalValues.Max(), 0) : null,
             orders.Count,
-            decimal.Round(inventoryValueDelta, 0),
+            inventoryValueDelta.HasValue ? decimal.Round(inventoryValueDelta.Value, 0) : null,
             OnHandRedSkuCount(series),
             OnHandYellowSkuCount(series),
             OnHandStockoutWeekCount(series));
@@ -246,23 +267,14 @@ public sealed class BufferTrendWorkspaceService
 
     private static IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> BuildCompletePhysicalPointMap(
         string caseId,
-        InventoryFlowProjectionResult? inventoryFlow)
-    {
-        if (!IsComplete(inventoryFlow) || !string.Equals(inventoryFlow!.CaseId, caseId, StringComparison.Ordinal))
-        {
-            return new Dictionary<(string Sku, int Week), InventoryFlowPoint>();
-        }
-
-        return inventoryFlow!.Points
-            .GroupBy(item => (item.Sku, item.Week))
-            .Where(group => group.Count() == 1)
-            .ToDictionary(group => group.Key, group => group.Single());
-    }
+        InventoryFlowProjectionResult? inventoryFlow,
+        IReadOnlyList<(string Sku, int Week)> expectedKeys) =>
+        InventoryFlowEvidenceValidator.BuildCompletePointMap(caseId, inventoryFlow, expectedKeys);
 
     private static int? OnHandRedSkuCount(IReadOnlyList<BufferTrendSeriesPoint> series)
     {
-        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
-        return physical.Count == 0 ? null : physical
+        if (!HasCompletePhysicalSeries(series)) return null;
+        return series
             .Where(item => item.PhysicalPosition!.OnHandStatus == "Red")
             .Select(item => item.Sku)
             .Distinct()
@@ -271,8 +283,8 @@ public sealed class BufferTrendWorkspaceService
 
     private static int? OnHandYellowSkuCount(IReadOnlyList<BufferTrendSeriesPoint> series)
     {
-        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
-        return physical.Count == 0 ? null : physical
+        if (!HasCompletePhysicalSeries(series)) return null;
+        return series
             .Where(item => item.PhysicalPosition!.OnHandStatus == "Yellow")
             .Select(item => item.Sku)
             .Distinct()
@@ -281,9 +293,13 @@ public sealed class BufferTrendWorkspaceService
 
     private static int? OnHandStockoutWeekCount(IReadOnlyList<BufferTrendSeriesPoint> series)
     {
-        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
-        return physical.Count == 0 ? null : physical.Count(item => item.PhysicalPosition!.EndingBacklog > 0m);
+        if (!HasCompletePhysicalSeries(series)) return null;
+        return series.Count(item => item.PhysicalPosition!.EndingBacklog > 0m);
     }
+
+    private static bool HasCompletePhysicalSeries(IReadOnlyList<BufferTrendSeriesPoint> series) =>
+        series.Count > 0 && series.All(item =>
+            item.PhysicalPosition is { EvidenceStatus: "Complete" } && item.InventoryValue.HasValue);
 
     private static string SelectRiskSku(
         IReadOnlyList<BufferTrendSeriesPoint> series,
@@ -296,10 +312,13 @@ public sealed class BufferTrendWorkspaceService
                 Sku = group.Key,
                 RedWeeks = group.Count(item => item.Status == "Red"),
                 YellowWeeks = group.Count(item => item.Status == "Yellow"),
-                AverageInventoryValue = group.Average(item => item.InventoryValue)
+                AverageInventoryValue = group.All(item => item.InventoryValue.HasValue)
+                    ? group.Average(item => item.InventoryValue!.Value)
+                    : (decimal?)null
             })
             .OrderByDescending(item => item.RedWeeks)
             .ThenByDescending(item => item.YellowWeeks)
+            .ThenByDescending(item => item.AverageInventoryValue.HasValue)
             .ThenByDescending(item => item.AverageInventoryValue)
             .ThenBy(item => skuMap.TryGetValue(item.Sku, out var sku) ? sku.Name : item.Sku)
             .Select(item => item.Sku)
@@ -561,25 +580,21 @@ public sealed class BufferTrendWorkspaceService
         };
     }
 
-    private static BufferTrendComparison InitialComparison(InventoryFlowProjectionResult? inventoryFlow)
+    private static BufferTrendComparison InitialComparison(bool physicalEvidenceComplete)
     {
-        var complete = IsComplete(inventoryFlow);
         return new BufferTrendComparison(
-            0m,
-            0m,
+            physicalEvidenceComplete ? 0m : null,
+            physicalEvidenceComplete ? 0m : null,
             0,
             0,
             0m,
-            complete ? 0m : null,
-            complete ? 0m : null,
-            complete ? "Complete" : "EvidenceMissing",
-            complete
+            physicalEvidenceComplete ? 0m : null,
+            physicalEvidenceComplete ? 0m : null,
+            physicalEvidenceComplete ? "Complete" : "EvidenceMissing",
+            physicalEvidenceComplete
                 ? "Reference case uses a complete physical inventory projection; physical deltas are zero."
                 : "Reference case lacks complete inventory-flow evidence; physical deltas are omitted.");
     }
-
-    private static bool IsComplete(InventoryFlowProjectionResult? inventoryFlow) =>
-        inventoryFlow is { Status: "Complete", Summary: not null };
 
     private static string GovernanceStatusLabel(string status)
     {

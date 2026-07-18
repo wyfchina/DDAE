@@ -219,6 +219,7 @@ var tests = new (string Name, Action Run)[]
     ("Buffer signal separates planning and physical positions", TestBufferSignalSeparatesPlanningAndPhysicalPositions),
     ("Buffer signal omits physical position when evidence is missing", TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing),
     ("Buffer signal rejects cross-case physical evidence", TestBufferSignalRejectsCrossCasePhysicalEvidence),
+    ("Incomplete physical flow never publishes inventory amounts", TestIncompletePhysicalFlowNeverPublishesInventoryAmounts),
     ("Buffer signal can recover NFP before physical receipt", TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt),
     ("Legacy preview keeps legacy reference labels", TestLegacyPreviewKeepsLegacyReference),
     ("Comparison omits physical delta when evidence missing", TestComparisonOmitsIncompletePhysicalDelta),
@@ -8126,7 +8127,7 @@ static void TestProductFamilyDashboardSummarizesManagementView()
     AssertTrue(result.Summaries.Count > 0, "dashboard should summarize product families");
     AssertTrue(result.WeeklyCells.Count == result.Summaries.Count * 12, "family weekly grid should cover every family and week");
     AssertTrue(result.Summaries.All(item => item.SkuCount > 0), "family summaries should expose SKU count");
-    AssertTrue(result.Summaries.Any(item => item.AverageInventoryValue > 0), "family summaries should expose inventory value");
+    AssertTrue(result.Summaries.Any(item => item.AverageInventoryValue is > 0m), "family summaries should expose inventory value");
     AssertTrue(result.Summaries.Any(item => item.ReplenishmentOrderCount > 0), "family summaries should expose replenishment orders");
     AssertTrue(result.Summaries.All(item => item.TargetServiceLevel > 0 && item.TargetFlowIndex > 0), "family summaries should expose service and flow targets");
     AssertTrue(result.Details.Any(item => item.RiskItems.Count > 0), "family details should expose risk items");
@@ -8151,7 +8152,9 @@ static void TestScenarioPreviewReturnsProductFamilyDashboardComparison()
     AssertEqual("scenario", result.Scenario.ProductFamilyDashboard.CaseId, "scenario family dashboard case id");
     AssertTrue(result.Baseline.ProductFamilyDashboard.Summaries.Count > 0, "baseline should include family summaries");
     AssertTrue(result.Scenario.ProductFamilyDashboard.Summaries.Count > 0, "scenario should include family summaries");
-    AssertTrue(result.Scenario.ProductFamilyDashboard.Comparison.SupplyGapDelta != 0m || result.Scenario.ProductFamilyDashboard.Comparison.AverageInventoryValueDelta != 0m, "scenario family dashboard should include comparison deltas");
+    AssertTrue(result.Scenario.ProductFamilyDashboard.Comparison.SupplyGapDelta != 0m ||
+        result.Scenario.ProductFamilyDashboard.Comparison.AverageInventoryValueDelta is not null and not 0m,
+        "scenario family dashboard should include comparison deltas");
     AssertTrue(result.Scenario.ProductFamilyDashboard.Details.Any(item => item.RiskItems.Any()), "scenario family dashboard should expose family risks");
 }
 
@@ -9627,11 +9630,11 @@ static void TestPhysicalFlowDrivesMetricsAndBudget()
             $"buffer trend physical inventory {point.Sku} week {point.Week}");
     }
     AssertEqual(
-        decimal.Round(previewCase.BufferTrend.Series.Average(item => item.InventoryValue), 0),
+        decimal.Round(previewCase.BufferTrend.Series.Average(item => item.InventoryValue!.Value), 0),
         previewCase.BufferTrend.Kpis.AverageInventoryValue,
         "buffer trend average should aggregate physical inventory values");
     AssertEqual(
-        decimal.Round(previewCase.BufferTrend.Series.Max(item => item.InventoryValue), 0),
+        decimal.Round(previewCase.BufferTrend.Series.Max(item => item.InventoryValue!.Value), 0),
         previewCase.BufferTrend.Kpis.PeakInventoryValue,
         "buffer trend peak should aggregate physical inventory values");
 
@@ -9675,8 +9678,31 @@ static void TestBufferSignalSeparatesPlanningAndPhysicalPositions()
     var duplicate = flow.Points[0];
     var duplicateFlow = flow with { Points = flow.Points.Concat(new[] { duplicate }).ToList() };
     var duplicateTrend = BufferTrendWorkspaceService.Build(data, preview.CaseId, preview.Name, data.Skus, preview.Plan, duplicateFlow);
-    AssertTrue(duplicateTrend.Series.Single(item => item.Sku == duplicate.Sku && item.Week == duplicate.Week).PhysicalPosition is null,
-        "duplicate physical flow keys must remain missing rather than choosing an arbitrary evidence row");
+    AssertBufferTrendPhysicalEvidenceMissing(duplicateTrend, "duplicate physical flow key");
+
+    var partialFlow = flow with { Points = flow.Points.Skip(1).ToList() };
+    var partialTrend = BufferTrendWorkspaceService.Build(data, preview.CaseId, preview.Name, data.Skus, preview.Plan, partialFlow);
+    AssertBufferTrendPhysicalEvidenceMissing(partialTrend, "missing one physical flow key");
+    var partialDashboard = ProductFamilyDashboardService.Build(
+        data,
+        preview.CaseId,
+        preview.Name,
+        data.Skus,
+        preview.Plan,
+        preview.SupplierCapacity,
+        preview.Budget,
+        partialFlow);
+    AssertTrue(partialDashboard.WeeklyCells.All(item =>
+            item.InventoryValue is null && item.BudgetInventoryVariance is null),
+        "one missing physical key must invalidate product-family weekly inventory amounts");
+    AssertTrue(partialDashboard.Summaries.All(item =>
+            item.AverageInventoryValue is null &&
+            item.PeakInventoryValue is null &&
+            item.BudgetInventoryVariance is null),
+        "one missing physical key must invalidate product-family inventory summaries");
+    AssertTrue(partialDashboard.Details.SelectMany(item => item.BufferSummaries)
+            .All(item => item.AverageInventoryValue is null),
+        "one missing physical key must invalidate product-family buffer summaries");
 }
 
 static void TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing()
@@ -9697,6 +9723,7 @@ static void TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing()
         preview.BufferTrend.Kpis.OnHandYellowSkuCount is null &&
         preview.BufferTrend.Kpis.OnHandStockoutWeekCount is null,
         "missing physical flow must retain nullable physical KPIs rather than zeroes");
+    AssertBufferTrendPhysicalEvidenceMissing(preview.BufferTrend, "missing inventory-flow evidence");
 }
 
 static void TestBufferSignalRejectsCrossCasePhysicalEvidence()
@@ -9716,6 +9743,157 @@ static void TestBufferSignalRejectsCrossCasePhysicalEvidence()
         trend.Kpis.OnHandYellowSkuCount is null &&
         trend.Kpis.OnHandStockoutWeekCount is null,
         "cross-case physical evidence must leave all physical KPIs nullable");
+    AssertBufferTrendPhysicalEvidenceMissing(trend, "cross-case physical evidence");
+}
+
+static void TestIncompletePhysicalFlowNeverPublishesInventoryAmounts()
+{
+    var incomplete = BuildCompletePlanningEvidenceData() with
+    {
+        ConfirmedReceipts = null,
+        OpeningBacklog = null,
+        PlanningEvidenceCoverage = null
+    };
+    var previewService = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(incomplete));
+    var result = previewService.Preview(new ScenarioRunPreviewRequest(6));
+    var scenario = JsonSerializer.SerializeToNode(
+        result.Scenario,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+
+    AssertTrue(scenario["metrics"]!["averageInventoryValue"] is null,
+        "missing physical flow must not publish NFP value as scenario average inventory");
+    AssertTrue(scenario["budget"]!.AsArray().All(item =>
+            item!["projectedInventoryValue"] is null && item["budgetInventoryVariance"] is null),
+        "missing physical flow must not publish NFP value as budget inventory");
+    var dashboard = scenario["productFamilyDashboard"]!.AsObject();
+    AssertTrue(dashboard["weeklyCells"]!.AsArray().All(item =>
+            item!["inventoryValue"] is null && item["budgetInventoryVariance"] is null),
+        "missing physical flow must not publish NFP value in product-family weekly cells");
+    AssertTrue(dashboard["summaries"]!.AsArray().All(item =>
+            item!["averageInventoryValue"] is null &&
+            item["peakInventoryValue"] is null &&
+            item["budgetInventoryVariance"] is null),
+        "missing physical flow must not publish product-family inventory summaries");
+    AssertTrue(dashboard["details"]!.AsArray()
+            .SelectMany(item => item!["bufferSummaries"]!.AsArray())
+            .All(item => item!["averageInventoryValue"] is null),
+        "missing physical flow must not publish NFP value in product-family buffer summaries");
+    AssertTrue(dashboard["comparison"]!["averageInventoryValueDelta"] is null &&
+        dashboard["comparison"]!["budgetInventoryVarianceDelta"] is null,
+        "missing physical flow must not publish product-family inventory deltas");
+    var comparison = JsonSerializer.SerializeToNode(
+        result.Comparison,
+        new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+    AssertTrue(comparison["averageInventoryValueDelta"] is null,
+        "missing physical flow must not publish a scenario inventory delta");
+
+    var completeResult = new ScenarioRunPreviewService(
+            new StaticScenarioWorkspaceDataSource(BuildCompletePlanningEvidenceData()))
+        .Preview(new ScenarioRunPreviewRequest(6));
+    var completeFlow = completeResult.Scenario.InventoryFlow
+        ?? throw new InvalidOperationException("complete persistence guard fixture should expose physical flow");
+    AssertPersistencePhysicalGuardRejects(
+        completeResult with
+        {
+            Scenario = completeResult.Scenario with
+            {
+                InventoryFlow = completeFlow with { Points = completeFlow.Points.Skip(1).ToList() }
+            }
+        },
+        "partial SKU-week coverage");
+    AssertPersistencePhysicalGuardRejects(
+        completeResult with
+        {
+            Scenario = completeResult.Scenario with
+            {
+                InventoryFlow = completeFlow with
+                {
+                    Points = completeFlow.Points.Concat(new[] { completeFlow.Points[0] }).ToList()
+                }
+            }
+        },
+        "duplicate SKU-week coverage");
+    AssertPersistencePhysicalGuardRejects(
+        completeResult with
+        {
+            Scenario = completeResult.Scenario with
+            {
+                InventoryFlow = completeFlow with { CaseId = "cross-case" }
+            }
+        },
+        "cross-case physical flow");
+
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-incomplete-physical-save-{Guid.NewGuid():N}.db");
+    try
+    {
+        var persistence = new ScenarioRunPersistenceService(previewService, databasePath);
+        var blocked = false;
+        try
+        {
+            persistence.Save(new ScenarioRunSaveRequest(
+                "缺失物理库存证据",
+                null,
+                "planner",
+                new ScenarioRunPreviewRequest(6)));
+        }
+        catch (InvalidOperationException error)
+        {
+            blocked = error.Message.Contains("物理库存投影证据不完整", StringComparison.Ordinal);
+        }
+        AssertTrue(blocked, "missing physical inventory evidence must block scenario persistence explicitly");
+        AssertEqual(0, persistence.List(10).Count, "blocked incomplete scenario must not create a run row");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void AssertPersistencePhysicalGuardRejects(ScenarioRunPreviewResult result, string caseName)
+{
+    var guard = typeof(ScenarioRunPersistenceService).GetMethod(
+        "EnsurePhysicalInventoryEvidence",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("physical persistence guard should exist");
+    var blocked = false;
+    try
+    {
+        guard.Invoke(null, new object[] { result });
+    }
+    catch (System.Reflection.TargetInvocationException error)
+        when (error.InnerException is InvalidOperationException inner &&
+              inner.Message.Contains("物理库存投影证据不完整", StringComparison.Ordinal))
+    {
+        blocked = true;
+    }
+    AssertTrue(blocked, $"{caseName} must be rejected by the authoritative persistence guard");
+}
+
+static void AssertBufferTrendPhysicalEvidenceMissing(BufferTrendWorkspaceResult trend, string caseName)
+{
+    AssertTrue(trend.Series.All(item => item.PhysicalPosition is null),
+        $"{caseName}: no physical on-hand position may survive an incomplete evidence envelope");
+    AssertTrue(trend.Series.All(item => item.InventoryValue is null),
+        $"{caseName}: inventory value must not fall back to net-flow value");
+    AssertTrue(trend.WeeklyCells.All(item => item.InventoryValue is null),
+        $"{caseName}: weekly physical inventory values must remain missing");
+    AssertTrue(trend.FamilySummaries.All(item => item.AverageInventoryValue is null),
+        $"{caseName}: family physical inventory summaries must remain missing");
+    AssertTrue(trend.Kpis.AverageInventoryValue is null &&
+        trend.Kpis.PeakInventoryValue is null &&
+        trend.Kpis.InventoryValueDelta is null &&
+        trend.Kpis.OnHandRedSkuCount is null &&
+        trend.Kpis.OnHandYellowSkuCount is null &&
+        trend.Kpis.OnHandStockoutWeekCount is null,
+        $"{caseName}: aggregate physical KPIs must remain missing");
+    AssertEqual("EvidenceMissing", trend.Comparison.PhysicalDeltaEvidenceStatus ?? string.Empty,
+        $"{caseName}: physical comparison evidence status");
+    AssertTrue(trend.Comparison.AverageInventoryValueDelta is null &&
+        trend.Comparison.PeakInventoryValueDelta is null &&
+        trend.Comparison.PhysicalAverageInventoryValueDelta is null &&
+        trend.Comparison.PhysicalPeakInventoryValueDelta is null,
+        $"{caseName}: physical inventory deltas must remain missing");
 }
 
 static void TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt()
@@ -9795,8 +9973,10 @@ static void TestLegacyPreviewKeepsLegacyReference()
         }
 
         var legacy = persistence.GetDetail(saved.RunId) ?? throw new InvalidOperationException("legacy preview should be readable");
-        AssertEqual(legacyAverageInventory, legacy.Result.Scenario.Metrics.AverageInventoryValue,
-            "legacy compatibility inventory value should be retained");
+        AssertTrue(legacyAverageInventory.HasValue,
+            "complete saved setup should start with a physical inventory amount");
+        AssertTrue(legacy.Result.Scenario.Metrics.AverageInventoryValue is null,
+            "legacy results without physical flow evidence must omit the old compatibility inventory amount");
         AssertEqual(legacyService, legacy.Result.Scenario.Metrics.ServiceLevelPercent,
             "legacy compatibility service value should be retained");
         foreach (var previewCase in new[] { legacy.Result.Baseline, legacy.Result.Scenario })
@@ -9814,6 +9994,13 @@ static void TestLegacyPreviewKeepsLegacyReference()
             }
             AssertTrue(!evidence.Any(item => item.Source == "PhysicalProjection"),
                 "legacy compatibility values must not be presented as new physical facts");
+            AssertTrue(previewCase.Budget.All(item =>
+                    item.ProjectedInventoryValue is null && item.BudgetInventoryVariance is null),
+                "legacy results without physical flow must omit budget inventory amounts");
+            AssertTrue(previewCase.ProductFamilyDashboard.Summaries.All(item =>
+                    item.AverageInventoryValue is null && item.PeakInventoryValue is null),
+                "legacy results without physical flow must omit product-family inventory amounts");
+            AssertBufferTrendPhysicalEvidenceMissing(previewCase.BufferTrend, $"{previewCase.CaseId} legacy flow");
         }
     }
     finally
@@ -9836,8 +10023,20 @@ static void TestComparisonOmitsIncompletePhysicalDelta()
 
     AssertEqual("EvidenceMissing", result.Baseline.InventoryFlow?.Status ?? string.Empty, "incomplete baseline physical status");
     AssertEqual("EvidenceMissing", result.Scenario.InventoryFlow?.Status ?? string.Empty, "incomplete scenario physical status");
-    AssertTrue(result.Scenario.Metrics.AverageInventoryValue >= 0m,
-        "legacy non-null compatibility inventory should remain available");
+    AssertTrue(result.Scenario.Metrics.AverageInventoryValue is null,
+        "incomplete physical flow must not publish a compatibility inventory amount");
+    var evidence = result.Scenario.ScenarioMetricEvidence
+        ?? throw new InvalidOperationException("incomplete physical preview should expose metric evidence");
+    var serviceEvidence = evidence.Single(item => item.JsonPath == "metrics.serviceLevelPercent");
+    AssertEqual("HistoricalReference", serviceEvidence.Source,
+        "service fallback should be labeled as a historical reference");
+    AssertTrue(serviceEvidence.Explanation.Contains("historical", StringComparison.OrdinalIgnoreCase),
+        "service fallback explanation should identify its historical basis");
+    var inventoryEvidence = evidence.First(item => item.JsonPath == "metrics.averageInventoryValue");
+    AssertEqual("MissingEvidence", inventoryEvidence.Source,
+        "missing inventory amount should be labeled as missing physical evidence");
+    AssertTrue(inventoryEvidence.Explanation.Contains("omitted", StringComparison.OrdinalIgnoreCase),
+        "missing inventory explanation should state that the amount is omitted");
 
     var json = JsonSerializer.SerializeToNode(result, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
     AssertMissingPhysicalDelta(
@@ -9854,6 +10053,48 @@ static void TestComparisonOmitsIncompletePhysicalDelta()
         scenario["bufferTrend"]!["comparison"]!.AsObject(),
         "physicalAverageInventoryValueDelta",
         "physicalPeakInventoryValueDelta");
+
+    var poisoned = result with
+    {
+        Comparison = result.Comparison with
+        {
+            PhysicalServiceLevelDelta = 12m,
+            PhysicalDeltaEvidenceStatus = "Complete"
+        },
+        Baseline = result.Baseline with
+        {
+            ProductFamilyDashboard = result.Baseline.ProductFamilyDashboard with
+            {
+                Comparison = result.Baseline.ProductFamilyDashboard.Comparison with
+                {
+                    PhysicalServiceLevelDelta = 12m,
+                    PhysicalDeltaEvidenceStatus = "Complete"
+                }
+            }
+        },
+        Scenario = result.Scenario with
+        {
+            ProductFamilyDashboard = result.Scenario.ProductFamilyDashboard with
+            {
+                Comparison = result.Scenario.ProductFamilyDashboard.Comparison with
+                {
+                    PhysicalServiceLevelDelta = 12m,
+                    PhysicalDeltaEvidenceStatus = "Complete"
+                }
+            }
+        }
+    };
+    var restore = typeof(ScenarioRunPreviewService).GetMethod(
+        "RestoreLegacyInventoryEvidence",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+        ?? throw new InvalidOperationException("legacy inventory evidence restoration should exist");
+    var restored = (ScenarioRunPreviewResult?)restore.Invoke(null, new object?[] { poisoned, null })
+        ?? throw new InvalidOperationException("legacy inventory evidence restoration should return a result");
+    AssertTrue(restored.Comparison.PhysicalServiceLevelDelta is null,
+        "incomplete restored comparison must clear a stale physical service delta");
+    AssertTrue(restored.Baseline.ProductFamilyDashboard.Comparison.PhysicalServiceLevelDelta is null &&
+        restored.Scenario.ProductFamilyDashboard.Comparison.PhysicalServiceLevelDelta is null,
+        "incomplete restored product-family comparisons must clear stale physical service deltas");
 }
 
 static void TestFrozenComparisonPreservesBaselineLineageAndEvidence()
@@ -10708,9 +10949,13 @@ static void TestFutureTimeBufferEvidenceIsConsolidatedIntoBreachAnalysis()
         "const definitionMatches = definitions.filter(item => item.bufferId === breach.target)",
         "const projectionWeekKeys = points.map(point => point.week)",
         "const projectionWeeksUnique = new Set(projectionWeekKeys).size === projectionWeekKeys.length",
+        "const expectedHorizonWeeks = Number(item.preview?.request?.horizonWeeks)",
+        "const horizonIsValid = Number.isInteger(expectedHorizonWeeks) && expectedHorizonWeeks > 0",
+        "const firstMissingWeek = missingWeekCandidate === undefined ? null : missingWeekCandidate",
+        "const projectionCoversHorizon = horizonIsValid",
         "definitionMatches.length === 1",
         "definitionMatches[0].evidenceStatus === \"Complete\"",
-        "points.length > 0",
+        "projectionCoversHorizon",
         "points.every(point => point.evidenceStatus === \"Complete\")",
     })
     {
@@ -10728,6 +10973,8 @@ static void TestFutureTimeBufferEvidenceIsConsolidatedIntoBreachAnalysis()
     AssertTrue(renderer.Contains("selected.hasDuplicateWeeks", StringComparison.Ordinal)
         && renderer.Contains("周度证据包含重复周", StringComparison.Ordinal),
         "duplicate weeks should show an explicit evidence-missing diagnostic instead of repeated matrix columns");
+    AssertTrue(renderer.Contains("周度证据缺少第 ${firstMissingWeek} 周", StringComparison.Ordinal),
+        "partial horizons should identify the first missing evidence week");
     var notApplicableMatrix = renderer.IndexOf("if (evidenceStatus === \"NotApplicable\")", StringComparison.Ordinal);
     var duplicateMatrix = renderer.IndexOf("if (selected.hasDuplicateWeeks)", StringComparison.Ordinal);
     AssertTrue(notApplicableMatrix >= 0 && duplicateMatrix > notApplicableMatrix,
@@ -11761,8 +12008,10 @@ static void TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail()
     var result = service.GetBaseline(12);
 
     AssertTrue(source.LoadCount == 1, "buffer trend service should read through IScenarioWorkspaceDataSource");
-    AssertTrue(result.Kpis.AverageInventoryValue > 0, "buffer trend should calculate average inventory value");
-    AssertTrue(result.Kpis.PeakInventoryValue >= result.Kpis.AverageInventoryValue, "peak inventory should be at least average inventory");
+    AssertTrue(result.Kpis.AverageInventoryValue is > 0m, "buffer trend should calculate average inventory value");
+    AssertTrue(result.Kpis.PeakInventoryValue.HasValue && result.Kpis.AverageInventoryValue.HasValue &&
+        result.Kpis.PeakInventoryValue.Value >= result.Kpis.AverageInventoryValue.Value,
+        "peak inventory should be at least average inventory");
     AssertTrue(result.WeeklyCells.Count == result.SkuDetails.Count * 12, "heatmap should cover every SKU week");
     AssertTrue(result.FamilySummaries.Count > 0, "buffer trend should summarize product families");
     AssertTrue(result.SkuDetails.Any(item => item.Series.Count == 12 && item.Zone.TopOfGreen > item.Zone.TopOfYellow), "SKU detail should include zones and series");

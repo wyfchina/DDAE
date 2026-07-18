@@ -611,7 +611,60 @@ export async function runFutureBufferChartFixtures(trend, scriptPath = defaultSc
     "one demand point should not masquerade as a visible area");
   assert.ok(singletonDemandMarkup.includes("计划需求证据缺失"),
     "singleton demand evidence should retain the surrounding gap warning");
-  console.log("4/4 future buffer chart fixture groups passed");
+
+  const timeBufferDefinition = {
+    bufferId: "TIME-FIXTURE-001",
+    controlPoint: "测试时间控制点",
+    protectedActivity: "测试保护活动",
+    bufferDays: 5,
+    evidenceStatus: "Complete",
+  };
+  const makeTimePoint = week => ({
+    bufferId: timeBufferDefinition.bufferId,
+    controlPoint: timeBufferDefinition.controlPoint,
+    week,
+    penetrationPercent: 20 + week,
+    status: "Green",
+    cause: "测试证据",
+    evidenceStatus: "Complete",
+  });
+  const timeBufferCase = {
+    responseId: "NO_RESPONSE",
+    name: "不采取措施",
+    preview: { request: { horizonWeeks: 12 } },
+    breaches: [{
+      scopeType: "TimeBuffer",
+      target: timeBufferDefinition.bufferId,
+      evidenceStatus: "Complete",
+      isBreached: false,
+      affectedProducts: ["TEST-SKU"],
+    }],
+    timeBufferProjection: Array.from({ length: 12 }, (_, index) => makeTimePoint(index + 1)),
+  };
+  const timeBufferBaseline = {
+    payload: { planningInputs: { timeBuffers: [timeBufferDefinition] } },
+  };
+  runtime.context.__timeBufferResult = { allCases: [timeBufferCase] };
+  runtime.context.__timeBufferBaseline = timeBufferBaseline;
+  vm.runInContext(
+    "renderTimeBufferBreachEvidence(__timeBufferResult, __timeBufferBaseline)",
+    runtime.context,
+  );
+  assert.equal(runtime.elements.get("time-buffer-breach-evidence-chip").textContent, "完整",
+    "a complete 1..horizon time-buffer projection should remain complete");
+
+  runtime.context.__timeBufferResult.allCases[0].timeBufferProjection =
+    runtime.context.__timeBufferResult.allCases[0].timeBufferProjection.slice(0, 11);
+  vm.runInContext(
+    "renderTimeBufferBreachEvidence(__timeBufferResult, __timeBufferBaseline)",
+    runtime.context,
+  );
+  assert.equal(runtime.elements.get("time-buffer-breach-evidence-chip").textContent, "证据缺失",
+    "a partial time-buffer horizon must not be presented as complete");
+  assert.ok(runtime.elements.get("time-buffer-breach-summary").innerHTML.includes("缺少第 12 周"),
+    "a partial time-buffer horizon should identify the first missing week");
+
+  console.log("5/5 future buffer chart fixture groups passed");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
