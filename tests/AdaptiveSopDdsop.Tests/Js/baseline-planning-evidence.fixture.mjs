@@ -162,7 +162,30 @@ function completePlanningInputs(overrides = {}) {
   };
 }
 
-function candidate(planningInputs, sectionOverrides = {}) {
+function completeHistoryReconciliation(overrides = {}) {
+  return {
+    factSetId: "DEMO-OPERATING-20260630-V1",
+    historyThroughUtc: "2026-06-30T00:00:00Z",
+    baselineAsOfUtc: "2026-06-30T08:00:00Z",
+    scopeLabel: "Historical closing balances to current baseline",
+    lines: [{
+      metricCode: "ON_HAND",
+      itemKey: "AV-COM-201",
+      historyClosingBalance: 10,
+      intervalIncrease: 5,
+      intervalDecrease: 3,
+      adjustment: 0,
+      baselineBalance: 12,
+      difference: 0,
+      evidenceStatus: "Complete",
+      differenceReason: null,
+    }],
+    evidenceStatus: "Complete",
+    ...overrides,
+  };
+}
+
+function candidate(planningInputs, sectionOverrides = {}, payloadOverrides = {}) {
   return {
     candidateId: "BASE-CANDIDATE-FIXTURE",
     asOfUtc: "2026-06-30T08:00:00Z",
@@ -173,7 +196,12 @@ function candidate(planningInputs, sectionOverrides = {}) {
       evidenceSection("CONFIRMED_RECEIPTS", sectionOverrides.receipts),
       evidenceSection("OPENING_BACKLOG", sectionOverrides.backlog),
     ],
-    payload: { planningInputs, kpis: null },
+    payload: {
+      planningInputs,
+      kpis: null,
+      historyReconciliation: completeHistoryReconciliation(),
+      ...payloadOverrides,
+    },
   };
 }
 
@@ -292,6 +320,56 @@ function missingFieldsExplainAbsenceWithoutZero(source) {
   assert.ok(!backlogBody.includes("<td>0</td>"));
 }
 
+function historyReconciliationRendersAndClientMirrorBlocksPoisonedLineage(source) {
+  const complete = candidate(completePlanningInputs(), {}, {
+    kpis: {
+      serviceLevelPercent: 98.5,
+      serviceWindow: "52-week rolling window",
+      inventoryValue: 1200,
+      workInProcessUnits: 10,
+      backlogUnits: 0,
+      supplyCoverageWeeks: 4,
+      peakResourceLoadPercent: 82,
+      sourceAuthority: "DDAE Demo Planning Snapshot",
+      asOfUtc: "2026-06-30T08:00:00Z",
+      evidenceStatus: "Complete",
+    },
+  });
+  const runtime = renderCandidate(source, complete);
+  const context = runtime.elements.get("baseline-history-reconciliation-summary").innerHTML;
+  const body = runtime.elements.get("baseline-history-reconciliation-body").innerHTML;
+  assert.ok(context.includes("DEMO-OPERATING-20260630-V1"));
+  assert.ok(context.includes("最近历史截止"));
+  assert.ok(context.includes("基线截止"));
+  assert.ok(body.includes("差异 0"));
+  assert.equal(runtime.elements.get("freeze-current-baseline").disabled, false);
+  assert.ok(runtime.elements.get("current-baseline-kpis").innerHTML.includes("截至会前的 52 周滚动实际"));
+
+  const difference = structuredClone(complete);
+  difference.payload.historyReconciliation.lines[0].difference = 1;
+  const differenceRuntime = renderCandidate(source, difference);
+  assert.equal(differenceRuntime.elements.get("freeze-current-baseline").disabled, true);
+
+  const reversedCutoff = structuredClone(complete);
+  reversedCutoff.payload.historyReconciliation.historyThroughUtc = "2026-06-30T09:00:00Z";
+  const reversedCutoffRuntime = renderCandidate(source, reversedCutoff);
+  assert.equal(reversedCutoffRuntime.elements.get("freeze-current-baseline").disabled, true);
+}
+
+function frozenLegacyHistoryReconciliationStaysExplicit(source) {
+  const runtime = createRuntime(source);
+  const snapshot = candidate(completePlanningInputs());
+  snapshot.snapshotNumber = "BASE-LEGACY-001";
+  snapshot.status = "Frozen";
+  snapshot.payload.historyReconciliation = null;
+  runtime.context.__frozenFixture = snapshot;
+  vm.runInContext(
+    "__frozenHistory = renderBaselineHistoryReconciliation(__frozenFixture, 'Frozen', false);",
+    runtime.context,
+  );
+  assert.ok(runtime.context.__frozenHistory.drawerSection.items[0][1].includes("旧版本未保存历史衔接证据"));
+}
+
 export async function runBaselinePlanningEvidenceFixtures(scriptPath = defaultScriptPath) {
   const source = await readFile(scriptPath, "utf8");
   new vm.Script(source, { filename: scriptPath });
@@ -301,6 +379,8 @@ export async function runBaselinePlanningEvidenceFixtures(scriptPath = defaultSc
     ["complete nonblocking empty collections show no records", completeNonblockingEmptyCollectionsShowNoRecords],
     ["explicit zero rows remain zero", explicitZeroRowsRemainZero],
     ["missing fields explain absence without zero", missingFieldsExplainAbsenceWithoutZero],
+    ["history reconciliation renders and client mirror blocks poisoned lineage", historyReconciliationRendersAndClientMirrorBlocksPoisonedLineage],
+    ["frozen legacy history reconciliation stays explicit", frozenLegacyHistoryReconciliationStaysExplicit],
   ];
   const failures = [];
 

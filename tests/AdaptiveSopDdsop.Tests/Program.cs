@@ -96,6 +96,7 @@ var tests = new (string Name, Action Run)[]
     ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
     ("Current baseline UI shows typed planning evidence without zero backfill", TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill),
+    ("Current baseline UI exposes one immutable history reconciliation card", TestCurrentBaselineUiExposesHistoryReconciliation),
     ("Current baseline executable fixture preserves blockers and explicit zero evidence", TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence),
     ("Time-buffer evidence rules control baseline freezing without live-data backfill", TestTimeBufferEvidenceRulesControlBaselineFreeze),
     ("Seed time-buffer progress covers every requested horizon week", TestSeedTimeBufferProgressCoversRequestedHorizon),
@@ -3810,6 +3811,37 @@ static void TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill()
         "frozen evidence should render only the selected immutable snapshot DTO");
     AssertTrue(script.Contains("DemoFixture: \"演示数据\"", StringComparison.Ordinal),
         "ordinary demo source codes should be localized without changing stored values");
+}
+
+static void TestCurrentBaselineUiExposesHistoryReconciliation()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    foreach (var id in new[] { "baseline-history-reconciliation", "baseline-history-reconciliation-body" })
+    {
+        AssertEqual(1, page.Split($"id=\"{id}\"", StringSplitOptions.None).Length - 1,
+            $"current baseline page should expose exactly one {id} host");
+    }
+
+    var renderRule = SourceFunctionBody(script, "renderBaselineHistoryReconciliation");
+    AssertTrue(
+        renderRule.Contains("historyReconciliation", StringComparison.Ordinal) &&
+        renderRule.Contains("旧版本未保存历史衔接证据", StringComparison.Ordinal) &&
+        renderRule.Contains("differenceReason", StringComparison.Ordinal),
+        "history reconciliation renderer should preserve backend lineage and explicit legacy evidence absence");
+    AssertTrue(
+        !renderRule.Contains("historyClosingBalance +", StringComparison.Ordinal) &&
+        !renderRule.Contains("baselineBalance -", StringComparison.Ordinal),
+        "history reconciliation UI must display backend balances and differences without recomputing them");
+
+    var blockingRule = SourceFunctionBody(script, "baselineCandidateFreezeBlockingIssues");
+    AssertTrue(
+        blockingRule.Contains("historyReconciliation", StringComparison.Ordinal) &&
+        blockingRule.Contains("Math.abs", StringComparison.Ordinal) &&
+        blockingRule.Contains("Date.parse", StringComparison.Ordinal),
+        "client freeze mirror should reject missing, unbalanced, and invalid-cutoff reconciliation evidence");
 }
 
 static void TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence()

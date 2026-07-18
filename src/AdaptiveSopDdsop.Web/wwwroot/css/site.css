@@ -1604,6 +1604,13 @@ body.has-focus-panel { overflow: hidden; }
 .comparison-save-card,
 .baseline-reference-card { margin-top: 14px; }
 #current-baseline-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.baseline-history-reconciliation { margin: 12px 0; }
+.baseline-history-reconciliation .baseline-evidence-strip {
+  margin: 0 0 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--color-border);
+}
+.baseline-history-reconciliation .data-table { min-width: 920px; }
 .comparison-save-card { border-top: 4px solid var(--color-primary); }
 .opaque-product-entry { padding-bottom: 0; }
 .future-capacity-separation {

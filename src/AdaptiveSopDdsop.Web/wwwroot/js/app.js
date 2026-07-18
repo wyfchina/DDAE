@@ -5441,6 +5441,30 @@ function baselineCandidateFreezeBlockingIssues(candidate) {
       missingReason: "后端未提供类型化计划输入",
     });
   }
+  const reconciliation = candidate?.payload?.historyReconciliation;
+  if (!reconciliation) {
+    issues.push({ section: null, item: null, missingReason: "后端未提供历史衔接证据" });
+    return issues;
+  }
+  if (!reconciliation.factSetId || reconciliation.evidenceStatus !== "Complete") {
+    issues.push({ section: null, item: null, missingReason: "历史衔接总体证据不完整" });
+  }
+  const historyThrough = Date.parse(reconciliation.historyThroughUtc);
+  const baselineAsOf = Date.parse(reconciliation.baselineAsOfUtc);
+  if (!Number.isFinite(historyThrough) || !Number.isFinite(baselineAsOf) || historyThrough >= baselineAsOf) {
+    issues.push({ section: null, item: null, missingReason: "历史截止时间必须早于基线时点" });
+  }
+  if (!Array.isArray(reconciliation.lines) || reconciliation.lines.length === 0) {
+    issues.push({ section: null, item: null, missingReason: "后端未提供历史衔接对账行" });
+  } else {
+    reconciliation.lines.forEach(line => {
+      const difference = Number(line?.difference);
+      if (line?.evidenceStatus !== "Complete" || line?.difference === null || line?.difference === undefined ||
+          line?.difference === "" || !Number.isFinite(difference) || Math.abs(difference) > 0.01) {
+        issues.push({ section: null, item: null, missingReason: "历史衔接对账行证据不完整或差异超限" });
+      }
+    });
+  }
   return issues;
 }
 
@@ -5459,6 +5483,60 @@ function baselineEvidenceValue(value, reason, formatter = item => String(item)) 
 
 function baselineEvidenceNumber(value, reason) {
   return baselineEvidenceValue(value, reason, item => numberFormat.format(Number(item)));
+}
+
+function baselineReconciliationNumber(value, reason) {
+  const numeric = Number(value);
+  return value === null || value === undefined || value === "" || !Number.isFinite(numeric)
+    ? baselineEvidenceMissing(reason)
+    : escapeHtml(numberFormat.format(numeric));
+}
+
+function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", updatePage = true) {
+  const reconciliation = baseline?.payload?.historyReconciliation;
+  const isFrozen = viewKind === "Frozen";
+  if (!reconciliation) {
+    const message = isFrozen ? "旧版本未保存历史衔接证据" : "后端未提供历史衔接证据";
+    if (updatePage) {
+      byId("baseline-history-reconciliation-summary").innerHTML = `<span>${escapeHtml(message)}</span>`;
+      byId("baseline-history-reconciliation-body").innerHTML = `<tr><td class="empty-cell" colspan="9">${escapeHtml(message)}</td></tr>`;
+    }
+    return { drawerSection: { title: "历史衔接", items: [["历史衔接", message]] } };
+  }
+
+  const summaryItems = [
+    ["事实集", baselineEvidenceValue(reconciliation.factSetId, "后端未提供事实集标识")],
+    ["最近历史截止", baselineEvidenceValue(reconciliation.historyThroughUtc, "后端未提供历史截止时间")],
+    ["基线截止", baselineEvidenceValue(reconciliation.baselineAsOfUtc, "后端未提供基线截止时间")],
+    ["范围", baselineEvidenceValue(reconciliation.scopeLabel, "后端未提供对账范围", businessEvidenceLabel)],
+    ["对账行", Array.isArray(reconciliation.lines) ? escapeHtml(number(reconciliation.lines.length)) : baselineEvidenceMissing("后端未提供对账行")],
+    ["证据状态", baselineEvidenceStatus(reconciliation.evidenceStatus, "后端未提供对账证据状态")],
+  ];
+  const summaryHtml = summaryItems.map(([label, value]) => `<span><strong>${escapeHtml(label)}</strong>${value}</span>`).join("");
+  const lines = Array.isArray(reconciliation.lines) ? reconciliation.lines : [];
+  const rows = lines.length ? lines.map(line => {
+    const difference = baselineReconciliationNumber(line?.difference, "后端未提供有效差异");
+    const reason = line?.differenceReason === null || line?.differenceReason === undefined || line?.differenceReason === ""
+      ? ""
+      : `<small>${escapeHtml(businessEvidenceLabel(line.differenceReason))}</small>`;
+    return row([
+      baselineEvidenceValue(line?.metricCode, "后端未提供指标"),
+      baselineEvidenceValue(line?.itemKey, "后端未提供对象"),
+      baselineReconciliationNumber(line?.historyClosingBalance, "后端未提供历史期末余额"),
+      baselineReconciliationNumber(line?.intervalIncrease, "后端未提供增加值"),
+      baselineReconciliationNumber(line?.intervalDecrease, "后端未提供减少值"),
+      baselineReconciliationNumber(line?.adjustment, "后端未提供调整值"),
+      baselineReconciliationNumber(line?.baselineBalance, "后端未提供基线余额"),
+      `<span>差异 ${difference}</span>${reason}`,
+      baselineEvidenceStatus(line?.evidenceStatus, "后端未提供对账行证据状态"),
+    ]);
+  }).join("") : `<tr><td class="empty-cell" colspan="9">${baselineEvidenceMissing("后端未提供历史衔接对账行")}</td></tr>`;
+
+  if (updatePage) {
+    byId("baseline-history-reconciliation-summary").innerHTML = summaryHtml;
+    byId("baseline-history-reconciliation-body").innerHTML = rows;
+  }
+  return { drawerSection: { title: "历史衔接", items: summaryItems } };
 }
 
 function confirmedReceiptTypeLabel(type) {
@@ -5668,17 +5746,20 @@ function renderCurrentBaselineWorkspace() {
   byId("freeze-current-baseline").disabled = missing.length > 0;
   byId("baseline-candidate-title").textContent = `截止 ${candidate.asOfUtc} · 主设置 ${candidate.masterSettingVersion}`;
   const kpis = candidate.payload?.kpis;
+  const wipSource = baselineSourceLabel(kpis?.sourceAuthority);
+  const wipNote = /derived|推导/i.test(String(kpis?.sourceAuthority || "")) ? `${wipSource} · 演示推导值` : wipSource;
   byId("current-baseline-kpis").innerHTML = kpis ? [
     ["会前截止时刻", metricOrEvidenceMissing(kpis.asOfUtc), baselineSourceLabel(kpis.sourceAuthority)],
     ["服务统计窗口", businessEvidenceLabel(kpis.serviceWindow), evidenceStatusLabel(kpis.evidenceStatus)],
-    ["服务水平", metricOrEvidenceMissing(kpis.serviceLevelPercent, percent), "会前事实"],
-    ["库存金额", metricOrEvidenceMissing(kpis.inventoryValue, money), "会前事实"],
-    ["在制品", metricOrEvidenceMissing(kpis.workInProcessUnits, number), "会前事实"],
+    ["服务水平", metricOrEvidenceMissing(kpis.serviceLevelPercent, percent), "截至会前的 52 周滚动实际"],
+    ["库存金额", metricOrEvidenceMissing(kpis.inventoryValue, money), "会前截止时点余额"],
+    ["在制品", metricOrEvidenceMissing(kpis.workInProcessUnits, number), wipNote],
     ["积压", metricOrEvidenceMissing(kpis.backlogUnits, number), "会前事实"],
     ["供应覆盖", metricOrEvidenceMissing(kpis.supplyCoverageWeeks, value => `${number(value)} 周`), "会前事实"],
-    ["峰值负荷", metricOrEvidenceMissing(kpis.peakResourceLoadPercent, percent), "会前事实"],
+    ["峰值负荷", metricOrEvidenceMissing(kpis.peakResourceLoadPercent, percent), "冻结计划输入的展望期峰值"],
   ].map(item => stageKpi(...item)).join("") : stageKpi("会前证据", "证据缺失", "未按零处理");
   renderBaselinePlanningEvidence(candidate, "Candidate");
+  renderBaselineHistoryReconciliation(candidate, "Candidate");
   byId("baseline-evidence-body").innerHTML = candidate.sections.map(item => row([
     `<strong>${escapeHtml(baselineSectionLabel(item.name))}</strong><small>${item.isRequired ? "关键" : "辅助"}</small>`,
     escapeHtml(baselineSourceLabel(item.sourceAuthority)),
@@ -5747,6 +5828,7 @@ async function openBaselineSnapshotDetail(snapshotId) {
   if (!response.ok) throw new Error(`冻结基线详情接口失败：${response.status}`);
   const snapshot = await response.json();
   const planningEvidence = renderBaselinePlanningEvidence(snapshot, "Frozen", false);
+  const historyReconciliation = renderBaselineHistoryReconciliation(snapshot, "Frozen", false);
   const parameters = valueOr(snapshot.payload?.planningInputs?.ddmrpParameters, []);
   const items = parameters.map(item => [
     `${item.sku} ${item.name}`,
@@ -5754,7 +5836,7 @@ async function openBaselineSnapshotDetail(snapshotId) {
       ? "旧版本缺少提前期因子；该快照保持只读，不能用于重算"
       : `提前期因子 ${number(item.leadTimeFactor)} · ${escapeHtml(evidenceStatusLabel(item.evidenceStatus))}`,
   ]);
-  openWorkspaceDrawer("冻结基线证据", [...planningEvidence.drawerSections, {
+  openWorkspaceDrawer("冻结基线证据", [...planningEvidence.drawerSections, historyReconciliation.drawerSection, {
     title: `${snapshot.snapshotNumber} · ${baselineStatusLabel(snapshot.status)}`,
     items: items.length ? items : [["定容证据", "旧版本未保存 DDMRP 参数明细"]],
   }]);
