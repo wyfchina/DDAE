@@ -446,7 +446,17 @@ public sealed record BufferTrendKpis(
     decimal AverageInventoryValue,
     decimal PeakInventoryValue,
     int ReplenishmentOrderCount,
-    decimal InventoryValueDelta);
+    decimal InventoryValueDelta,
+    int? OnHandRedSkuCount = null,
+    int? OnHandYellowSkuCount = null,
+    int? OnHandStockoutWeekCount = null);
+
+public sealed record BufferPhysicalPosition(
+    decimal EndingOnHand,
+    decimal EndingBacklog,
+    string OnHandStatus,
+    string EvidenceStatus,
+    string Source);
 
 public sealed record BufferTrendSeriesPoint(
     string Sku,
@@ -467,7 +477,8 @@ public sealed record BufferTrendSeriesPoint(
     bool IsPrebuild,
     string Status,
     DdmrpSizingResult? Sizing = null,
-    decimal? DemandSpikeThreshold = null);
+    decimal? DemandSpikeThreshold = null,
+    BufferPhysicalPosition? PhysicalPosition = null);
 
 public sealed record BufferZoneBand(
     string Sku,

@@ -213,6 +213,9 @@ var tests = new (string Name, Action Run)[]
     ("Inventory flow fields preserve legacy scenario JSON", TestInventoryFlowFieldsPreserveLegacyScenarioJson),
     ("Preview returns complete physical inventory flow", TestPreviewReturnsCompleteInventoryFlow),
     ("Physical flow drives inventory metrics and budget", TestPhysicalFlowDrivesMetricsAndBudget),
+    ("Buffer signal separates planning and physical positions", TestBufferSignalSeparatesPlanningAndPhysicalPositions),
+    ("Buffer signal omits physical position when evidence is missing", TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing),
+    ("Buffer signal can recover NFP before physical receipt", TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt),
     ("Legacy preview keeps legacy reference labels", TestLegacyPreviewKeepsLegacyReference),
     ("Comparison omits physical delta when evidence missing", TestComparisonOmitsIncompletePhysicalDelta),
     ("Frozen comparison preserves baseline lineage and source evidence", TestFrozenComparisonPreservesBaselineLineageAndEvidence),
@@ -7034,8 +7037,9 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
             $"future inventory evidence host {id}");
     }
 
-    AssertTrue(page.Contains(">净流位置<", StringComparison.Ordinal),
-        "the NFP panel should have a concise Chinese heading");
+    AssertTrue(page.Contains(">库存位置<", StringComparison.Ordinal)
+        && page.Contains(">净流量与在手库存<", StringComparison.Ordinal),
+        "the upper panel should identify both planning and physical positions");
     AssertTrue(page.Contains(">物理库存<", StringComparison.Ordinal),
         "the physical projection should have a concise Chinese heading");
     AssertTrue(page.Contains(">需求波动<", StringComparison.Ordinal),
@@ -7087,8 +7091,9 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
     var nfpBody = SourceFunctionBody(script, "renderBufferTrendChart");
     AssertTrue(nfpBody.Contains("data-field=\"endNetFlowBeforeReplenishment\"", StringComparison.Ordinal)
         && nfpBody.Contains("data-field=\"endNetFlowAfterReplenishment\"", StringComparison.Ordinal)
-        && nfpBody.Contains("data-field=\"targetInventory\"", StringComparison.Ordinal),
-        "NFP lines and target markers should expose explicit backend-field mappings");
+        && nfpBody.Contains("data-field=\"physicalPosition.endingOnHand\"", StringComparison.Ordinal)
+        && !nfpBody.Contains("targetInventory", StringComparison.Ordinal),
+        "upper chart should map pre/post NFP and optional physical on-hand without target inventory");
     AssertTrue(styles.Contains(".buffer-net-flow-line { stroke: #111827;", StringComparison.Ordinal),
         "pre-replenishment NFP should use the fixed black line");
     AssertTrue(styles.Contains(".buffer-preview-line { stroke: #4f8bd6;", StringComparison.Ordinal)
@@ -7096,8 +7101,12 @@ static void TestFutureInventoryFlowChartsSeparatePhysicalEvidence()
         "selected post-replenishment NFP should use the fixed blue line");
     AssertTrue(styles.Contains(".buffer-baseline-line { stroke: #8a939f;", StringComparison.Ordinal),
         "baseline post-replenishment comparison should use the fixed gray line");
-    AssertTrue(styles.Contains(".target-inventory-dot { fill: #fff;", StringComparison.Ordinal),
-        "target inventory markers should use a white fill");
+    AssertTrue(styles.Contains(".buffer-on-hand-line { stroke: #286fa8;", StringComparison.Ordinal),
+        "upper physical on-hand position should use its own visible line style");
+    foreach (var label in new[] { "补货前净流量位置（下单判断）", "补货后净流量位置（已释放供应）", "期末在手库存（执行风险）" })
+    {
+        AssertTrue(page.Contains(label, StringComparison.Ordinal), $"future inventory terminology should include {label}");
+    }
     AssertTrue(script.Contains("function whiteBoxTraceRecords(previewCase)", StringComparison.Ordinal)
         && script.Contains("function focusWhiteBoxTraceRecord(recordKey)", StringComparison.Ordinal)
         && script.Contains("event.target.closest(\"[data-white-box-record]\")", StringComparison.Ordinal),
@@ -7761,9 +7770,9 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
     AssertTrue(page.Contains("缓冲 / 库存趋势", StringComparison.Ordinal), "page should expose graphical buffer trend label");
     AssertTrue(page.Contains("库存选项", StringComparison.Ordinal), "page should expose left-side inventory options");
     AssertTrue(page.Contains("动态红黄绿缓冲带", StringComparison.Ordinal), "page should expose dynamic mountain-style buffer bands");
-    AssertTrue(page.Contains("净流动量位置", StringComparison.Ordinal), "page should expose net flow position label");
-    AssertTrue(page.Contains("预计库存水位", StringComparison.Ordinal), "page should expose projected inventory level label");
-    AssertTrue(page.Contains("目标库存", StringComparison.Ordinal), "page should expose target inventory label");
+    AssertTrue(page.Contains("补货前净流量位置（下单判断）", StringComparison.Ordinal), "page should expose pre-replenishment net flow position label");
+    AssertTrue(page.Contains("期末在手库存（执行风险）", StringComparison.Ordinal), "page should expose physical on-hand risk label");
+    AssertTrue(!page.Contains("目标库存", StringComparison.Ordinal), "page should not expose a target inventory label");
     AssertTrue(page.Contains("时间相位 ADU", StringComparison.Ordinal), "page should expose time-phased ADU label");
     AssertTrue(page.Contains("需求波动", StringComparison.Ordinal), "page should expose the independent demand-volatility label");
     AssertTrue(page.Contains("单 SKU 仿真工作台", StringComparison.Ordinal), "page should expose single SKU simulation workbench");
@@ -9422,6 +9431,11 @@ static void TestPhysicalFlowDrivesMetricsAndBudget()
     foreach (var point in previewCase.BufferTrend.Series)
     {
         var physical = flow.Points.Single(item => item.Sku == point.Sku && item.Week == point.Week);
+        AssertTrue(point.PhysicalPosition is not null, $"buffer trend physical position {point.Sku} week {point.Week}");
+        AssertEqual(physical.EndingOnHand, point.PhysicalPosition!.EndingOnHand,
+            $"buffer trend physical on-hand join {point.Sku} week {point.Week}");
+        AssertEqual(physical.EndingBacklog, point.PhysicalPosition.EndingBacklog,
+            $"buffer trend physical backlog join {point.Sku} week {point.Week}");
         AssertEqual(decimal.Round(physical.EndingInventoryValue, 0), point.InventoryValue,
             $"buffer trend physical inventory {point.Sku} week {point.Week}");
     }
@@ -9446,6 +9460,86 @@ static void TestPhysicalFlowDrivesMetricsAndBudget()
     }
     AssertTrue(evidence.Count(item => item.JsonPath == "metrics.averageInventoryValue") >= 2,
         "inventory and cash occupation should have separate path-addressed evidence entries");
+}
+
+static void TestBufferSignalSeparatesPlanningAndPhysicalPositions()
+{
+    var data = BuildCompletePlanningEvidenceData();
+    var preview = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(data))
+        .Preview(new ScenarioRunPreviewRequest(6)).Scenario;
+    var flow = preview.InventoryFlow ?? throw new InvalidOperationException("complete physical flow should be present");
+
+    foreach (var point in preview.BufferTrend.Series)
+    {
+        var physical = flow.Points.Single(item => item.Sku == point.Sku && item.Week == point.Week);
+        AssertTrue(point.PhysicalPosition is not null, $"{point.Sku} week {point.Week} should retain complete physical evidence");
+        AssertEqual(physical.EndingOnHand, point.PhysicalPosition!.EndingOnHand, $"physical ending on hand {point.Sku} week {point.Week}");
+        AssertEqual(physical.EndingBacklog, point.PhysicalPosition.EndingBacklog, $"physical ending backlog {point.Sku} week {point.Week}");
+        AssertEqual(DdmrpCalculator.GetPositionStatus(physical.EndingOnHand, point.Sizing!.Zones), point.PhysicalPosition.OnHandStatus,
+            $"physical on-hand status should use this week's zones {point.Sku} week {point.Week}");
+        AssertEqual(DdmrpCalculator.GetPositionStatus(point.EndNetFlowBeforeReplenishment, point.Sizing.Zones), point.Status,
+            $"compatible status should remain the pre-replenishment NFP status {point.Sku} week {point.Week}");
+    }
+
+    AssertTrue(preview.BufferTrend.Kpis.OnHandRedSkuCount.HasValue, "complete physical evidence should expose on-hand red SKU KPI");
+    AssertTrue(preview.BufferTrend.Kpis.OnHandYellowSkuCount.HasValue, "complete physical evidence should expose on-hand yellow SKU KPI");
+    AssertTrue(preview.BufferTrend.Kpis.OnHandStockoutWeekCount.HasValue, "complete physical evidence should expose on-hand shortage KPI");
+
+    var duplicate = flow.Points[0];
+    var duplicateFlow = flow with { Points = flow.Points.Concat(new[] { duplicate }).ToList() };
+    var duplicateTrend = BufferTrendWorkspaceService.Build(data, preview.CaseId, preview.Name, data.Skus, preview.Plan, duplicateFlow);
+    AssertTrue(duplicateTrend.Series.Single(item => item.Sku == duplicate.Sku && item.Week == duplicate.Week).PhysicalPosition is null,
+        "duplicate physical flow keys must remain missing rather than choosing an arbitrary evidence row");
+}
+
+static void TestBufferSignalOmitsPhysicalPositionWhenEvidenceIsMissing()
+{
+    var incomplete = BuildCompletePlanningEvidenceData() with
+    {
+        ConfirmedReceipts = null,
+        OpeningBacklog = null,
+        PlanningEvidenceCoverage = null
+    };
+    var preview = new ScenarioRunPreviewService(new StaticScenarioWorkspaceDataSource(incomplete))
+        .Preview(new ScenarioRunPreviewRequest(6)).Scenario;
+
+    AssertEqual("EvidenceMissing", preview.InventoryFlow?.Status ?? string.Empty, "missing-flow test should use incomplete inventory flow");
+    AssertTrue(preview.BufferTrend.Series.All(item => item.PhysicalPosition is null),
+        "missing physical flow must not be coerced into a zero inventory position");
+    AssertTrue(preview.BufferTrend.Kpis.OnHandRedSkuCount is null &&
+        preview.BufferTrend.Kpis.OnHandYellowSkuCount is null &&
+        preview.BufferTrend.Kpis.OnHandStockoutWeekCount is null,
+        "missing physical flow must retain nullable physical KPIs rather than zeroes");
+}
+
+static void TestBufferSignalShowsNfpRecoveryBeforePhysicalReceipt()
+{
+    var (data, sku) = BuildInventoryFlowFixture(
+        new[] { 5m, 5m, 0m, 0m, 0m },
+        openingOnHand: 0m,
+        openingBacklog: 0m,
+        dltDays: 21);
+    var sizing = DdmrpCalculator.CalculateSizing(sku);
+    var projections = Enumerable.Range(1, 5)
+        .Select(week => new BufferProjectionPoint(
+            sku.Sku, week, 0m, 5m, 0m, sizing.Zones.TopOfGreen,
+            "Green", sizing))
+        .ToList();
+    var orders = new[] { new ProjectedReplenishmentOrder(sku.Sku, 1, sizing.Zones.TopOfGreen, 0m, "TopOfGreen") };
+    var plan = new DemandDrivenPlanResult(projections, orders, Array.Empty<CapacityLoadProjection>(), Array.Empty<ProjectedSupplyRequirement>(), Array.Empty<PlanningTrace>());
+    var flow = InventoryFlowProjectionService.Project(data, "long-dlt", new[] { sku }, data.Demand, orders,
+        Array.Empty<PrebuildCampaign>(), Array.Empty<SupplierCapacityLimit>());
+    var trend = BufferTrendWorkspaceService.Build(data, "long-dlt", "long DLT", new[] { sku }, plan, flow);
+
+    var receiptArrivalWeek = flow.ReceiptLog
+        .Where(item => item.SourceKind == "SimulatedReplenishment" && item.RecommendationWeek == 1)
+        .Select(item => item.ArrivalWeek)
+        .Min();
+    AssertTrue(trend.Series.Any(point =>
+            point.Week < receiptArrivalWeek &&
+            point.EndNetFlowAfterReplenishment >= point.TopOfYellow &&
+            (point.PhysicalPosition!.OnHandStatus == "Red" || point.PhysicalPosition.EndingBacklog > 0m)),
+        "NFP may recover after order release while physical stock remains red or backlogged before the long-DLT receipt");
 }
 
 static void TestLegacyPreviewKeepsLegacyReference()
@@ -11429,7 +11523,7 @@ static void TestBufferTrendWorkspaceSummarizesKpisHeatmapAndDetail()
     AssertTrue(result.SkuDetails.Any(item => item.Activities.Any(activity => activity.ActivityType == "补货订单生成")), "activities should explain replenishment decisions");
     AssertTrue(result.SkuDetails.Any(item => item.BufferSizing.Any(line => line.Formula.Contains("ADU", StringComparison.Ordinal))), "buffer sizing should expose DDMRP formulas");
     AssertTrue(result.SkuDetails.Any(item => item.Sku == result.SelectedSku), "selected SKU should exist in detail");
-    AssertTrue(result.Series.Any(item => item.Status is "Red" or "Yellow" or "Green" or "Blue"), "series should expose display statuses");
+    AssertTrue(result.Series.Any(item => item.Status is "Red" or "Yellow" or "Green" or "OverTopOfGreen"), "series should expose pre-replenishment position statuses");
     AssertTrue(result.Series.All(item => !string.IsNullOrWhiteSpace(item.PeriodStartDate)), "series should expose real time labels");
     AssertTrue(result.SkuDetails.Any(item => item.Series.Select(point => point.TopOfGreen).Distinct().Count() > 1), "time-phased DDMRP zones should vary across weeks");
     AssertTrue(result.Series.All(item => item.TopOfGreen > item.TopOfYellow && item.TopOfYellow > item.TopOfRed), "series should expose DDMRP zone tops");

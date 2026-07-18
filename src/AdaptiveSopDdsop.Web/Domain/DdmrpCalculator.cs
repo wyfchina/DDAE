@@ -75,23 +75,26 @@ public sealed class DdmrpCalculator
             decimal.Round(quantity * sku.UnitCost, 2));
     }
 
-    public static string GetBufferStatus(decimal netFlowPosition, BufferZones zones)
+    public static string GetPositionStatus(decimal position, BufferZones zones)
     {
-        if (netFlowPosition <= zones.TopOfRed)
+        if (position <= zones.TopOfRed)
         {
             return "Red";
         }
 
-        if (netFlowPosition <= zones.TopOfYellow)
+        if (position <= zones.TopOfYellow)
         {
             return "Yellow";
         }
 
-        if (netFlowPosition <= zones.TopOfGreen)
+        if (position <= zones.TopOfGreen)
         {
             return "Green";
         }
 
         return "OverTopOfGreen";
     }
+
+    public static string GetBufferStatus(decimal netFlowPosition, BufferZones zones) =>
+        GetPositionStatus(netFlowPosition, zones);
 }

@@ -158,7 +158,7 @@ const navigationHelp = {
   exceptions: "从异常 SKU 进入场景配置，优先处理服务损失、需求尖峰和缓冲风险。",
   scenarioRun: "配置模板、参数覆盖、供应限制并运行非持久化场景预览。",
   scenarioComparison: "比较基准方案与预览方案的服务、库存、产能、供应和预算影响。",
-  bufferTrend: "查看 SKU 净流动量、预计库存水位、目标库存和补货触发。",
+  bufferTrend: "查看 SKU 补货前后净流量、期末在手库存和补货触发。",
   rccpConstraint: "查看资源负荷、受限 / 不受限缺口、瓶颈资源和动作建议。",
   supplierDemand: "钻取供应商、物料族、SKU 与补货订单造成的供应需求。",
   scenarioTrace: "查看已保存场景、保存状态和场景运行审计链。",
@@ -670,6 +670,7 @@ function statusClass(status) {
     warning: "is-warning",
     blocked: "is-invalid",
     blue: "is-overgreen",
+    overtopofgreen: "is-overgreen",
   })[normalized] || "neutral"}`;
 }
 
@@ -680,6 +681,7 @@ function statusLabel(status) {
     Red: "红色",
     DeepRed: "深红色",
     Blue: "超绿",
+    OverTopOfGreen: "超绿",
     Healthy: "健康",
     Warning: "预警",
     Blocked: "阻塞",
@@ -1147,7 +1149,7 @@ function nextMasterSettingStatus(status) {
 
 function bufferCellClass(status) {
   const normalized = String(valueOr(status, "Green"));
-  return `buffer-heat-cell ${normalized === "Red" ? "is-red" : normalized === "Yellow" ? "is-yellow" : normalized === "Blue" ? "is-blue" : normalized === "EvidenceMissing" ? "is-missing" : "is-green"}`;
+  return `buffer-heat-cell ${normalized === "Red" ? "is-red" : normalized === "Yellow" ? "is-yellow" : normalized === "Blue" || normalized === "OverTopOfGreen" ? "is-blue" : normalized === "EvidenceMissing" ? "is-missing" : "is-green"}`;
 }
 
 function setWorkspaceStatus(status, message) {
@@ -2032,7 +2034,7 @@ function filterBufferTrendWorkspace(trend) {
       averageInventoryValue: cells.length ? cells.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / cells.length : 0,
       redWeekCount: cells.filter(item => item.status === "Red").length,
       yellowWeekCount: cells.filter(item => item.status === "Yellow").length,
-      overGreenWeekCount: cells.filter(item => item.status === "Blue").length,
+      overGreenWeekCount: cells.filter(item => item.status === "OverTopOfGreen").length,
       replenishmentOrderCount: skuDetails
         .filter(item => item.family === family)
         .reduce((sum, item) => sum + item.replenishmentOrders.length, 0),
@@ -2059,6 +2061,15 @@ function filterBufferTrendWorkspace(trend) {
       redSkuCount: new Set(series.filter(item => item.status === "Red").map(item => item.sku)).size,
       yellowSkuCount: new Set(series.filter(item => item.status === "Yellow").map(item => item.sku)).size,
       shortageCount: series.filter(item => Number(item.endNetFlowBeforeReplenishment) <= 0).length,
+      onHandRedSkuCount: series.some(item => item.physicalPosition)
+        ? new Set(series.filter(item => item.physicalPosition?.onHandStatus === "Red").map(item => item.sku)).size
+        : null,
+      onHandYellowSkuCount: series.some(item => item.physicalPosition)
+        ? new Set(series.filter(item => item.physicalPosition?.onHandStatus === "Yellow").map(item => item.sku)).size
+        : null,
+      onHandStockoutWeekCount: series.some(item => item.physicalPosition)
+        ? series.filter(item => Number(item.physicalPosition?.endingBacklog) > 0).length
+        : null,
       averageInventoryValue: series.length ? series.reduce((sum, item) => sum + Number(item.inventoryValue), 0) / series.length : 0,
       peakInventoryValue: series.length ? Math.max(...series.map(item => Number(item.inventoryValue))) : 0,
       replenishmentOrderCount,
@@ -2093,9 +2104,10 @@ function renderBufferTrendWorkspace(trend) {
   renderFutureInventorySelectionControls(selection);
   byId("buffer-trend-case-chip").textContent = caseLabel(filteredTrend.name);
   byId("buffer-trend-kpis").innerHTML = [
-    ["红区 SKU", number(filteredTrend.kpis.redSkuCount), "预计穿透红区"],
-    ["黄区 SKU", number(filteredTrend.kpis.yellowSkuCount), "进入补货警戒"],
-    ["预计短缺", number(filteredTrend.kpis.shortageCount), "净流动量小于等于 0"],
+    ["净流量红区 SKU", number(filteredTrend.kpis.redSkuCount), "补货前净流量位置"],
+    ["在手红区 SKU", filteredTrend.kpis.onHandRedSkuCount === null ? "证据缺失" : number(filteredTrend.kpis.onHandRedSkuCount), "期末在手库存位置"],
+    ["净流量≤0周", number(filteredTrend.kpis.shortageCount), "补货前净流量小于等于 0"],
+    ["在手短缺周", filteredTrend.kpis.onHandStockoutWeekCount === null ? "证据缺失" : number(filteredTrend.kpis.onHandStockoutWeekCount), "期末积压大于 0"],
     ["平均库存金额", money(filteredTrend.kpis.averageInventoryValue), `变化 ${money(filteredTrend.kpis.inventoryValueDelta)}`],
     ["峰值库存金额", money(filteredTrend.kpis.peakInventoryValue), "计划范围内最高"],
     ["补货订单", number(filteredTrend.kpis.replenishmentOrderCount), "按订货周期复核生成"],
@@ -2291,7 +2303,7 @@ function renderBufferTrendChart(detail) {
       ? [baselineItem(point).endNetFlowBeforeReplenishment, baselineItem(point).endNetFlowAfterReplenishment]
       : []),
     ...chartDomain.flatMap(point => point.item
-      ? [point.item.topOfRed, point.item.topOfYellow, point.item.topOfGreen, point.item.targetInventory]
+      ? [point.item.topOfRed, point.item.topOfYellow, point.item.topOfGreen, point.item.physicalPosition?.endingOnHand]
       : []),
     0,
   ].filter(isFiniteChartValue).map(Number);
@@ -2375,9 +2387,12 @@ function renderBufferTrendChart(detail) {
     netFlowBeforeField,
     point => point.item?.endNetFlowBeforeReplenishment,
     "补货前净流位置");
-  const targetDots = chartDomain.map(point => point.item && isFiniteChartValue(point.item.targetInventory)
-    ? `<circle class="target-inventory-dot" data-field="targetInventory" data-week="${point.week}" data-x="${x(point.index)}" cx="${x(point.index)}" cy="${y(point.item.targetInventory)}" r="4"><title>${escapeHtml(futureInventoryDateLabel(point))} 目标库存：${number(point.item.targetInventory)}</title></circle>`
-    : "").join("");
+  const onHandLine = renderEvidenceLine(
+    "buffer-on-hand-line",
+    "buffer-on-hand-marker",
+    'data-field="physicalPosition.endingOnHand"',
+    point => point.item?.physicalPosition?.endingOnHand,
+    "期末在手库存（执行风险）");
   const reviewMarkers = chartDomain
     .map(point => point.item?.isReplenishment
       ? `<line class="${point.item.isPrebuild ? "review-marker prebuild" : "review-marker"}" x1="${x(point.index)}" y1="${top}" x2="${x(point.index)}" y2="${top + mainHeight}"><title>${point.item.isPrebuild ? "提前建库订单" : "订货周期补货订单"}：${number(point.item.replenishmentQuantity)}</title></line>`
@@ -2404,8 +2419,8 @@ function renderBufferTrendChart(detail) {
       ${zoneEvidenceMarkers}
       ${gaps}
       ${reviewMarkers}
-      ${targetDots}
       ${netFlowLine}
+      ${onHandLine}
       ${baselineLine}
       ${currentLine}
       ${previewLine}
@@ -2416,11 +2431,11 @@ function renderBufferTrendChart(detail) {
       <span><i class="zone red"></i>红区</span>
       <span><i class="zone yellow"></i>黄区</span>
       <span><i class="zone green"></i>绿区</span>
-      <span><i class="line net-flow"></i>净流动量位置</span>
+      <span><i class="line net-flow"></i>补货前净流量位置</span>
+      <span><i class="line on-hand"></i>期末在手库存（执行风险）</span>
       ${showPreview
         ? `<span><i class="line baseline"></i>基准补货后净流</span><span><i class="line preview"></i>预览补货后净流</span>`
         : `<span><i class="line inventory"></i>补货后净流位置</span>`}
-      <span><i class="dot target"></i>目标库存</span>
     </div>`;
 }
 

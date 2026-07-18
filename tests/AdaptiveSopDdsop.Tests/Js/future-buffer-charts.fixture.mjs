@@ -188,7 +188,11 @@ export async function runFutureBufferChartFixtures(trend, scriptPath = defaultSc
   assert.ok(!upperMarkup.includes("order-spike"), "upper chart must not contain a demand threshold");
   assert.ok(!upperMarkup.includes("需求脉冲"), "upper chart must not contain pulse wording");
   assert.ok(upperMarkup.includes("buffer-net-flow-line"), "upper chart should retain net flow");
-  assert.ok(upperMarkup.includes("target-inventory-dot"), "upper chart should retain target points");
+  assert.ok(upperMarkup.includes("buffer-on-hand-line"), "upper chart should render backend physical on-hand evidence");
+  assert.ok(upperMarkup.includes('data-field="physicalPosition.endingOnHand"'),
+    "upper on-hand line must map only the physical-position field");
+  assert.ok(!upperMarkup.includes("target-inventory-dot") && !upperMarkup.includes("目标库存"),
+    "upper chart must not retain target inventory markers or legend");
   assert.ok(upperMarkup.includes("buffer-week-label"), "upper chart should retain dates");
   if (trend.skuDetails.some(item => item.series.some(point => point.isReplenishment))) {
     const detailWithOrder = trend.skuDetails.find(item => item.series.some(point => point.isReplenishment));

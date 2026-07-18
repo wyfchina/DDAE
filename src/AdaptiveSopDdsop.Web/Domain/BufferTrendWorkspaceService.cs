@@ -51,9 +51,7 @@ public sealed class BufferTrendWorkspaceService
                     Quantity = group.Sum(item => item.Quantity),
                     IsPrebuild = group.Any(item => item.Trigger == "PrebuildCampaign")
                 });
-        var physicalValues = inventoryFlow?.Points.ToDictionary(
-            item => (item.Sku, item.Week),
-            item => item.EndingInventoryValue);
+        var physicalPoints = BuildCompletePhysicalPointMap(inventoryFlow);
 
         var series = plan.BufferProjections
             .Where(point => skuMap.ContainsKey(point.Sku))
@@ -63,10 +61,18 @@ public sealed class BufferTrendWorkspaceService
                 var sizing = point.Sizing ?? throw new InvalidOperationException(
                     $"{point.Sku} 第 {point.Week} 周缺少后端定容结果，不能生成缓冲趋势。");
                 var timePhasedZones = sizing.Zones;
-                var targetInventory = (timePhasedZones.TopOfYellow + timePhasedZones.TopOfGreen) / 2m;
                 var demandSpikeThreshold = decimal.Round(sku.Adu * 5m * 1.5m, 1);
                 orderMap.TryGetValue((point.Sku, point.Week), out var order);
                 var status = TrendStatus(point, timePhasedZones);
+                physicalPoints.TryGetValue((point.Sku, point.Week), out var physicalPoint);
+                var physicalPosition = physicalPoint is null
+                    ? null
+                    : new BufferPhysicalPosition(
+                        physicalPoint.EndingOnHand,
+                        physicalPoint.EndingBacklog,
+                        DdmrpCalculator.GetPositionStatus(physicalPoint.EndingOnHand, timePhasedZones),
+                        "Complete",
+                        "InventoryFlowProjection");
                 return new BufferTrendSeriesPoint(
                     point.Sku,
                     point.Week,
@@ -79,10 +85,10 @@ public sealed class BufferTrendWorkspaceService
                     timePhasedZones.TopOfRed,
                     timePhasedZones.TopOfYellow,
                     timePhasedZones.TopOfGreen,
-                    decimal.Round(targetInventory, 0),
+                    0m,
                     decimal.Round(
-                        IsComplete(inventoryFlow)
-                            ? physicalValues![(point.Sku, point.Week)]
+                        physicalPoint is not null
+                            ? physicalPoint.EndingInventoryValue
                             : point.EndNetFlowAfterReplenishment * sku.UnitCost,
                         0),
                     decimal.Round(order?.Quantity ?? 0m, 0),
@@ -90,7 +96,8 @@ public sealed class BufferTrendWorkspaceService
                     order?.IsPrebuild ?? false,
                     status,
                     sizing,
-                    demandSpikeThreshold);
+                    demandSpikeThreshold,
+                    physicalPosition);
             })
             .OrderBy(item => item.Sku)
             .ThenBy(item => item.Week)
@@ -118,7 +125,7 @@ public sealed class BufferTrendWorkspaceService
                 decimal.Round(group.Average(item => item.InventoryValue), 0),
                 group.Count(item => item.Status == "Red"),
                 group.Count(item => item.Status == "Yellow"),
-                group.Count(item => item.Status == "Blue"),
+                group.Count(item => item.Status == "OverTopOfGreen"),
                 plan.ReplenishmentOrders.Count(order =>
                     skuMap.TryGetValue(order.Sku, out var sku) && sku.Family == group.Key)))
             .OrderByDescending(item => item.RedWeekCount)
@@ -228,22 +235,53 @@ public sealed class BufferTrendWorkspaceService
             series.Count == 0 ? 0m : decimal.Round(series.Average(item => item.InventoryValue), 0),
             series.Count == 0 ? 0m : decimal.Round(series.Max(item => item.InventoryValue), 0),
             orders.Count,
-            decimal.Round(inventoryValueDelta, 0));
+            decimal.Round(inventoryValueDelta, 0),
+            OnHandRedSkuCount(series),
+            OnHandYellowSkuCount(series),
+            OnHandStockoutWeekCount(series));
     }
 
-    private static string TrendStatus(BufferProjectionPoint point, BufferZones zones)
+    private static string TrendStatus(BufferProjectionPoint point, BufferZones zones) =>
+        DdmrpCalculator.GetPositionStatus(point.EndNetFlowBeforeReplenishment, zones);
+
+    private static IReadOnlyDictionary<(string Sku, int Week), InventoryFlowPoint> BuildCompletePhysicalPointMap(
+        InventoryFlowProjectionResult? inventoryFlow)
     {
-        if (point.EndNetFlowBeforeReplenishment <= zones.TopOfRed)
+        if (!IsComplete(inventoryFlow))
         {
-            return "Red";
+            return new Dictionary<(string Sku, int Week), InventoryFlowPoint>();
         }
 
-        if (point.EndNetFlowBeforeReplenishment <= zones.TopOfYellow)
-        {
-            return "Yellow";
-        }
+        return inventoryFlow!.Points
+            .GroupBy(item => (item.Sku, item.Week))
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single());
+    }
 
-        return point.EndNetFlowAfterReplenishment > zones.TopOfGreen ? "Blue" : "Green";
+    private static int? OnHandRedSkuCount(IReadOnlyList<BufferTrendSeriesPoint> series)
+    {
+        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
+        return physical.Count == 0 ? null : physical
+            .Where(item => item.PhysicalPosition!.OnHandStatus == "Red")
+            .Select(item => item.Sku)
+            .Distinct()
+            .Count();
+    }
+
+    private static int? OnHandYellowSkuCount(IReadOnlyList<BufferTrendSeriesPoint> series)
+    {
+        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
+        return physical.Count == 0 ? null : physical
+            .Where(item => item.PhysicalPosition!.OnHandStatus == "Yellow")
+            .Select(item => item.Sku)
+            .Distinct()
+            .Count();
+    }
+
+    private static int? OnHandStockoutWeekCount(IReadOnlyList<BufferTrendSeriesPoint> series)
+    {
+        var physical = series.Where(item => item.PhysicalPosition is not null).ToList();
+        return physical.Count == 0 ? null : physical.Count(item => item.PhysicalPosition!.EndingBacklog > 0m);
     }
 
     private static string SelectRiskSku(

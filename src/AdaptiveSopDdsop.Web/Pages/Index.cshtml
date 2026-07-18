@@ -798,7 +798,7 @@
                                         <small>同一选择同步更新三项证据</small>
                                     </div>
                                     <section class="buffer-evidence-panel" aria-labelledby="buffer-nfp-heading">
-                                        <div class="buffer-evidence-heading"><div><span>缓冲信号</span><h3 id="buffer-nfp-heading">净流位置</h3></div><small>后端 DDMRP 趋势</small></div>
+                                        <div class="buffer-evidence-heading"><div><span>库存位置</span><h3 id="buffer-nfp-heading">净流量与在手库存</h3></div><small>后端 DDMRP 趋势</small></div>
                                         <div id="buffer-trend-chart" class="buffer-trend-chart"></div>
                                     </section>
                                     <section class="buffer-evidence-panel" aria-labelledby="inventory-flow-heading">
@@ -811,10 +811,10 @@
                                         <div id="buffer-volatility-chart" class="buffer-volatility-chart" aria-label="需求波动图"></div>
                                     </section>
                                     <div class="buffer-static-legend">
-                                        <div class="buffer-static-legend-group"><strong>动态红黄绿缓冲带</strong><span>补货前净流动量位置</span><span>补货后净流位置</span><span>目标库存</span></div>
+                                        <div class="buffer-static-legend-group"><strong>动态红黄绿缓冲带</strong><span>补货前净流量位置（下单判断）</span><span>补货后净流量位置（已释放供应）</span><span>期末在手库存（执行风险）</span></div>
                                         <div class="buffer-static-legend-group"><strong>物理库存</strong><span>期末现有量</span><span>冻结确认到货</span><span>模拟到货</span><span>提前建库</span><span>期末积压</span></div>
                                         <div class="buffer-static-legend-group"><strong>需求波动</strong><span>计划需求</span><span>后端尖峰阈值</span></div>
-                                        <small class="buffer-terminology-note">“预计库存水位”是旧称；本页已更正为“补货后净流位置”，物理库存另图展示。</small>
+                                        <small class="buffer-terminology-note">补货前净流量用于下单判断；补货后净流量显示已释放供应；期末在手库存显示执行风险。</small>
                                     </div>
                                 </div>
                             </div>

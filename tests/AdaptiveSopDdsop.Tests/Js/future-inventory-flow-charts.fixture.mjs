@@ -186,7 +186,13 @@ function makeDetail(sku, name, family, caseOffset = 0) {
     topOfRed: 40 + week,
     topOfYellow: 75 + week,
     topOfGreen: 110 + week,
-    targetInventory: 74 + week,
+    physicalPosition: {
+      endingOnHand: 90 + caseOffset - week,
+      endingBacklog: week === 4 ? 2 : 0,
+      onHandStatus: week === 4 ? "Yellow" : "Green",
+      evidenceStatus: "Complete",
+      source: "InventoryFlowProjection",
+    },
     timePhasedAdu: 10,
     inventoryValue: 1000 + week * 10,
     replenishmentQuantity: week === 2 ? 20 : 0,
@@ -468,8 +474,10 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "selected scenario post-replenishment NFP must retain its explicit blue-line field mapping");
   assert.ok(nfpMarkup.includes('class="buffer-baseline-line" data-field="endNetFlowAfterReplenishment"'),
     "baseline comparison must retain its explicit gray-line field mapping");
-  assert.ok(nfpMarkup.includes('class="target-inventory-dot" data-field="targetInventory"'),
-    "target markers must retain their explicit white-marker field mapping");
+  assert.ok(nfpMarkup.includes('class="buffer-on-hand-line" data-field="physicalPosition.endingOnHand"'),
+    "upper chart must map the physical on-hand line directly from the optional backend position");
+  assert.ok(!nfpMarkup.includes("target-inventory-dot") && !nfpMarkup.includes("目标库存"),
+    "upper chart must not retain target-inventory markers or legend");
   assert.ok(physicalMarkup.includes("physical-on-hand-line") && physicalMarkup.includes('data-case-id="scenario"'),
     "second panel should render backend scenario physical on-hand");
   assert.ok(volatilityMarkup.includes("buffer-demand-area") && volatilityMarkup.includes('data-case-id="scenario"'),
@@ -642,6 +650,16 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "current EvidenceMissing must not be mislabeled as a legacy record from metric source alone");
   assert.ok(!runtime.elements.get("inventory-flow-evidence").innerHTML.includes("LegacyReference"),
     "current EvidenceMissing trace source must come from current flow validation, not legacy metric fallback");
+
+  const missingUpper = structuredClone(preview);
+  missingUpper.scenario.bufferTrend.skuDetails.forEach(detail => detail.series.forEach(point => { delete point.physicalPosition; }));
+  missingUpper.scenario.bufferTrend.series.forEach(point => { delete point.physicalPosition; });
+  runPreview(runtime, missingUpper);
+  const missingUpperMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
+  assert.ok(missingUpperMarkup.includes("buffer-net-flow-line") && !missingUpperMarkup.includes("buffer-on-hand-line"),
+    "missing physical position must leave NFP visible while omitting the upper on-hand path");
+  assert.ok(runtime.elements.get("buffer-trend-kpis").innerHTML.includes("证据缺失"),
+    "physical KPI strips must display missing evidence rather than zero when no physical positions remain");
 
   const gap = structuredClone(preview);
   const gapWeek = gap.scenario.inventoryFlow.points.find(item => item.sku === gap.scenario.bufferTrend.selectedSku)?.week + 1;
