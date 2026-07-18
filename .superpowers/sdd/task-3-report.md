@@ -28,3 +28,9 @@
 The new parameter-change reason is intentionally sourced from the historical parameter snapshot. Existing seed construction still supplies the older compatibility field on weekly facts; it is not used as parameter-change evidence by this projector.
 
 The frontend chart still consumes the compatibility target-NFP field. Task 6 is planned to remove its target series and gap predicate; Task 3 intentionally changes only the named renderer fixture, not frontend production files.
+
+## Follow-up: Seeded V2 parameter-change evidence
+
+- The normal historical seed now records `DDMRP 参数快照更新` on each V2 `HistoricalDdmrpParameterFact`; V1 retains no change reason.
+- The transition regression now uses `HistoryReviewWorkspaceService.GetReview(12)` with the unmodified seed source. It proves the V2 week emits the normal weekly event (`无事件`) alongside the distinct, non-empty snapshot reason, and verifies V1 does not invent a reason.
+- RED: before the seed change, the Release harness reported `expected DDMRP 参数快照更新, got` for that normal-source transition.

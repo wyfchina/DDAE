@@ -2995,31 +2995,20 @@ static void TestHistoryProjectionSeparatesReasons()
     const string sku = "AV-COM-201";
     const int transitionWeek = -26;
     var seed = SeedData.Create();
-    var facts = new SeedHistoryOperatingFactSource(seed)
-        .Load(new HistoryFactRequest(52, new DateOnly(2026, 6, 1)));
-    var definitions = new SeedScenarioWorkspaceDataSource(seed)
-        .Load(new ScenarioWorkspaceDataRequest(52, new DateOnly(2026, 6, 1)));
-    var evidenceFacts = facts with
-    {
-        BufferFacts = facts.BufferFacts
-            .Select(item => item.Sku == sku && item.WeekOffset == transitionWeek
-                ? item with { ExplicitCause = "进口到货节奏调整" }
-                : item)
-            .ToList(),
-        DdmrpParameterFacts = (facts.DdmrpParameterFacts ?? Array.Empty<HistoricalDdmrpParameterFact>())
-            .Select(item => item.Sku == sku && item.SnapshotId == $"HIST-{sku}-V2"
-                ? item with { ChangeReason = "定容参数转版" }
-                : item)
-            .ToList()
-    };
-    var point = HistoryReviewProjectionBuilder.Build(evidenceFacts, definitions, 3)
-        .InventoryBuffers.Single(item => item.Sku == sku)
-        .Points.Single(item => item.WeekOffset == transitionWeek);
+    var review = new HistoryReviewWorkspaceService(
+        new SeedHistoryOperatingFactSource(seed),
+        new SeedScenarioWorkspaceDataSource(seed)).GetReview(12);
+    var points = review.InventoryBuffers!.Single(item => item.Sku == sku).Points;
+    var point = points.Single(item => item.WeekOffset == transitionWeek);
 
-    AssertEqual("进口到货节奏调整", point.WeeklyEvent, "weekly business event");
-    AssertEqual("定容参数转版", point.ParameterChangeReason, "parameter-change reason");
-    AssertTrue(point.WeeklyEvent != point.ParameterChangeReason,
-        "weekly event and parameter-change reason must remain distinct evidence");
+    AssertEqual("无事件", point.WeeklyEvent, "normal weekly event evidence");
+    AssertEqual("DDMRP 参数快照更新", point.ParameterChangeReason, "seeded parameter-change reason");
+    AssertTrue(
+        !string.IsNullOrWhiteSpace(point.ParameterChangeReason) &&
+        point.WeeklyEvent != point.ParameterChangeReason,
+        "normal weekly event and snapshot parameter-change reason must remain distinct evidence");
+    AssertEqual<string?>(null, points.Single(item => item.WeekOffset == -27).ParameterChangeReason,
+        "V1 must not invent a parameter-change reason without source evidence");
 }
 
 static void TestHistoryProjectionOmitsTargetNetFlow()

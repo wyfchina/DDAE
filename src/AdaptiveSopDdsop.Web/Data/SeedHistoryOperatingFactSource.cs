@@ -182,7 +182,8 @@ public sealed class SeedHistoryOperatingFactSource : IHistoryOperatingFactSource
                         currentSetting,
                         sourceAuthority,
                         fixtureCutoff,
-                        "Complete"),
+                        "Complete",
+                        "DDMRP 参数快照更新"),
                 };
             })
             .ToList();
