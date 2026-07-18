@@ -43,6 +43,7 @@ const state = {
   futureComparison: null,
   futureComparisonRequest: null,
   futureComparisonBaseline: null,
+  selectedTimeBufferBreachKey: null,
   savedFutureComparisons: {},
   coordinationItems: [],
   selectedCoordinationItemId: null,
@@ -86,7 +87,6 @@ const workspaceRoutes = Object.freeze({
   "#future-scenario-panel/scenario-config": Object.freeze({ stageId: "future-scenario-panel", viewId: "scenario-config", targetId: "scenario-run-panel", title: "场景配置", parentTitle: "未来场景模拟", requiredHostId: null }),
   "#future-scenario-panel/plan-comparison": Object.freeze({ stageId: "future-scenario-panel", viewId: "plan-comparison", targetId: "scenario-comparison", title: "方案比较", parentTitle: "未来场景模拟", requiredHostId: null }),
   "#future-scenario-panel/inventory-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "inventory-buffer", targetId: "buffer-trend-panel", title: "库存缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
-  "#future-scenario-panel/time-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "time-buffer", targetId: "time-buffer-panel", title: "时间缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
   "#future-scenario-panel/capacity-buffer": Object.freeze({ stageId: "future-scenario-panel", viewId: "capacity-buffer", targetId: "rccp-panel", title: "能力缓冲", parentTitle: "未来场景模拟", requiredHostId: null }),
   "#future-scenario-panel/supply-risk": Object.freeze({ stageId: "future-scenario-panel", viewId: "supply-risk", targetId: "projected-supply-panel", title: "供应风险", parentTitle: "未来场景模拟", requiredHostId: null }),
   "#future-scenario-panel/breach-analysis": Object.freeze({ stageId: "future-scenario-panel", viewId: "breach-analysis", targetId: "variance-panel", title: "击穿分析", parentTitle: "未来场景模拟", requiredHostId: null }),
@@ -6024,64 +6024,98 @@ function buildScenarioComparisonRequest() {
   };
 }
 
-function renderTimeBufferView(result, baselineDetail) {
+function renderTimeBufferBreachEvidence(result, baselineDetail) {
+  const select = byId("time-buffer-breach-select");
+  const chip = byId("time-buffer-breach-evidence-chip");
+  const summary = byId("time-buffer-breach-summary");
+  const weeklyGrid = byId("time-buffer-breach-weekly-grid");
+  if (!result) {
+    state.selectedTimeBufferBreachKey = null;
+    select.innerHTML = `<option value="">等待后端结果</option>`;
+    chip.className = "status-chip neutral";
+    chip.textContent = "等待场景比较";
+    summary.innerHTML = "";
+    weeklyGrid.innerHTML = `<div class="table-empty"><strong>运行冻结基线比较后显示时间缓冲证据</strong></div>`;
+    return;
+  }
   const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
   const planningInputs = baselineDetail?.payload?.planningInputs;
   const definitions = planningInputs && planningInputs.timeBuffers ? planningInputs.timeBuffers : [];
   const definitionById = new Map(definitions.map(item => [item.bufferId, item]));
-  const timeBreaches = cases.flatMap(item => (item.breaches || [])
+  const timeBufferResults = cases.flatMap(item => (item.breaches || [])
     .filter(breach => breach.scopeType === "TimeBuffer" || breach.scopeType === "Time")
-    .map(breach => ({ caseName: item.name, ...breach })));
-  const notApplicable = !definitions.length && timeBreaches.length > 0 && timeBreaches.every(item => item.evidenceStatus === "NotApplicable");
-  const noEvidence = !notApplicable && (!definitions.length || !timeBreaches.length || cases.every(item => !(item.timeBufferProjection || []).length));
-  const hasMissingEvidence = noEvidence || timeBreaches.some(item => item.evidenceStatus !== "Complete")
-    || cases.some(item => (item.timeBufferProjection || []).some(point => point.evidenceStatus !== "Complete"));
-  byId("time-buffer-evidence-chip").className = `status-chip ${notApplicable ? "neutral" : hasMissingEvidence ? "is-warning" : "is-valid"}`;
-  byId("time-buffer-evidence-chip").textContent = notApplicable ? "不适用" : noEvidence ? "证据缺失" : hasMissingEvidence ? "部分证据缺失" : "后端证据完整";
-  byId("time-buffer-kpis").innerHTML = [
-    ["控制点", number(definitions.length), "冻结基线定义"],
-    ["比较方案", number(cases.length), "同一冻结基线"],
-    ["击穿记录", number(timeBreaches.filter(item => item.evidenceStatus === "Complete" && item.isBreached).length), "逐项后端结果见下表"],
-    ["未恢复记录", number(timeBreaches.filter(item => item.evidenceStatus === "Complete" && item.isUnrecovered).length), "逐项后端结果见下表"],
-  ].map(item => stageKpi(...item)).join("");
-  byId("time-buffer-summary-body").innerHTML = timeBreaches.length
-    ? timeBreaches.map(item => {
-      const definition = definitionById.get(item.target);
-      const evidenceComplete = item.evidenceStatus === "Complete";
-      const evidenceUnavailable = item.evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
-      return row([
-        escapeHtml(item.caseName),
-        escapeHtml(definition?.controlPoint || evidenceUnavailable),
-        escapeHtml(definition?.protectedActivity || evidenceUnavailable),
-        evidenceComplete ? metricOrEvidenceMissing(item.bufferSize, value => `${number(value)} 天`) : evidenceUnavailable,
-        !evidenceComplete ? evidenceUnavailable : item.isBreached ? metricOrEvidenceMissing(item.earliestRedWeek, value => `第 ${number(value)} 周`) : "未击穿",
-        evidenceComplete ? metricOrEvidenceMissing(item.maximumPenetrationPercent, percent) : evidenceUnavailable,
-        !evidenceComplete ? evidenceUnavailable : item.isBreached ? `${number(item.consecutiveRiskWeeks)} 周` : "不适用",
-        !evidenceComplete ? evidenceUnavailable : !item.isBreached ? "不适用" : item.isUnrecovered ? `<span class="status-chip is-invalid">展望期未恢复</span>` : metricOrEvidenceMissing(item.recoveryWeek, value => `第 ${number(value)} 周`),
-        escapeHtml((item.affectedProducts || []).join("、") || evidenceUnavailable),
-        escapeHtml(evidenceStatusLabel(item.evidenceStatus)),
-      ]);
-    }).join("")
-    : emptyRow("没有时间缓冲后端结果", 10);
+    .map(breach => ({
+      key: `${item.responseId}|${breach.target}`,
+      responseId: item.responseId,
+      caseName: item.name,
+      breach,
+      definition: definitionById.get(breach.target),
+      points: (item.timeBufferProjection || [])
+        .filter(point => point.bufferId === breach.target)
+        .sort((left, right) => left.week - right.week),
+    })));
 
-  const projectionRows = cases.flatMap(item => (item.timeBufferProjection || []).map(point => ({ caseName: item.name, ...point })));
-  const weeks = [...new Set(projectionRows.map(item => item.week))].sort((left, right) => left - right);
-  const groups = [...new Set(projectionRows.map(item => `${item.caseName}|${item.bufferId}`))];
-  byId("time-buffer-weekly-grid").innerHTML = projectionRows.length
-    ? `<table class="heatmap-table"><thead><tr><th>方案 / 控制点</th>${weeks.map(week => `<th>第 ${number(week)} 周</th>`).join("")}</tr></thead><tbody>${groups.map(group => {
-      const separator = group.indexOf("|");
-      const caseName = group.slice(0, separator);
-      const bufferId = group.slice(separator + 1);
-      const points = projectionRows.filter(item => item.caseName === caseName && item.bufferId === bufferId);
-      const controlPoint = points[0]?.controlPoint || definitionById.get(bufferId)?.controlPoint || bufferId;
-      return `<tr><th>${escapeHtml(caseName)}<small>${escapeHtml(controlPoint)}</small></th>${weeks.map(week => {
-        const point = points.find(item => item.week === week);
-        return point
-          ? `<td><span class="${bufferCellClass(point.status)}" title="${escapeHtml(point.cause)}">${metricOrEvidenceMissing(point.penetrationPercent, percent)}</span></td>`
-          : `<td><span class="buffer-heat-cell">证据缺失</span></td>`;
-      }).join("")}</tr>`;
-    }).join("")}</tbody></table>`
-    : `<div class="table-empty"><strong>运行冻结基线比较后显示时间缓冲周矩阵</strong></div>`;
+  if (!timeBufferResults.length) {
+    state.selectedTimeBufferBreachKey = null;
+    select.innerHTML = `<option value="">没有后端时间缓冲结果</option>`;
+    chip.className = "status-chip is-warning";
+    chip.textContent = "证据缺失";
+    summary.innerHTML = `<div><dt>证据状态</dt><dd>证据缺失</dd></div><div><dt>说明</dt><dd>当前比较未返回时间缓冲击穿证据</dd></div>`;
+    weeklyGrid.innerHTML = `<div class="table-empty"><strong>没有可显示的后端周度侵入证据</strong></div>`;
+    return;
+  }
+
+  const retained = timeBufferResults.find(item => item.key === state.selectedTimeBufferBreachKey);
+  const firstComplete = timeBufferResults.find(item => item.breach.evidenceStatus === "Complete");
+  const firstUnavailable = timeBufferResults.find(item => item.breach.evidenceStatus === "NotApplicable" || item.breach.evidenceStatus === "EvidenceMissing");
+  const selected = retained || firstComplete || firstUnavailable || timeBufferResults[0];
+  state.selectedTimeBufferBreachKey = selected.key;
+  select.innerHTML = timeBufferResults.map(item => {
+    const definition = item.definition;
+    const controlPoint = definition?.controlPoint || item.points[0]?.controlPoint || item.breach.target;
+    return `<option value="${escapeHtml(item.key)}">${escapeHtml(item.caseName)} · ${escapeHtml(controlPoint)}</option>`;
+  }).join("");
+  select.value = selected.key;
+
+  const evidenceStatus = selected.breach.evidenceStatus === "Complete"
+    ? "Complete"
+    : selected.breach.evidenceStatus === "NotApplicable" ? "NotApplicable" : "EvidenceMissing";
+  const evidenceComplete = evidenceStatus === "Complete";
+  const evidenceUnavailable = evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
+  chip.className = `status-chip ${evidenceComplete ? "is-valid" : evidenceStatus === "NotApplicable" ? "neutral" : "is-warning"}`;
+  chip.textContent = evidenceStatusLabel(evidenceStatus);
+
+  const definition = selected.definition;
+  const earliestRedWeek = !evidenceComplete
+    ? evidenceUnavailable
+    : selected.breach.isBreached
+      ? metricOrEvidenceMissing(selected.breach.earliestRedWeek, value => `第 ${number(value)} 周`)
+      : "未击穿";
+  const consecutiveRisk = !evidenceComplete
+    ? evidenceUnavailable
+    : selected.breach.isBreached ? `${number(selected.breach.consecutiveRiskWeeks)} 周` : "不适用";
+  const recovery = !evidenceComplete
+    ? evidenceUnavailable
+    : !selected.breach.isBreached ? "不适用"
+      : selected.breach.isUnrecovered ? "展望期未恢复"
+        : metricOrEvidenceMissing(selected.breach.recoveryWeek, value => `第 ${number(value)} 周`);
+  const summaryItems = [
+    ["控制点", definition?.controlPoint || evidenceUnavailable],
+    ["保护活动", definition?.protectedActivity || evidenceUnavailable],
+    ["缓冲天数", definition?.bufferDays === null || definition?.bufferDays === undefined ? evidenceUnavailable : `${number(definition.bufferDays)} 天`],
+    ["最大侵入", evidenceComplete ? metricOrEvidenceMissing(selected.breach.maximumPenetrationPercent, percent) : evidenceUnavailable],
+    ["最早红周", earliestRedWeek],
+    ["连续风险", consecutiveRisk],
+    ["恢复周期", recovery],
+    ["影响产品", evidenceComplete ? (selected.breach.affectedProducts || []).join("、") || "不适用" : evidenceUnavailable],
+    ["证据状态", evidenceStatusLabel(evidenceStatus)],
+  ];
+  summary.innerHTML = summaryItems.map(item => `<div><dt>${escapeHtml(item[0])}</dt><dd>${escapeHtml(item[1])}</dd></div>`).join("");
+
+  const statusText = status => ({ Early: "提前", Green: "绿色", Yellow: "黄色", Red: "红色", Late: "迟到", EvidenceMissing: "证据缺失" })[status] || statusLabel(status);
+  weeklyGrid.innerHTML = selected.points.length
+    ? `<table class="heatmap-table"><thead><tr><th>方案 / 控制点</th>${selected.points.map(point => `<th>第 ${number(point.week)} 周</th>`).join("")}</tr></thead><tbody><tr><th>${escapeHtml(selected.caseName)}<small>${escapeHtml(definition?.controlPoint || selected.points[0]?.controlPoint || selected.breach.target)}</small></th>${selected.points.map(point => `<td><span class="${bufferCellClass(point.status)}" title="${escapeHtml(point.cause)}"><strong>${metricOrEvidenceMissing(point.penetrationPercent, percent)}</strong><small>${escapeHtml(statusText(point.status))} · ${escapeHtml(point.cause)}</small></span></td>`).join("")}</tr></tbody></table>`
+    : `<div class="table-empty"><strong>${evidenceUnavailable === "不适用" ? "该控制点不适用时间缓冲" : "该后端结果未返回周度侵入证据"}</strong></div>`;
 }
 
 function renderFutureCapacityProtection(result) {
@@ -6169,7 +6203,7 @@ function renderFutureComparison(result) {
       ]);
     }).join("")
     : emptyRow("没有可计算的保护击穿证据", 8);
-  renderTimeBufferView(result, state.futureComparisonBaseline);
+  renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline);
   renderFutureCapacityProtection(result);
 }
 
@@ -6761,6 +6795,11 @@ byId("buffer-week-range-select").addEventListener("change", event => {
   state.futureInventorySelection.weekFrom = weekFrom;
   state.futureInventorySelection.weekThrough = weekThrough;
   renderSelectedFutureInventoryWorkspace();
+});
+
+byId("time-buffer-breach-select").addEventListener("change", event => {
+  state.selectedTimeBufferBreachKey = event.target.value;
+  renderTimeBufferBreachEvidence(state.futureComparison, state.futureComparisonBaseline);
 });
 
 document.addEventListener("click", event => {

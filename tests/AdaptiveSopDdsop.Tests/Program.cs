@@ -153,7 +153,7 @@ var tests = new (string Name, Action Run)[]
     ("RCCP peak load is explained as replenishment release pressure", TestRccpPeakLoadUsesReleasePressureWording),
     ("Five-stage generated business text uses Chinese ordinary wording", TestGeneratedBusinessTextUsesChineseOrdinaryWording),
     ("Five-stage UI has no external import or protocol input", TestFiveStageUiHasNoExternalImportOrProtocolInput),
-    ("Time-buffer view uses backend results only", TestTimeBufferViewUsesBackendResultsOnly),
+    ("Future time-buffer evidence is consolidated into breach analysis", TestFutureTimeBufferEvidenceIsConsolidatedIntoBreachAnalysis),
     ("Scenario Run Workspace replaces teaching page shell", TestScenarioRunWorkspaceReplacesTeachingPageShell),
     ("Scenario exceeding AS&OP guardrails is blocked from adoption", TestAsopGuardrailBlocksExcessiveScenario),
     ("Moderate scenario is routed to integrated reconciliation", TestAsopGuardrailRoutesModerateScenario),
@@ -6408,7 +6408,6 @@ static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
             ("#future-scenario-panel/scenario-config", "场景配置"),
             ("#future-scenario-panel/plan-comparison", "方案比较"),
             ("#future-scenario-panel/inventory-buffer", "库存缓冲"),
-            ("#future-scenario-panel/time-buffer", "时间缓冲"),
             ("#future-scenario-panel/capacity-buffer", "能力缓冲"),
             ("#future-scenario-panel/supply-risk", "供应风险"),
             ("#future-scenario-panel/breach-analysis", "击穿分析")
@@ -6431,7 +6430,7 @@ static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
 
     AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-group\""), "primary navigation stage group count");
     AssertEqual(5, CountExactOccurrences(navigation, "class=\"nav-stage-toggle nav-item\""), "primary navigation stage toggle count");
-    AssertEqual(23, CountExactOccurrences(navigation, "class=\"nav-subitem\""), "secondary navigation item count");
+    AssertEqual(22, CountExactOccurrences(navigation, "class=\"nav-subitem\""), "secondary navigation item count");
 
     var previousStagePosition = -1;
     foreach (var stage in stages)
@@ -6504,7 +6503,7 @@ static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
     AssertTrue(script.Contains("\"#overview-panel\": \"#ddom-decision-panel/structure-settings\"", StringComparison.Ordinal), "legacy overview hash should have a read-only canonical alias");
     AssertTrue(script.Contains("\"#saved-scenarios-panel\": \"#coordination-panel/action-tracking\"", StringComparison.Ordinal), "legacy saved scenario hash should point to action tracking");
     AssertEqual(1, CountExactOccurrences(script, "requiredHostId: \"saved-scenarios-panel\""), "only white-box trace should require the saved scenarios host");
-    AssertEqual(29, CountExactOccurrences(script, "requiredHostId: null"), "all other workspace routes should be host independent");
+    AssertEqual(28, CountExactOccurrences(script, "requiredHostId: null"), "all other workspace routes should be host independent");
 
     foreach (var forbidden in new[] { "state.activeTab", "normalizeWorkspaceFlow", "IntersectionObserver", "setActiveNav", "function activateTab(", "[data-tab]" })
     {
@@ -6533,7 +6532,6 @@ static void TestOnlySelectedStageOrChildViewIsVisible()
         ("#future-scenario-panel/scenario-config", "scenario-run-panel"),
         ("#future-scenario-panel/plan-comparison", "scenario-comparison"),
         ("#future-scenario-panel/inventory-buffer", "buffer-trend-panel"),
-        ("#future-scenario-panel/time-buffer", "time-buffer-panel"),
         ("#future-scenario-panel/capacity-buffer", "rccp-panel"),
         ("#future-scenario-panel/supply-risk", "projected-supply-panel"),
         ("#future-scenario-panel/breach-analysis", "variance-panel"),
@@ -6551,8 +6549,8 @@ static void TestOnlySelectedStageOrChildViewIsVisible()
         ("#public-demo-golden-loop-panel", "public-demo-golden-loop-panel")
     };
 
-    AssertEqual(30, routes.Length, "canonical workspace route count");
-    AssertEqual(30, routes.Select(item => item.TargetId).Distinct(StringComparer.Ordinal).Count(), "canonical workspace target uniqueness");
+    AssertEqual(29, routes.Length, "canonical workspace route count");
+    AssertEqual(29, routes.Select(item => item.TargetId).Distinct(StringComparer.Ordinal).Count(), "canonical workspace target uniqueness");
     foreach (var route in routes)
     {
         AssertEqual(1, CountExactOccurrences(page, $" id=\"{route.TargetId}\""), $"target {route.TargetId} should have one DOM ID");
@@ -7756,10 +7754,11 @@ static void TestScenarioRunWorkspaceExposesRequiredPanels()
         "coordination-related-scenario",
         "coordination-related-change",
         "coordination-lineage-list",
-        "time-buffer-evidence-chip",
-        "time-buffer-kpis",
-        "time-buffer-summary-body",
-        "time-buffer-weekly-grid",
+        "time-buffer-breach-detail",
+        "time-buffer-breach-select",
+        "time-buffer-breach-evidence-chip",
+        "time-buffer-breach-summary",
+        "time-buffer-breach-weekly-grid",
         "trace-panel"
     };
 
@@ -10478,33 +10477,49 @@ static void TestFiveStageUiHasNoExternalImportOrProtocolInput()
     AssertTrue(!script.Contains("`${state.futureComparisonRequest.externalScenario.scenarioId}/${byId(\"governance-response-id\").value}`", StringComparison.Ordinal), "external scenario and response ids must never be fabricated into a run id");
 }
 
-static void TestTimeBufferViewUsesBackendResultsOnly()
+static void TestFutureTimeBufferEvidenceIsConsolidatedIntoBreachAnalysis()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
     var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
     var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
-    foreach (var id in new[] { "time-buffer-panel", "time-buffer-evidence-chip", "time-buffer-kpis", "time-buffer-summary-body", "time-buffer-weekly-grid" })
+    AssertTrue(!page.Contains("href=\"#future-scenario-panel/time-buffer\"", StringComparison.Ordinal), "future navigation should not expose an independent time-buffer route");
+    AssertTrue(!page.Contains("id=\"time-buffer-panel\"", StringComparison.Ordinal), "future time-buffer page shell should be removed");
+    AssertTrue(!script.Contains("\"#future-scenario-panel/time-buffer\"", StringComparison.Ordinal), "workspace registry should not expose an independent time-buffer route");
+
+    var varianceStart = page.IndexOf("id=\"variance-panel\"", StringComparison.Ordinal);
+    var futureBreachBody = page.IndexOf("id=\"future-breach-body\"", varianceStart, StringComparison.Ordinal);
+    var exceptionKpis = page.IndexOf("id=\"exception-kpis\"", futureBreachBody, StringComparison.Ordinal);
+    AssertTrue(varianceStart >= 0 && futureBreachBody > varianceStart && exceptionKpis > futureBreachBody, "breach-analysis page should contain its breach table and exception workspace");
+    var consolidatedHost = page.Substring(futureBreachBody, exceptionKpis - futureBreachBody);
+    foreach (var id in new[] { "time-buffer-breach-detail", "time-buffer-breach-select", "time-buffer-breach-evidence-chip", "time-buffer-breach-summary", "time-buffer-breach-weekly-grid" })
     {
-        AssertTrue(page.Contains($"id=\"{id}\"", StringComparison.Ordinal), $"time-buffer page should expose {id}");
+        AssertTrue(consolidatedHost.Contains($"id=\"{id}\"", StringComparison.Ordinal), $"breach analysis should embed time-buffer evidence host {id}");
     }
 
-    AssertTrue(script.Contains("function renderTimeBufferView(", StringComparison.Ordinal), "time-buffer page should have a dedicated renderer");
-    AssertTrue(script.Contains("renderTimeBufferView(result, state.futureComparisonBaseline)", StringComparison.Ordinal), "future comparison renderer should invoke the time-buffer renderer with frozen-baseline evidence");
+    AssertTrue(!script.Contains("function renderTimeBufferView(", StringComparison.Ordinal), "independent time-buffer page renderer should be removed");
+    AssertTrue(script.Contains("function renderTimeBufferBreachEvidence(", StringComparison.Ordinal), "breach analysis should have a consolidated time-buffer evidence renderer");
+    AssertTrue(script.Contains("renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline)", StringComparison.Ordinal), "future comparison renderer should invoke consolidated time-buffer evidence with frozen-baseline evidence");
+    var renderer = SourceFunctionBody(script, "renderTimeBufferBreachEvidence");
+    foreach (var backendSource in new[] { ".breaches", ".timeBufferProjection", "planningInputs.timeBuffers" })
+    {
+        AssertTrue(renderer.Contains(backendSource, StringComparison.Ordinal), $"consolidated renderer should read backend source {backendSource}");
+    }
     foreach (var backendField in new[] { ".timeBufferProjection", ".breaches", ".maximumPenetrationPercent", ".earliestRedWeek", ".consecutiveRiskWeeks", ".recoveryWeek", ".isUnrecovered" })
     {
-        AssertTrue(script.Contains(backendField, StringComparison.Ordinal), $"time-buffer renderer should use backend field {backendField}");
+        AssertTrue(renderer.Contains(backendField, StringComparison.Ordinal), $"consolidated renderer should use backend field {backendField}");
     }
-    AssertTrue(script.Contains("planningInputs.timeBuffers", StringComparison.Ordinal), "time-buffer renderer should use frozen baseline protection definitions");
+    AssertTrue(renderer.Contains("`${item.responseId}|${breach.target}`", StringComparison.Ordinal), "selector key should combine case response ID and buffer ID");
+    AssertTrue(script.Contains("selectedTimeBufferBreachKey", StringComparison.Ordinal), "selected time-buffer evidence key should be retained in state");
+    AssertTrue(script.Contains("byId(\"time-buffer-breach-select\").addEventListener(\"change\"", StringComparison.Ordinal), "time-buffer evidence selector should bind once in event registration");
     AssertTrue(!script.Contains("penetrationPercent =", StringComparison.Ordinal) && !script.Contains("delayDays /", StringComparison.Ordinal) && !script.Contains("/ point.bufferDays", StringComparison.Ordinal), "front end must not calculate time-buffer penetration");
-    AssertTrue(script.Contains("const evidenceComplete = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "time-buffer display should distinguish missing evidence from a complete non-breach");
-    AssertTrue(script.Contains("item.evidenceStatus === \"NotApplicable\" ? \"不适用\" : \"证据缺失\"", StringComparison.Ordinal), "time-buffer display should distinguish not applicable from missing evidence");
-    AssertTrue(script.Contains("!item.isBreached ? \"不适用\"", StringComparison.Ordinal), "a complete non-breach should show recovery as not applicable");
+    AssertTrue(renderer.Contains("evidenceStatus === \"Complete\"", StringComparison.Ordinal), "time-buffer display should recognize complete backend evidence");
+    AssertTrue(renderer.Contains("evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal), "time-buffer display should distinguish not applicable");
+    AssertTrue(renderer.Contains("证据缺失", StringComparison.Ordinal), "time-buffer display should distinguish missing evidence");
+    AssertTrue(renderer.Contains("!selected.breach.isBreached ? \"不适用\"", StringComparison.Ordinal), "a complete non-breach should keep recovery explicitly not applicable");
     AssertTrue(script.Contains("breach.evidenceStatus === \"Complete\" || breach.evidenceStatus === \"NotApplicable\"", StringComparison.Ordinal), "comparison cards should accept a legitimate not-applicable scope without reporting missing evidence");
     AssertTrue(script.Contains("allBreachEvidenceNotApplicable ? \"不适用\"", StringComparison.Ordinal), "comparison cards should label an entirely not-applicable breach set explicitly");
     AssertTrue(script.Contains("const breachEvidenceAvailable = item.evidenceStatus === \"Complete\"", StringComparison.Ordinal), "all future breach rows should branch on backend evidence status");
     AssertTrue(script.Contains("!breachEvidenceAvailable ? unavailableEvidence", StringComparison.Ordinal), "future breach rows must show evidence state before non-breach values");
-    AssertTrue(script.Contains("[\"击穿记录\"", StringComparison.Ordinal) && script.Contains("[\"未恢复记录\"", StringComparison.Ordinal), "time-buffer KPIs should summarize unambiguous backend record counts");
-    AssertTrue(!script.Contains("const firstBreach =", StringComparison.Ordinal), "time-buffer KPIs must not label the first array item as the global earliest or maximum result");
 }
 
 static void TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario()

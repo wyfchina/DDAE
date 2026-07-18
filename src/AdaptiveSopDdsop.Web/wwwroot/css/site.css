@@ -1626,15 +1626,41 @@ body.has-focus-panel { overflow: hidden; }
   border: 1px dashed var(--color-border-strong);
   background: repeating-linear-gradient(135deg, #f4f6f8 0, #f4f6f8 6px, #fff 6px, #fff 12px);
 }
-#time-buffer-weekly-grid .heatmap-table th small {
+.breach-evidence-detail {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+.breach-evidence-selector {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(260px, 1fr);
+  gap: 10px;
+  align-items: center;
+  max-width: 760px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+#time-buffer-breach-weekly-grid .heatmap-table th small {
   display: block;
   margin-top: 3px;
   color: var(--color-muted);
   font-weight: 500;
 }
-#time-buffer-weekly-grid .buffer-heat-cell {
+#time-buffer-breach-weekly-grid .buffer-heat-cell {
+  display: grid;
+  gap: 3px;
   min-width: 72px;
   font-variant-numeric: tabular-nums;
+}
+#time-buffer-breach-weekly-grid .buffer-heat-cell small {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 #coordination-lineage-list { margin-top: 2px; }
 

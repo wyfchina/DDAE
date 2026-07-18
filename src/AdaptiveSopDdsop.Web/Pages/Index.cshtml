@@ -39,7 +39,6 @@
                     <a class="nav-subitem" href="#future-scenario-panel/scenario-config">场景配置</a>
                     <a class="nav-subitem" href="#future-scenario-panel/plan-comparison">方案比较</a>
                     <a class="nav-subitem" href="#future-scenario-panel/inventory-buffer">库存缓冲</a>
-                    <a class="nav-subitem" href="#future-scenario-panel/time-buffer">时间缓冲</a>
                     <a class="nav-subitem" href="#future-scenario-panel/capacity-buffer">能力缓冲</a>
                     <a class="nav-subitem" href="#future-scenario-panel/supply-risk">供应风险</a>
                     <a class="nav-subitem" href="#future-scenario-panel/breach-analysis">击穿分析</a>
@@ -878,19 +877,6 @@
                     </div>
                 </section>
 
-                <section id="time-buffer-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/time-buffer" hidden>
-                    <div class="panel-heading"><div><span class="panel-kicker">控制点保护</span><h2>时间缓冲</h2></div><span id="time-buffer-evidence-chip" class="status-chip neutral">等待场景比较</span></div>
-                    <div id="time-buffer-kpis" class="rccp-kpis" aria-label="时间缓冲关键指标"></div>
-                    <section class="stage-card">
-                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">后端击穿结果</span><h2>控制点与保护活动</h2></div></div>
-                        <div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>控制点</th><th>保护活动</th><th>缓冲天数</th><th>最早红周</th><th>最大侵入</th><th>连续风险</th><th>恢复周</th><th>影响产品</th><th>证据</th></tr></thead><tbody id="time-buffer-summary-body"></tbody></table></div>
-                    </section>
-                    <section class="stage-card">
-                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">周度状态</span><h2>控制点周矩阵</h2></div></div>
-                        <div id="time-buffer-weekly-grid" class="rccp-heatmap table-scroll" aria-label="时间缓冲控制点周矩阵"></div>
-                    </section>
-                </section>
-
                 <section id="rccp-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/capacity-buffer" hidden>
                     <div class="panel-heading">
                         <div><span class="panel-kicker">需求驱动 RCCP</span><h2>产品级资源负荷工作台</h2></div>
@@ -985,6 +971,15 @@
                     <section class="stage-card">
                         <div class="panel-heading compact-heading"><div><span class="panel-kicker">保护击穿</span><h2>最早红色、最大连续红区与最终恢复周期</h2></div></div>
                         <div class="table-scroll"><table class="data-table"><thead><tr><th>方案</th><th>范围</th><th>对象</th><th>最早红色周</th><th>最大连续风险</th><th>最终恢复周</th><th>受影响产品</th><th>主要原因</th></tr></thead><tbody id="future-breach-body"></tbody></table></div>
+                        <section id="time-buffer-breach-detail" class="breach-evidence-detail" aria-live="polite">
+                            <div class="panel-heading compact-heading">
+                                <div><span class="panel-kicker">时间保护证据</span><h2>时间缓冲明细</h2></div>
+                                <span id="time-buffer-breach-evidence-chip" class="status-chip neutral">等待场景比较</span>
+                            </div>
+                            <label class="breach-evidence-selector"><span>方案与控制点</span><select id="time-buffer-breach-select"><option value="">等待后端结果</option></select></label>
+                            <div id="time-buffer-breach-summary" class="metadata-list"></div>
+                            <div id="time-buffer-breach-weekly-grid" class="rccp-heatmap table-scroll" aria-label="时间缓冲周度侵入证据"></div>
+                        </section>
                     </section>
                     <div id="exception-kpis" class="rccp-kpis" aria-label="异常 KPI"></div>
                     <div class="rccp-workbench">
