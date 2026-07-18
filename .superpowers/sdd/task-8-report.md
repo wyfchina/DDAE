@@ -25,4 +25,4 @@ Base commit: `28c42b9`
 
 - Frozen baseline drawers now retain the complete backend bridge per reconciliation line: metric/object, historical closing balance, interval increase/decrease, adjustment, baseline balance, reported difference, evidence status, and escaped difference reason.
 - The frozen renderer returns an ordered set of drawer sections (summary plus line detail), while a legacy null lineage still yields exactly one immutable `旧版本未保存历史衔接证据` section.
-- The executable fixture now verifies the complete frozen bridge, HTML-safe difference reasons, and candidate freeze blocking for absent, incomplete, null/non-finite, invalid-cutoff, and reversed-cutoff reconciliation lineage.
+- The executable fixture now verifies the complete frozen bridge, HTML-safe difference reasons, and candidate freeze blocking for absent, incomplete, finite over-tolerance, null/non-finite, invalid-cutoff, and reversed-cutoff reconciliation lineage.

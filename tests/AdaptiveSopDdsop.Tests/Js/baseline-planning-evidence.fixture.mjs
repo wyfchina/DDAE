@@ -349,6 +349,7 @@ function historyReconciliationRendersAndClientMirrorBlocksPoisonedLineage(source
     ["missing lineage", item => { item.payload.historyReconciliation = null; }],
     ["root evidence missing", item => { item.payload.historyReconciliation.evidenceStatus = "EvidenceMissing"; }],
     ["line evidence missing", item => { item.payload.historyReconciliation.lines[0].evidenceStatus = "EvidenceMissing"; }],
+    ["finite difference above tolerance", item => { item.payload.historyReconciliation.lines[0].difference = 1; }],
     ["null difference", item => { item.payload.historyReconciliation.lines[0].difference = null; }],
     ["nonfinite difference", item => { item.payload.historyReconciliation.lines[0].difference = "NaN"; }],
     ["invalid cutoff", item => { item.payload.historyReconciliation.historyThroughUtc = "not-a-timestamp"; }],
