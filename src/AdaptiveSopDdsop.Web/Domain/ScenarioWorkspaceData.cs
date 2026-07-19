@@ -896,6 +896,70 @@ public sealed record MasterSettingProposalResponse(
     IReadOnlyList<MasterSettingChangeRequest> Proposals,
     IReadOnlyList<ScenarioAuditTrace> Trace);
 
+public sealed record DdomChangePackageCreateRequest(
+    string SourceScenarioRunId,
+    string Name,
+    string? Description,
+    string? CreatedBy,
+    GovernanceDecisionContext GovernanceContext);
+
+public sealed record DdomPackageActionRequest(string? UpdatedBy, string? Note);
+
+public sealed record DdomPackageStatusRequest(string Status, string? UpdatedBy, string? Note);
+
+public sealed record DdomChangePackageSummary(
+    string PackageId,
+    string PackageNumber,
+    string Name,
+    string SourceBaselineId,
+    string SourceScenarioRunId,
+    string ExternalScenarioId,
+    string ResponseId,
+    string Status,
+    string ValidationStatus,
+    string FeasibilityStatus,
+    string Owner,
+    string Approver,
+    string CreatedBy,
+    string CreatedAtUtc,
+    string? ValidatedAtUtc);
+
+public sealed record DdomChangePackageLine(
+    string LineId,
+    string PackageId,
+    int Sequence,
+    MasterSettingChangeRequest Proposal);
+
+public sealed record DdomChangePackageDetail(
+    DdomChangePackageSummary Summary,
+    string? Description,
+    ScenarioRunPreviewRequest FinalRequest,
+    ScenarioRunParameterSet? FinalParameters,
+    string InputFingerprint,
+    GovernanceDecisionContext GovernanceContext,
+    IReadOnlyList<DdomChangePackageLine> Lines);
+
+public sealed record DdomChangePackageValidation(
+    string ValidationId,
+    string PackageId,
+    string ValidationStatus,
+    string FeasibilityStatus,
+    string InputFingerprint,
+    IReadOnlyList<string> FailureReasons,
+    string ValidatedBy,
+    string ValidatedAtUtc);
+
+public sealed record DdomChangePackageAuditEvent(
+    string EventId,
+    string PackageId,
+    int Sequence,
+    string EventType,
+    string Stage,
+    string Severity,
+    string Message,
+    string? PayloadJson,
+    string CreatedAtUtc);
+
 public sealed record MasterSettingsWorkspaceResult(
     int TotalSettings,
     int PendingReviewCount,

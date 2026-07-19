@@ -109,6 +109,59 @@ public sealed class MasterSettingsGovernanceService
         return BuildProposalResponse(preview.Request, preview, data);
     }
 
+    public MasterSettingProposalResponse ProposeFromSavedRun(
+        string runId,
+        CurrentBaselineSnapshot baseline,
+        GovernanceDecisionContext context)
+    {
+        var preview = PreviewSavedRunAgainstFrozenBaseline(runId, baseline, context);
+        var data = _previewService.LoadFrozenWorkspaceData(preview.Request, baseline);
+        return BuildProposalResponse(preview.Request, preview, data);
+    }
+
+    public ScenarioRunPreviewResult PreviewSavedRunAgainstFrozenBaseline(
+        string runId,
+        CurrentBaselineSnapshot baseline,
+        GovernanceDecisionContext context)
+    {
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("必须提供已保存的冻结比较 run 标识。", nameof(runId));
+        }
+
+        var summary = _scenarioRunLineageReader?.GetSummary(runId.Trim())
+            ?? throw new ArgumentException("冻结比较 run 不存在。", nameof(runId));
+        if (!string.Equals(summary.Status, "Saved", StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(summary.BaselineSnapshotId)
+            || string.IsNullOrWhiteSpace(summary.ExternalScenarioId)
+            || string.IsNullOrWhiteSpace(summary.ResponseId))
+        {
+            throw new ArgumentException("DDOM 建议必须来自已保存的冻结比较 run。", nameof(runId));
+        }
+        if (!string.Equals(summary.BaselineSnapshotId, baseline.SnapshotId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("保存 run 的冻结基线与当前包来源不一致。", nameof(runId));
+        }
+
+        var savedRun = RequireFrozenComparisonRun(
+            runId,
+            baseline.SnapshotId,
+            summary.ExternalScenarioId,
+            summary.ResponseId);
+        var governedContext = context with
+        {
+            SourceBaselineId = baseline.SnapshotId,
+            SourceScenarioRunId = runId.Trim()
+        };
+        var request = savedRun.Request with { GovernanceContext = governedContext };
+        return _previewService.PreviewAgainstFrozenBaseline(request, baseline);
+    }
+
+    internal ScenarioRunPreviewResult PreviewFrozenPackageRequest(
+        ScenarioRunPreviewRequest finalRequest,
+        CurrentBaselineSnapshot baseline) =>
+        _previewService.PreviewAgainstFrozenBaseline(finalRequest, baseline);
+
     private static MasterSettingProposalResponse BuildProposalResponse(
         ScenarioRunPreviewRequest safeRequest,
         ScenarioRunPreviewResult preview,

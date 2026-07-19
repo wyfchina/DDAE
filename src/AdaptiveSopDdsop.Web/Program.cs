@@ -78,6 +78,16 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IScenarioRunLineageReader>(),
         databasePath);
 });
+builder.Services.AddSingleton(sp =>
+{
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
+    var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
+    return new DdomChangePackageService(
+        sp.GetRequiredService<CurrentBaselineService>(),
+        sp.GetRequiredService<MasterSettingsGovernanceService>(),
+        sp.GetRequiredService<IScenarioRunLineageReader>(),
+        databasePath);
+});
 builder.Services.AddSingleton<ILocalDatabaseRepairService>(sp =>
 {
     var environment = sp.GetRequiredService<IWebHostEnvironment>();
@@ -92,6 +102,7 @@ _ = app.Services.GetRequiredService<CurrentBaselineService>();
 _ = app.Services.GetRequiredService<CoordinationLedgerService>();
 _ = app.Services.GetRequiredService<ScenarioRunPersistenceService>();
 _ = app.Services.GetRequiredService<MasterSettingsGovernanceService>();
+_ = app.Services.GetRequiredService<DdomChangePackageService>();
 var repair = app.Services.GetRequiredService<ILocalDatabaseRepairService>();
 repair.Apply();
 
@@ -460,6 +471,102 @@ app.MapPost("/api/scenario-runs/{runId}/selection", (
     catch (KeyNotFoundException)
     {
         return Results.NotFound();
+    }
+});
+
+app.MapGet("/api/ddom-change-packages", (int? limit, DdomChangePackageService service) =>
+{
+    return Results.Ok(service.List(limit.GetValueOrDefault(50)));
+});
+
+app.MapPost("/api/ddom-change-packages", (DdomChangePackageCreateRequest request, DdomChangePackageService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Create(request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/ddom-change-packages/{packageId}", (string packageId, DdomChangePackageService service) =>
+{
+    var detail = service.GetDetail(packageId);
+    return detail is null ? Results.NotFound() : Results.Ok(detail);
+});
+
+app.MapGet("/api/ddom-change-packages/{packageId}/audit", (string packageId, DdomChangePackageService service) =>
+{
+    return service.GetDetail(packageId) is null ? Results.NotFound() : Results.Ok(service.GetAuditEvents(packageId));
+});
+
+app.MapPost("/api/ddom-change-packages/{packageId}/submit", (string packageId, DdomPackageActionRequest request, DdomChangePackageService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Submit(packageId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
+app.MapPost("/api/ddom-change-packages/{packageId}/validate", (string packageId, DdomPackageActionRequest request, DdomChangePackageService service) =>
+{
+    try
+    {
+        return Results.Ok(service.Validate(packageId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+});
+
+app.MapPost("/api/ddom-change-packages/{packageId}/status", (string packageId, DdomPackageStatusRequest request, DdomChangePackageService service) =>
+{
+    try
+    {
+        return Results.Ok(service.UpdateStatus(packageId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
     }
 });
 

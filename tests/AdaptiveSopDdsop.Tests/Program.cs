@@ -246,6 +246,8 @@ var tests = new (string Name, Action Run)[]
     ("Master settings governance generates proposals from preview", TestMasterSettingsGovernanceGeneratesProposalsFromPreview),
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
+    ("DDOM change packages regenerate selected runs and enforce white-box governance gates", TestDdomChangePackagesEnforceWhiteBoxGovernanceGates),
+    ("DDOM change package APIs stay internal and map package errors strictly", TestDdomChangePackageApiUsesStrictStatusMapping),
     ("Manual governance change requires baseline and allows no scenario", TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario),
     ("Manual governance change with scenario requires validated saved run", TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun),
     ("Scenario-derived governance change requires baseline and scenario", TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario),
@@ -13609,6 +13611,159 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
     }
 }
 
+static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-ddom-package-{Guid.NewGuid():N}.db");
+    try
+    {
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var previewService = new ScenarioRunPreviewService(source);
+        var candidate = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        var highSupplyCandidate = candidate with
+        {
+            Payload = candidate.Payload with
+            {
+                SupplierCommitments = candidate.Payload.PlanningInputs!.SupplierCapacityWindows
+                    .GroupBy(item => new { item.Supplier, item.MaterialFamily, item.LeadTimeDays })
+                    .Select(group => new BaselineSupplierCommitment(group.Key.Supplier, group.Key.MaterialFamily, 1_000_000m, group.Key.LeadTimeDays, "Green"))
+                    .ToList(),
+                PlanningInputs = candidate.Payload.PlanningInputs! with
+                {
+                    SupplierCapacityWindows = candidate.Payload.PlanningInputs!.SupplierCapacityWindows
+                        .Select(item => item with { CommittedCapacity = item.CommittedCapacity * 100m })
+                        .ToList()
+                }
+            }
+        };
+        var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(highSupplyCandidate), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("计划员", "DDOM 变更包测试基线"));
+        var context = new GovernanceDecisionContext(
+            frozen.SnapshotId, null, "运营经理", "执行委员会", "2026-08-01", "2026-08-31", "2026-08-15",
+            "降低约束资源红区", "服务未改善或现金占用超过上限时人工回滚");
+
+        ScenarioRunDetail BuildSelectedRun(string runId, string templateId, string feasibilityStatus)
+        {
+            var request = new ScenarioRunPreviewRequest(
+                12,
+                templateId,
+                ExternalScenario: new ExternalScenarioDefinition(
+                    "EXT-DDOM-001",
+                    "DDOM 测试场景",
+                    Metadata: new ScenarioAssumptionMetadata("Manual", null, null, "计划员", "2026-07-20T08:00:00Z", "2026-07-20", "2026-08-31", "测试", "人工录入")),
+                GovernanceContext: context);
+            var result = previewService.PreviewAgainstFrozenBaseline(request, frozen) with { IsPersisted = true };
+            var metrics = result.Scenario.Metrics;
+            return new ScenarioRunDetail(
+                new ScenarioRunSummary(
+                    runId, $"SR-{runId}", $"来源 {runId}", null, "计划员", "Saved", "NotSubmitted", "2026-07-20T08:00:00Z",
+                    12, templateId, null, metrics.ServiceLevelPercent, metrics.FlowIndex, metrics.AverageInventoryValue ?? 0m,
+                    metrics.PeakLoadPercent, metrics.SupplyGap, metrics.RedSkuCount, metrics.ReplenishmentOrderCount,
+                    frozen.SnapshotId, "EXT-DDOM-001", "RESP-DDOM-001", feasibilityStatus, "Selected", "计划员", "2026-07-20T08:00:00Z", "人工选定"),
+                request,
+                result);
+        }
+
+        var reviewable = BuildSelectedRun("RUN-DDOM-REVIEW", "TPL-ORDER-POLICY", "Reconcile");
+        var blocked = BuildSelectedRun("RUN-DDOM-BLOCKED", "TPL-CONSTRAINED", "Adoptable");
+        var lineage = new FixedScenarioRunLineageReader(reviewable, blocked);
+        var governance = new MasterSettingsGovernanceService(source, previewService, lineage, databasePath);
+        var packages = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
+
+        var created = packages.Create(new DdomChangePackageCreateRequest(
+            reviewable.Summary.RunId, "约束资源缓解包", "浏览器不得提交建议行", "计划员", context));
+        AssertEqual("Draft", created.Status, "package create status");
+        AssertEqual("NotRun", created.ValidationStatus, "package initial validation status");
+        AssertEqual(frozen.SnapshotId, created.SourceBaselineId, "package baseline comes from stored selected run");
+        AssertEqual("EXT-DDOM-001", created.ExternalScenarioId, "package external scenario comes from stored selected run");
+        AssertEqual("RESP-DDOM-001", created.ResponseId, "package response comes from stored selected run");
+        var persisted = packages.GetDetail(created.PackageId)!;
+        var reconstructed = new DdomChangePackageService(baselineService, governance, lineage, databasePath).GetDetail(created.PackageId)!;
+        AssertEqual(JsonSerializer.Serialize(persisted.FinalParameters), JsonSerializer.Serialize(reconstructed.FinalParameters), "package final parameters round trip after service reconstruction");
+        AssertEqual(JsonSerializer.Serialize(persisted.FinalRequest), JsonSerializer.Serialize(reconstructed.FinalRequest), "package final request round trip after service reconstruction");
+        AssertTrue(persisted.Lines.Count > 0, "package lines must be regenerated by the backend from the saved run");
+        AssertRejected(
+            () => packages.Validate(created.PackageId, new DdomPackageActionRequest("验证人", "不能在提交前验证")),
+            "package validation before submit");
+
+        var submitted = packages.Submit(created.PackageId, new DdomPackageActionRequest("提交人", "提交评审"));
+        AssertEqual("Submitted", submitted.Status, "submit is the only draft transition");
+        var validation = packages.Validate(created.PackageId, new DdomPackageActionRequest("验证人", "服务端白盒重算"));
+        AssertTrue(validation.ValidationStatus == "Passed", $"reconcile or adoptable white-box validation passes: {string.Join(" | ", validation.FailureReasons)}");
+        AssertTrue(validation.FeasibilityStatus is "Adoptable" or "Reconcile", "passed validation must carry a non-blocked feasibility result");
+        AssertEqual("Submitted", packages.GetDetail(created.PackageId)!.Summary.Status, "validation must not automatically review a package");
+        AssertRejected(
+            () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "不能跳过人工评审")),
+            "package cannot skip reviewed");
+        AssertEqual("Reviewed", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "人工评审")).Status, "explicit review after passed validation");
+        AssertRejected(
+            () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "非配置审批人", "审批人不匹配")),
+            "configured approver gate");
+        AssertEqual("Approved", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "人工批准")).Status, "explicit approval");
+        AssertEqual("Effective", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Effective", "生效责任人", "人工生效")).Status, "explicit effect after required metadata and matching fingerprint");
+        AssertEqual("Expired", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Expired", "生效责任人", "人工失效")).Status, "explicit expiry");
+        AssertTrue(
+            packages.GetAuditEvents(created.PackageId).Select(item => item.EventType).SequenceEqual(
+                new[] { "PackageCreated", "PackageSubmitted", "WhiteBoxRecalculated", "ValidationPassed", "PackageReviewed", "PackageApproved", "PackageEffective", "PackageExpired" }),
+            "package audit event sequence only records explicit actions");
+
+        var blockedCreated = packages.Create(new DdomChangePackageCreateRequest(
+            blocked.Summary.RunId, "阻断包", null, "计划员", context));
+        packages.Submit(blockedCreated.PackageId, new DdomPackageActionRequest("提交人", null));
+        var blockedValidation = packages.Validate(blockedCreated.PackageId, new DdomPackageActionRequest("验证人", null));
+        AssertEqual("Failed", blockedValidation.ValidationStatus, "blocked validation persists failed evidence");
+        AssertEqual("Blocked", blockedValidation.FeasibilityStatus, "blocked validation records backend feasibility");
+        AssertRejected(
+            () => packages.UpdateStatus(blockedCreated.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "阻断验证不能评审")),
+            "latest blocked validation review gate");
+        AssertEqual("Submitted", packages.GetDetail(blockedCreated.PackageId)!.Summary.Status, "blocked validation keeps package submitted");
+
+        var fingerprintGate = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "指纹门禁包", null, "计划员", context));
+        packages.Submit(fingerprintGate.PackageId, new DdomPackageActionRequest("提交人", null));
+        packages.Validate(fingerprintGate.PackageId, new DdomPackageActionRequest("验证人", null));
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ddom_change_packages SET final_request_json = '{\"horizonWeeks\":1}' WHERE package_id = $package_id;";
+            command.Parameters.AddWithValue("$package_id", fingerprintGate.PackageId);
+            command.ExecuteNonQuery();
+        }
+        AssertRejected(
+            () => packages.UpdateStatus(fingerprintGate.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "指纹已改变")),
+            "latest validation input fingerprint gate");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestDdomChangePackageApiUsesStrictStatusMapping()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+    var routes = new[]
+    {
+        "app.MapGet(\"/api/ddom-change-packages\"",
+        "app.MapPost(\"/api/ddom-change-packages\"",
+        "app.MapGet(\"/api/ddom-change-packages/{packageId}\"",
+        "app.MapGet(\"/api/ddom-change-packages/{packageId}/audit\"",
+        "app.MapPost(\"/api/ddom-change-packages/{packageId}/submit\"",
+        "app.MapPost(\"/api/ddom-change-packages/{packageId}/validate\"",
+        "app.MapPost(\"/api/ddom-change-packages/{packageId}/status\""
+    };
+    AssertTrue(routes.All(program.Contains), "all seven DDOM package routes must remain internal API routes");
+    AssertTrue(program.Contains("DdomChangePackageService", StringComparison.Ordinal), "DDOM package service must be registered in the internal application");
+    AssertTrue(program.Contains("Results.BadRequest", StringComparison.Ordinal) &&
+               program.Contains("Results.NotFound", StringComparison.Ordinal) &&
+               program.Contains("Results.Conflict", StringComparison.Ordinal),
+        "package APIs must map argument, missing-id and gate/state errors to 400, 404 and 409");
+    AssertTrue(!program.Contains("/api/ddom-change-packages/{packageId}/approve", StringComparison.Ordinal) &&
+               !program.Contains("/api/ddom-change-packages/{packageId}/effective", StringComparison.Ordinal),
+        "DDOM package APIs must not expose auto-approve or auto-effective shortcuts");
+}
+
 static void AssertArgumentRejected(Action action, string label)
 {
     try
@@ -13616,6 +13771,24 @@ static void AssertArgumentRejected(Action action, string label)
         action();
     }
     catch (ArgumentException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException($"{label} should be rejected");
+}
+
+static void AssertRejected(Action action, string label)
+{
+    try
+    {
+        action();
+    }
+    catch (ArgumentException)
+    {
+        return;
+    }
+    catch (InvalidOperationException)
     {
         return;
     }
@@ -14032,6 +14205,12 @@ internal sealed class FixedScenarioRunLineageReader : IScenarioRunLineageReader
         {
             [detail.Summary.RunId] = detail
         };
+    }
+
+    public FixedScenarioRunLineageReader(params ScenarioRunDetail[] details)
+    {
+        _runs = details.ToDictionary(item => item.Summary.RunId, item => item.Summary, StringComparer.Ordinal);
+        _details = details.ToDictionary(item => item.Summary.RunId, StringComparer.Ordinal);
     }
 
     public ScenarioRunSummary? GetSummary(string runId) =>
