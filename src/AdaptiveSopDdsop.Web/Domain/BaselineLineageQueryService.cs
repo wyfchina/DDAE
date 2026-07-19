@@ -5,7 +5,7 @@ public sealed record BaselineLineageResult(
     IReadOnlyList<ScenarioRunSummary> ScenarioRuns,
     IReadOnlyList<MasterSettingChangeSummary> MasterSettingChanges,
     IReadOnlyList<CoordinationItem> CoordinationItems,
-    IReadOnlyList<DdomChangePackageSummary> DdomChangePackages);
+    IReadOnlyList<DdomChangePackageSummary>? DdomChangePackages = null);
 
 public interface IBaselineLineageQueryService
 {

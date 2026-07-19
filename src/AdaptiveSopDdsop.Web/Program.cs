@@ -681,6 +681,10 @@ app.MapPost("/api/coordination-items", (CoordinationItemCreateRequest request, C
     {
         return Results.BadRequest(new { message = ex.Message });
     }
+    catch (KeyNotFoundException ex)
+    {
+        return Results.NotFound(new { message = ex.Message });
+    }
 });
 
 app.MapGet("/api/coordination-items", (

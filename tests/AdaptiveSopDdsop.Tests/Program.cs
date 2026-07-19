@@ -12147,12 +12147,27 @@ static void TestDdomPackageActionLineageIsAdditiveAndQueryable()
     AssertTrue(coordinationSource.Contains("ALTER TABLE coordination_items ADD COLUMN related_ddom_package_id TEXT NULL", StringComparison.Ordinal)
         && coordinationSource.Contains("ix_coordination_items_ddom_package", StringComparison.Ordinal),
         "coordination schema migration must add an indexed DDOM package link");
-    AssertTrue(baseline.Contains("IReadOnlyList<DdomChangePackageSummary> DdomChangePackages", StringComparison.Ordinal)
+    AssertTrue(baseline.Contains("IReadOnlyList<DdomChangePackageSummary>? DdomChangePackages = null", StringComparison.Ordinal)
         && baseline.Contains("ListByBaseline", StringComparison.Ordinal),
         "baseline lineage must expose every linked DDOM package through an unpaginated baseline query");
     AssertTrue(program.Contains("string? relatedDdomPackageId", StringComparison.Ordinal)
         && program.Contains("DdomChangePackageService", StringComparison.Ordinal),
         "coordination API must expose the additive package filter and package verifier");
+    var createEndpoint = program.Substring(
+        program.IndexOf("app.MapPost(\"/api/coordination-items\"", StringComparison.Ordinal),
+        program.IndexOf("app.MapGet(\"/api/coordination-items\"", StringComparison.Ordinal)
+        - program.IndexOf("app.MapPost(\"/api/coordination-items\"", StringComparison.Ordinal));
+    AssertTrue(createEndpoint.Contains("catch (KeyNotFoundException ex)", StringComparison.Ordinal)
+        && createEndpoint.Contains("Results.NotFound(new { message = ex.Message })", StringComparison.Ordinal),
+        "coordination creation must map a missing DDOM package to HTTP 404");
+
+    var legacyLineage = new BaselineLineageResult(
+        "BASELINE-LEGACY",
+        Array.Empty<ScenarioRunSummary>(),
+        Array.Empty<MasterSettingChangeSummary>(),
+        Array.Empty<CoordinationItem>());
+    AssertTrue(legacyLineage.DdomChangePackages is null,
+        "baseline lineage result must retain a compatible four-argument constructor with a null package tail");
 
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-ddom-action-lineage-{Guid.NewGuid():N}.db");
     try
@@ -12200,7 +12215,7 @@ static void TestDdomPackageActionLineageIsAdditiveAndQueryable()
             "action status, decision and outcome updates must not alter package status");
 
         var lineage = new BaselineLineageQueryService(runs, governance, coordination, packages).Get(frozen.SnapshotId);
-        AssertEqual(201, lineage.DdomChangePackages.Count, "baseline lineage returns every linked package beyond public limit");
+        AssertTrue(lineage.DdomChangePackages is { Count: 201 }, "baseline lineage returns every linked package beyond public limit");
         AssertTrue(lineage.CoordinationItems.Any(candidate => candidate.ItemId == item.ItemId),
             "baseline lineage includes actions linked directly to a DDOM package");
         AssertEqual(200, packages.List(500).Count, "public package list remains bounded at 200");
