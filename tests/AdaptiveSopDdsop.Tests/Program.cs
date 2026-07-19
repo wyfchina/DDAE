@@ -998,12 +998,115 @@ static void TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints(
 static void TestDesktopStartupDoesNotRequireWindowsEventLog()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    var settingsPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "appsettings.Development.json");
+    var settingsPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "appsettings.json");
     var settings = JsonNode.Parse(File.ReadAllText(settingsPath));
     var eventLogLevel = settings?["Logging"]?["EventLog"]?["LogLevel"]?["Default"]?.GetValue<string>();
+    var webDllPath = Path.Combine(
+        root,
+        "src",
+        "AdaptiveSopDdsop.Web",
+        "bin",
+        "Debug",
+        "net9.0",
+        "AdaptiveSopDdsop.Web.dll");
+
+    AssertTrue(File.Exists(webDllPath), $"Production startup smoke test requires built Web DLL: {webDllPath}");
+
+    using var process = new Process
+    {
+        StartInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            WorkingDirectory = Path.Combine(root, "src", "AdaptiveSopDdsop.Web"),
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        },
+    };
+    process.StartInfo.ArgumentList.Add(webDllPath);
+    process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
+    process.StartInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
+
+    var output = new System.Text.StringBuilder();
+    var outputLock = new object();
+    process.OutputDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
+    process.ErrorDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
+
+    try
+    {
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        var boundAddress = WaitForBoundAddress(process, output, outputLock);
+        using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var response = client.GetAsync(new Uri(new Uri(boundAddress), "/")).GetAwaiter().GetResult();
+
+        AssertEqual(System.Net.HttpStatusCode.OK, response.StatusCode,
+            $"Production startup smoke test should return HTTP 200 from {boundAddress}");
+        AssertTrue(!ReadProcessOutput(output, outputLock).Contains("EventLog", StringComparison.OrdinalIgnoreCase) ||
+                   !ReadProcessOutput(output, outputLock).Contains("Access is denied", StringComparison.OrdinalIgnoreCase),
+            $"Production startup must not record Event Log permission failures:{Environment.NewLine}{ReadProcessOutput(output, outputLock)}");
+    }
+    finally
+    {
+        if (!process.HasExited)
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(5_000);
+        }
+    }
 
     AssertEqual("None", eventLogLevel,
-        "desktop app should keep console logging while disabling the privileged Windows Event Log provider");
+        "base appsettings must disable the privileged Windows Event Log provider for Production startup");
+}
+
+static string WaitForBoundAddress(Process process, System.Text.StringBuilder output, object outputLock)
+{
+    var listeningPattern = new System.Text.RegularExpressions.Regex(
+        @"Now listening on:\s*(https?://\S+)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    var timeout = Stopwatch.StartNew();
+
+    while (timeout.Elapsed < TimeSpan.FromSeconds(15))
+    {
+        var transcript = ReadProcessOutput(output, outputLock);
+        var match = listeningPattern.Match(transcript);
+        if (match.Success)
+        {
+            return match.Groups[1].Value;
+        }
+
+        if (process.HasExited)
+        {
+            throw new InvalidOperationException(
+                $"Production Web process exited with code {process.ExitCode} before readiness:{Environment.NewLine}{transcript}");
+        }
+
+        Thread.Sleep(50);
+    }
+
+    throw new InvalidOperationException(
+        $"Production Web process did not report a bound address within 15 seconds:{Environment.NewLine}{ReadProcessOutput(output, outputLock)}");
+}
+
+static void AppendProcessOutput(System.Text.StringBuilder output, object outputLock, string? line)
+{
+    if (line is null) return;
+
+    lock (outputLock)
+    {
+        output.AppendLine(line);
+    }
+}
+
+static string ReadProcessOutput(System.Text.StringBuilder output, object outputLock)
+{
+    lock (outputLock)
+    {
+        return output.ToString();
+    }
 }
 
 static void TestSeedScaleMatchesSatelliteManufacturingDemo()

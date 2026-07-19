@@ -68,6 +68,8 @@ dotnet run `
 
 本地从源码构建目录运行时必须使用 `Development` 环境，以启用 ASP.NET Core 的静态 Web 资源清单；否则浏览器请求压缩版 CSS/JavaScript 时可能得到空响应。Production 环境应运行 `dotnet publish` 的发布目录，不直接运行源码构建目录。
 
+源码 `Development` 启动与已发布目录的 `Production` 启动都不需要 Windows Event Log 写入权限：基础 `appsettings.json` 已将 `Logging.EventLog.LogLevel.Default` 设为 `None`，同时保留控制台日志。普通 Windows 用户无需管理员权限即可完成两种启动方式。
+
 看到以下信息后即可检查：
 
 ```text
