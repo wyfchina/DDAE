@@ -49,7 +49,7 @@ Add test registrations and implementations named:
 ("Demo inventory budget derives from frozen stock facts", TestDemoInventoryBudgetUsesFrozenFacts),
 ```
 
-The first test creates two isolated cases for quantity `100`, one routing with `CapacityPerUnit=1`, one resource with weekly capacity `100`, and a twelve-week horizon. For an order anchored in week 1, assert required workload is `25` in weeks 1–4 and totals `100`. For an order anchored in week 12, assert required workload is `25` in weeks 9–12 and totals `100`. These two assertions prevent both start-edge concentration and end-edge truncation.
+The first test creates three isolated cases for quantity `100`, one routing with `CapacityPerUnit=1`, one resource with weekly capacity `100`, and a twelve-week horizon. For a week-1 order, assert `25` in weeks 1–4; for a week-6 order, assert `25` in weeks 6–9; for a week-12 order, assert `25` in weeks 9–12. Each case totals `100`. These assertions lock the normal forward window and prevent end-edge truncation.
 
 The seed test asserts these exact MOQs:
 
@@ -63,7 +63,7 @@ var expected = new Dictionary<string, decimal>
 };
 ```
 
-Assert resource capacities are AIT `270`, TVAC `144`, CLEAN `120`, HARNESS `240`. Assert default preview peak is `<=100`, average load is `>=30 && <=85`, flow is `>=87`, and average inventory is present. Assert at least one built-in template has peak `<=100` and at least one constrained template has peak `>100` or positive supply gap.
+Assert resource capacities are AIT `370`, TVAC `185`, CLEAN `120`, HARNESS `460`. These DemoFixture-only values are calibrated from the complete-window peak workloads and must not be presented as external or actual-factory capacity. Assert default preview peak is `<=100`, average load is `>=30 && <=85`, flow is `>=87`, and average inventory is present. Assert at least one built-in template has peak `<=100` and at least one constrained template has peak `>100` or positive supply gap.
 
 - [ ] **Step 2: Run the four new tests and confirm RED.**
 
@@ -86,7 +86,7 @@ if (order.Week < 1 || order.Week > horizonWeeks || workWindowWeeks <= 0)
     return Array.Empty<(int Week, decimal Required)>();
 var bucketCount = Math.Min(workWindowWeeks, horizonWeeks);
 var latestStart = horizonWeeks - bucketCount + 1;
-var startWeek = Math.Clamp(order.Week - bucketCount + 1, 1, latestStart);
+var startWeek = Math.Clamp(order.Week, 1, latestStart);
 var total = order.Quantity * routing.CapacityPerUnit;
 var baseShare = decimal.Round(total / bucketCount, 4);
 return Enumerable.Range(0, bucketCount)
@@ -96,7 +96,7 @@ return Enumerable.Range(0, bucketCount)
     .ToList();
 ```
 
-Aggregate these rows by resource/week before dividing by available capacity. The order week anchors a full aggregate window that ends at the order week when possible and shifts inside the horizon at the left edge. This is a rough-capacity bucket only: do not change buffer ordering or create operation start dates.
+Aggregate these rows by resource/week before dividing by available capacity. The order week starts the forward aggregate window when possible; at the right edge the complete window shifts left instead of truncating. This is a rough-capacity bucket only: do not change buffer ordering or create operation start dates.
 
 Change budget basis to:
 
