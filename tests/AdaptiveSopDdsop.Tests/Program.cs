@@ -234,6 +234,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario feasibility policy enforces shared hard limits and threshold boundaries", TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBoundaries),
     ("Scenario feasibility policy blocks missing evidence and is attached to previews", TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview),
     ("Blocked evidence-complete scenario can be saved without approval", TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval),
+    ("Scenario Run Workspace uses backend feasibility without local adoption thresholds", TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionThresholds),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -5556,12 +5557,25 @@ static void TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage()
         AssertTrue(summaries.All(item => item.BaselineSnapshotId == frozen.SnapshotId), "saved cases should share the frozen baseline ID");
         AssertTrue(summaries.All(item => item.ExternalScenarioId == comparisonRequest.ExternalScenario.ScenarioId), "saved cases should share the external scenario ID");
         AssertTrue(summaries.Select(item => item.ResponseId).SequenceEqual(responseIds), "saved cases should retain the selected response IDs");
+        AssertTrue(
+            summaries.All(item => item.FeasibilityStatus != "Legacy" && item.CandidateStatus == "Candidate"),
+            "frozen saves must persist backend feasibility and remain unselected candidates");
+        AssertTrue(
+            persistence.List(50, frozen.SnapshotId, comparisonRequest.ExternalScenario.ScenarioId)
+                .All(item => item.FeasibilityStatus != "Legacy" && item.CandidateStatus == "Candidate"),
+            "frozen saved-list summaries must retain backend feasibility and candidate state");
 
         foreach (var summary in summaries)
         {
             var expectedCase = frozenComparison.AllCases.Single(item => item.ResponseId == summary.ResponseId);
             var detail = persistence.GetDetail(summary.RunId);
             AssertTrue(detail is not null, "saved frozen preview should be readable");
+            AssertEqual(expectedCase.Preview.Feasibility!.Status, summary.FeasibilityStatus,
+                "saved frozen summary must match the backend feasibility policy");
+            AssertEqual("Candidate", detail!.Summary.CandidateStatus,
+                "frozen detail must remain a candidate without automatic governance action");
+            AssertEqual(expectedCase.Preview.Feasibility.Status, detail.Result.Feasibility!.Status,
+                "frozen detail must retain the backend feasibility assessment");
             AssertTrue(detail!.Result.IsPersisted, "saved frozen preview should be marked persisted");
             AssertEqual(expectedCase.Preview.Scenario.Metrics.ServiceLevelPercent, detail.Result.Scenario.Metrics.ServiceLevelPercent, "saved frozen preview service level");
             AssertEqual(expectedCase.Preview.Scenario.Metrics.AverageInventoryValue, detail.Result.Scenario.Metrics.AverageInventoryValue, "saved frozen preview inventory value");
@@ -10724,6 +10738,38 @@ static ScenarioRunPreviewResult WithConsecutiveRedWeeks(ScenarioRunPreviewResult
             .ToList()
     };
     return preview with { Scenario = preview.Scenario with { Plan = plan } };
+}
+
+static void TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionThresholds()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var start = script.IndexOf("function evaluateAdoption(result)", StringComparison.Ordinal);
+    var end = script.IndexOf("function triggerLabel", start, StringComparison.Ordinal);
+    AssertTrue(start >= 0 && end > start, "adoption adapter should remain a bounded workspace function");
+    var adapter = script[start..end];
+
+    AssertTrue(adapter.Contains("result.feasibility", StringComparison.Ordinal),
+        "workspace adoption display must consume the backend feasibility assessment");
+    AssertTrue(adapter.Contains("后端可行性结果缺失", StringComparison.Ordinal),
+        "missing backend feasibility must be displayed as a blocking result");
+    AssertTrue(adapter.Contains("Blocked", StringComparison.Ordinal) &&
+        adapter.Contains("Reconcile", StringComparison.Ordinal) &&
+        adapter.Contains("Adoptable", StringComparison.Ordinal),
+        "backend feasibility statuses must be mapped to existing display statuses");
+    AssertTrue(!adapter.Contains("SupplyFirst", StringComparison.Ordinal) &&
+        !adapter.Contains("120%", StringComparison.Ordinal) &&
+        !adapter.Contains("budgetOver", StringComparison.Ordinal) &&
+        !adapter.Contains("targetService", StringComparison.Ordinal),
+        "workspace adoption display must not retain local mode branches or hard thresholds");
+
+    var savePanelStart = script.IndexOf("function showScenarioSavePanel(result)", StringComparison.Ordinal);
+    var savePanelEnd = script.IndexOf("function renderSavedScenarioRuns", savePanelStart, StringComparison.Ordinal);
+    AssertTrue(savePanelStart >= 0 && savePanelEnd > savePanelStart, "save-panel function should remain bounded");
+    var savePanel = script[savePanelStart..savePanelEnd];
+    AssertTrue(savePanel.Contains("saveControls.button.disabled = !physicalInventoryComplete", StringComparison.Ordinal) &&
+        !savePanel.Contains("evaluateAdoption", StringComparison.Ordinal),
+        "save availability must remain based only on physical inventory evidence");
 }
 
 static void TestScenarioPreviewReturnsComparableResults()

@@ -977,97 +977,46 @@ function targetFlowIndex() {
 }
 
 function evaluateAdoption(result) {
-  const metrics = result.scenario.metrics;
-  const mode = previewControls.adoptionConstraint.value || "Balanced";
-  const targetService = targetServiceLevel();
-  const targetFlow = targetFlowIndex();
-  const serviceGap = targetServiceLevel() - Number(metrics.serviceLevelPercent);
-  const flowGap = targetFlowIndex() - Number(metrics.flowIndex);
-  const inventoryEvidenceComplete = hasCompletePhysicalInventoryEvidence(result.baseline)
-    && hasCompletePhysicalInventoryEvidence(result.scenario)
-    && metrics.averageInventoryValue !== null
-    && metrics.averageInventoryValue !== undefined
-    && Number.isFinite(Number(metrics.averageInventoryValue));
-  const budgetEvidenceComplete = result.scenario.budget.length > 0
-    && result.scenario.budget.every(item => item.projectedInventoryValue !== null
-      && item.projectedInventoryValue !== undefined
-      && item.budgetInventoryVariance !== null
-      && item.budgetInventoryVariance !== undefined
-      && Number.isFinite(Number(item.projectedInventoryValue))
-      && Number.isFinite(Number(item.budgetInventoryVariance)));
-  const budgetOver = budgetEvidenceComplete
-    ? result.scenario.budget.reduce((sum, item) => sum + Math.max(0, Number(item.budgetInventoryVariance)), 0)
-    : null;
-  const totalBudget = result.scenario.budget.reduce((sum, item) => sum + Number(item.budgetInventoryValue), 0);
-  const budgetOverPercent = totalBudget > 0 ? budgetOver * 100 / totalBudget : 0;
-  const peakLoad = Number(metrics.peakLoadPercent);
-  const supplyGap = Number(metrics.supplyGap);
-  const redSkuCount = Number(metrics.redSkuCount);
-
-  const rule = (name, current, limit, reason, action) => ({ name, current, limit, reason, action });
-  const serviceRule = rule("服务红线", `${percent(metrics.serviceLevelPercent)} / 红区 SKU ${number(redSkuCount)}`, `目标 ${percent(targetService)}，服务缺口 <= 3 点且红区 SKU = 0`, "服务水平或红区 SKU 未满足采纳口径。", "先处理红区 SKU、客户承诺或需求优先级。");
-  const flowRule = rule("流速红线", `${percent(metrics.flowIndex)} / 补货释放峰值 ${percent(peakLoad)}`, `目标 ${percent(targetFlow)}，流速缺口 <= 5 点且补货释放峰值 <= 120%`, "流速不足或补货释放峰值超过流速优先硬约束。", "重排补货节奏，检查提前建库、产能调整或需求取舍。");
-  const budgetRule = rule("库存预算红线", percent(budgetOverPercent), "<= 5%", "预览库存金额超过预算容忍度。", "需要财务确认预算或降低预建库存。");
-  const inventoryEvidenceRule = rule("库存证据", "证据缺失", "完整物理库存投影", "无法用净流量位置替代在手库存金额。", "补全冻结到货、期初积压和逐周库存守恒证据后重新运行。");
-  const capacityRule = rule("产能硬约束", percent(peakLoad), "<= 120%", "补货订单释放周的资源负荷超过硬约束。", "需要增班、外协、调整日历或削峰。");
-  const supplyRule = rule("供应硬约束", number(supplyGap), "= 0", "供应承诺能力不能覆盖不受限需求。", "需要供应商协调、替代料、提前下单或需求取舍。");
-
-  const fail = (message, violations) => ({ status: "Red", label: "阻断采纳", message, violations });
-  const warn = (message, warnings = []) => ({ status: "Yellow", label: "需要协调", message, violations: warnings });
-  const pass = (message) => ({ status: "Green", label: "可采纳预览", message, violations: [] });
-
-  if (!inventoryEvidenceComplete || !budgetEvidenceComplete) {
-    return fail("物理库存证据不完整，不能进行库存预算判断、保存或采纳。", [inventoryEvidenceRule]);
+  const feasibility = result?.feasibility;
+  if (!feasibility) {
+    return {
+      status: "Red",
+      label: "后端可行性结果缺失",
+      message: "后端可行性结果缺失；该预览不能作为采纳建议。",
+      constraintMode: "Balanced",
+      violations: [{
+        name: "后端可行性结果缺失",
+        current: "-",
+        limit: "后端评估",
+        reason: "后端未返回统一可行性评估结果。",
+        action: "请重新运行后端预览。",
+      }],
+    };
   }
 
-  if (mode === "ServiceFirst") {
-    if (serviceGap > 3 || redSkuCount > 0) return fail(`服务优先口径：服务缺口 ${number(Math.max(0, serviceGap))} 点，红区 SKU ${number(redSkuCount)}。`, [serviceRule]);
-    if (serviceGap > 0) return warn(`服务优先口径：服务水平低于目标 ${number(serviceGap)} 点，需要确认客户承诺。`, [serviceRule]);
-    return pass("服务优先口径：服务水平达到目标，且没有红区 SKU。");
-  }
-
-  if (mode === "FlowFirst") {
-    if (flowGap > 5 || peakLoad > 120) return fail(`流速优先口径：流速缺口 ${number(Math.max(0, flowGap))} 点，补货释放峰值 ${percent(peakLoad)}。`, [flowRule]);
-    if (flowGap > 0 || peakLoad > 100) return warn("流速优先口径：流速或补货释放峰值接近约束，需要重审节奏。", [flowRule]);
-    return pass("流速优先口径：流速指数达到目标，资源未超载。");
-  }
-
-  if (mode === "CashFirst") {
-    if (budgetOverPercent > 5) return fail(`现金优先口径：库存预算超出 ${percent(budgetOverPercent)}，需要财务确认。`, [budgetRule]);
-    if (budgetOver > 0) return warn(`现金优先口径：库存金额超过预算 ${money(budgetOver)}，建议协调预算。`, [budgetRule]);
-    return pass("现金优先口径：预览库存未超过预算。");
-  }
-
-  if (mode === "CapacityFirst") {
-    if (peakLoad > 120) return fail(`产能优先口径：补货释放峰值 ${percent(peakLoad)}，超过硬约束。`, [capacityRule]);
-    if (peakLoad > 100) return warn("产能优先口径：资源已经超载，需要增班、外协或需求取舍。", [capacityRule]);
-    return pass("产能优先口径：资源负荷不超过可用能力。");
-  }
-
-  if (mode === "SupplyFirst") {
-    if (supplyGap > 0) return fail(`供应优先口径：存在供应缺口 ${number(supplyGap)}，需要供应协调或替代方案。`, [supplyRule]);
-    return pass("供应优先口径：供应承诺能力覆盖不受限需求。");
-  }
-
-  const redViolations = [
-    serviceGap > 3 ? serviceRule : null,
-    flowGap > 5 ? flowRule : null,
-    peakLoad > 120 ? capacityRule : null,
-    supplyGap > 0 ? supplyRule : null,
-  ].filter(Boolean);
-  if (serviceGap > 3 || flowGap > 5 || peakLoad > 120 || supplyGap > 0) {
-    return fail("综合平衡口径：存在服务、流速、产能或供应红线，需要升级协调。", redViolations);
-  }
-  if (serviceGap > 0 || flowGap > 0 || peakLoad > 100 || budgetOver > 0) {
-    const yellowWarnings = [
-      serviceGap > 0 ? serviceRule : null,
-      flowGap > 0 ? flowRule : null,
-      peakLoad > 100 ? capacityRule : null,
-      budgetOver > 0 ? budgetRule : null,
-    ].filter(Boolean);
-    return warn("综合平衡口径：方案可继续评审，但需处理黄色约束。", yellowWarnings);
-  }
-  return pass("综合平衡口径：核心约束均满足，可作为候选方案。");
+  const display = {
+    Blocked: { status: "Red", label: feasibility.label || "阻断候选", message: "后端可行性评估已阻断该候选。", checkStatus: "Red" },
+    Reconcile: { status: "Yellow", label: feasibility.label || "需要协调", message: "后端可行性评估要求协调后继续评审。", checkStatus: "Yellow" },
+    Adoptable: { status: "Green", label: feasibility.label || "可作为候选", message: "后端可行性评估允许其作为候选。", checkStatus: null },
+  }[feasibility.status] || {
+    status: "Red",
+    label: "后端可行性结果无效",
+    message: "后端返回了无法识别的可行性状态；该预览不能作为采纳建议。",
+    checkStatus: "Red",
+  };
+  const checks = Array.isArray(feasibility.checks) ? feasibility.checks : [];
+  const violations = display.checkStatus
+    ? checks.filter(item => item.status === display.checkStatus).map(item => ({
+      name: item.metric || item.code || "后端可行性检查",
+      current: item.actual === null || item.actual === undefined ? "-" : `${number(item.actual)} ${item.unit || ""}`.trim(),
+      limit: item.redLimit === null || item.redLimit === undefined
+        ? (item.yellowLimit === null || item.yellowLimit === undefined ? "后端评估" : `${number(item.yellowLimit)} ${item.unit || ""}`.trim())
+        : `${number(item.redLimit)} ${item.unit || ""}`.trim(),
+      reason: item.message || "后端可行性检查需要处理。",
+      action: "请依据后端可行性评估处理。",
+    }))
+    : [];
+  return { ...display, constraintMode: feasibility.constraintMode || "Balanced", violations };
 }
 
 function triggerLabel(trigger) {
@@ -1810,7 +1759,7 @@ function renderPreviewComparison(result) {
   byId("scenario-comparison-result").innerHTML = `
     <div class="comparison-column adoption-decision">
       <h3>采纳建议</h3>
-      <p>${adoptionConstraintLabel(previewControls.adoptionConstraint.value)}：${adoption.message}</p>
+      <p>${adoptionConstraintLabel(adoption.constraintMode)}：${adoption.message}</p>
       <div class="comparison-metrics">
         <div><span>采纳状态</span><strong><span class="${statusClass(adoption.status)}">${adoption.label}</span></strong></div>
         <div><span>目标流速</span><strong>${percent(targetFlowIndex())}</strong></div>

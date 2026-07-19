@@ -143,13 +143,13 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
                     horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
                     service_level_percent, flow_index, average_inventory_value, peak_load_percent,
                     supply_gap, red_sku_count, replenishment_order_count,
-                    baseline_snapshot_id, external_scenario_id, response_id)
+                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status)
                 VALUES (
                     $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
                     $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
                     $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
                     $supply_gap, $red_sku_count, $replenishment_order_count,
-                    $baseline_snapshot_id, $external_scenario_id, $response_id);
+                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status);
                 """;
             AddParameters(command, summary);
             command.Parameters.AddWithValue("$request_json", requestJson);

@@ -56,17 +56,17 @@ public static class ScenarioFeasibilityPolicy
         var checks = new Dictionary<string, ScenarioFeasibilityCheck>(StringComparer.Ordinal)
         {
             ["Evidence"] = new(
-                "Evidence", "Physical inventory evidence", null, null, null, "", evidenceComplete ? "Green" : "Red",
-                evidenceComplete ? "Physical inventory projections are complete." : "Physical inventory projection evidence is incomplete."),
-            ["Service"] = CreateThresholdCheck("Service", "Service target/baseline loss", serviceLoss, 1m, 3m, "pp"),
-            ["Capacity"] = CreateThresholdCheck("Capacity", "Peak capacity load", result.Scenario.Metrics.PeakLoadPercent, 85m, 100m, "%"),
-            ["Supply"] = CreateThresholdCheck("Supply", "Supply gap / required supply", supplyGapRatio, 5m, 15m, "%"),
-            ["Inventory"] = CreateThresholdCheck("Inventory", "Average inventory increase vs baseline", inventoryIncrease, 5m, 12m, "%"),
-            ["RedDuration"] = CreateThresholdCheck("RedDuration", "Maximum consecutive red weeks", redDuration, 1m, 3m, "weeks"),
+                "Evidence", "实体库存证据", null, null, null, "无", evidenceComplete ? "Green" : "Red",
+                evidenceComplete ? "实体库存投影证据完整。" : "实体库存投影证据不完整。"),
+            ["Service"] = CreateThresholdCheck("Service", "服务目标/基准损失", serviceLoss, 1m, 3m, "百分点"),
+            ["Capacity"] = CreateThresholdCheck("Capacity", "峰值产能负荷", result.Scenario.Metrics.PeakLoadPercent, 85m, 100m, "%"),
+            ["Supply"] = CreateThresholdCheck("Supply", "供应缺口/需求供应量", supplyGapRatio, 5m, 15m, "%"),
+            ["Inventory"] = CreateThresholdCheck("Inventory", "相对基准的平均库存增幅", inventoryIncrease, 5m, 12m, "%"),
+            ["RedDuration"] = CreateThresholdCheck("RedDuration", "最大连续红区周数", redDuration, 1m, 3m, "周"),
             ["Flow"] = new(
-                "Flow", "Flow target gap", flowGap, 0m, null, "pp",
+                "Flow", "流速目标差距", flowGap, 0m, null, "百分点",
                 flowGap > 0m ? "Yellow" : "Green",
-                flowGap > 0m ? "Flow gap requires coordination; it is not a hard feasibility block." : "Flow target is met.")
+                flowGap > 0m ? "流速差距需要协调，但不构成可行性硬阻断。" : "流速目标已满足。")
         };
 
         var constraintMode = NormalizeMode(result.Request.AdoptionConstraintMode);
@@ -103,9 +103,9 @@ public static class ScenarioFeasibilityPolicy
         var status = actual > redLimit ? "Red" : actual > yellowLimit ? "Yellow" : "Green";
         var message = status switch
         {
-            "Red" => $"{metric} {actual:0.##}{unit} exceeds the hard limit {redLimit:0.##}{unit}.",
-            "Yellow" => $"{metric} {actual:0.##}{unit} exceeds the coordination limit {yellowLimit:0.##}{unit}.",
-            _ => $"{metric} is within the feasible range."
+            "Red" => $"{metric}为 {actual:0.##}{unit}，超过硬性红线 {redLimit:0.##}{unit}。",
+            "Yellow" => $"{metric}为 {actual:0.##}{unit}，超过协调黄线 {yellowLimit:0.##}{unit}。",
+            _ => $"{metric}处于可行范围内。"
         };
         return new ScenarioFeasibilityCheck(code, metric, actual, yellowLimit, redLimit, unit, status, message);
     }
