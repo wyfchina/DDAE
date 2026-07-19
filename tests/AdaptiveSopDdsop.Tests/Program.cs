@@ -20,6 +20,7 @@ var tests = new (string Name, Action Run)[]
     ("Demo scenario baseline is inside credible feasibility ranges", TestDemoScenarioBaselineFeasibilityRanges),
     ("Demo scenario templates include reviewable and blocked candidates", TestDemoScenarioTemplatesCoverFeasibilityOutcomes),
     ("Default page frozen comparison offers a reviewable candidate", TestDefaultPageFrozenComparisonOffersReviewableCandidate),
+    ("Future comparison defaults to a backend-reviewable case and labels blocked cases", TestFutureComparisonDefaultsToBackendReviewableCase),
     ("Demo inventory budget derives from frozen stock facts", TestDemoInventoryBudgetUsesFrozenFacts),
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
     ("Standard DDMRP reference is calculated by an internal backend service", TestDdmrpStandardReferenceIsBackendCalculated),
@@ -614,8 +615,12 @@ static void TestDefaultPageFrozenComparisonOffersReviewableCandidate()
         var supplierRisk = workspace.SupplierCapacityWindows
             .Select(item => new { item.Supplier, item.MaterialFamily })
             .Distinct()
-            .OrderBy(item => $"{item.Supplier}|{item.MaterialFamily}", StringComparer.Ordinal)
+            .OrderBy(
+                item => $"{item.Supplier}|{item.MaterialFamily}",
+                StringComparer.Create(System.Globalization.CultureInfo.GetCultureInfo("zh-CN"), ignoreCase: false))
             .First();
+        AssertEqual("航天复材", supplierRisk.Supplier, "page default supplier follows zh-CN browser ordering");
+        AssertEqual("热控结构", supplierRisk.MaterialFamily, "page default material family follows zh-CN browser ordering");
         var sku = workspace.Skus.First();
         var externalScenario = new ExternalScenarioDefinition(
             "EXT-DEFAULT-PAGE",
@@ -692,6 +697,41 @@ static void TestDefaultPageFrozenComparisonOffersReviewableCandidate()
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         DeleteSqliteFiles(databasePath);
     }
+}
+
+static void TestFutureComparisonDefaultsToBackendReviewableCase()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var helperStart = script.IndexOf("function preferredFutureComparisonCase(cases)", StringComparison.Ordinal);
+    var helperEnd = script.IndexOf("function renderFutureComparison(result)", helperStart, StringComparison.Ordinal);
+    AssertTrue(helperStart >= 0 && helperEnd > helperStart,
+        "future comparison should keep backend-status preference in one bounded helper");
+    var helper = script[helperStart..helperEnd];
+    AssertTrue(helper.Contains("Adoptable", StringComparison.Ordinal)
+        && helper.Contains("Reconcile", StringComparison.Ordinal)
+        && helper.Contains("Blocked", StringComparison.Ordinal),
+        "future comparison preference should use the backend feasibility states");
+    foreach (var forbiddenThreshold in new[] { "85", "100", "peakLoadPercent", "supplyGap", "serviceLevelPercent" })
+    {
+        AssertTrue(!helper.Contains(forbiddenThreshold, StringComparison.Ordinal),
+            $"future comparison preference must not duplicate backend threshold {forbiddenThreshold}");
+    }
+
+    var rendererEnd = script.IndexOf("async function saveFutureComparison()", helperEnd, StringComparison.Ordinal);
+    AssertTrue(rendererEnd > helperEnd, "future comparison renderer should remain bounded");
+    var renderer = script[helperEnd..rendererEnd];
+    AssertTrue(renderer.Contains("preferredCase.responseId", StringComparison.Ordinal)
+        && renderer.Contains("future-comparison-save-response-id", StringComparison.Ordinal)
+        && renderer.Contains("governance-response-id", StringComparison.Ordinal),
+        "save and governance selectors should default to the preferred backend-reviewable case");
+    AssertTrue(renderer.Contains("feasibility.label", StringComparison.Ordinal)
+        && renderer.Contains("is-reviewable", StringComparison.Ordinal)
+        && renderer.Contains("is-blocked", StringComparison.Ordinal)
+        && renderer.Contains("不可选定", StringComparison.Ordinal),
+        "comparison options and cards should visibly distinguish reviewable and blocked cases");
+    AssertTrue(!renderer.Contains("item.responseId === \"NO_RESPONSE\" ? \"no-response-case\" : \"is-recommended\"", StringComparison.Ordinal),
+        "response cases must not all be styled as recommended");
 }
 
 static void TestDemoInventoryBudgetUsesFrozenFacts()
@@ -7144,6 +7184,19 @@ static void TestFiveStageNavigationUsesHierarchicalViewSwitching()
     }
     AssertTrue(css.Contains("overflow-y: auto", StringComparison.Ordinal), "the selected workspace view should scroll inside the application area");
     AssertTrue(css.Contains(".nav-subitem:focus-visible", StringComparison.Ordinal), "secondary navigation should expose a visible keyboard focus state");
+    var asideStart = page.IndexOf("<aside id=\"primary-navigation\"", StringComparison.Ordinal);
+    var asideEnd = page.IndexOf("</aside>", asideStart, StringComparison.Ordinal);
+    var compactClose = page.IndexOf("id=\"compact-navigation-close\"", asideStart, StringComparison.Ordinal);
+    AssertTrue(asideStart >= 0 && compactClose > asideStart && compactClose < asideEnd
+        && page.IndexOf("aria-label=\"关闭导航\"", compactClose, StringComparison.Ordinal) > compactClose,
+        "compact navigation should expose its own close button inside the overlay");
+    AssertTrue(page.Contains("id=\"navigation-toggle\"", StringComparison.Ordinal)
+        && page.Contains("aria-controls=\"primary-navigation\"", StringComparison.Ordinal),
+        "navigation toggle should name the controlled sidebar");
+    AssertTrue(css.Contains(".compact-navigation-close", StringComparison.Ordinal)
+        && css.Contains("display: none", StringComparison.Ordinal)
+        && css.Contains("display: grid", StringComparison.Ordinal),
+        "compact close control should be hidden on desktop and visible in the compact breakpoint");
 }
 
 static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
@@ -7173,6 +7226,22 @@ static void TestWorkspaceNavigationRemovesScrollObserverAndUsesHashState()
     AssertTrue(script.Contains("history.replaceState", StringComparison.Ordinal), "workspace route should canonicalize defaults and aliases without adding history entries");
     AssertTrue(script.Contains("navigateWorkspace(\"future-scenario-panel\", \"scenario-config\", false)", StringComparison.Ordinal), "exception action should navigate to future scenario configuration");
     AssertTrue(script.Contains("navigateWorkspace(\"ddom-decision-panel\", \"parameter-decision\", false)", StringComparison.Ordinal), "governance action should navigate to DDOM parameter decision");
+    AssertTrue(script.Contains("function closeCompactNavigation()", StringComparison.Ordinal)
+        && script.Contains("function closeCompactNavigationAfterSelection()", StringComparison.Ordinal)
+        && script.Contains("window.matchMedia(\"(max-width: 900px)\")", StringComparison.Ordinal)
+        && script.Contains("item.addEventListener(\"click\", closeCompactNavigationAfterSelection)", StringComparison.Ordinal)
+        && script.Contains("byId(\"workspace\").focus()", StringComparison.Ordinal),
+        "compact navigation should close after choosing a secondary or validation view");
+    AssertTrue(script.Contains("function syncNavigationExpandedState()", StringComparison.Ordinal)
+        && script.Contains("function closeCompactNavigationAndRestoreFocus()", StringComparison.Ordinal)
+        && script.Contains("byId(\"compact-navigation-close\").addEventListener", StringComparison.Ordinal)
+        && script.Contains("byId(\"navigation-toggle\").focus()", StringComparison.Ordinal)
+        && script.Contains("navigation.setAttribute(\"inert\", \"\")", StringComparison.Ordinal)
+        && script.Contains("navigation.setAttribute(\"aria-hidden\", \"true\")", StringComparison.Ordinal),
+        "compact navigation should synchronize ARIA and restore focus through its internal close button");
+    AssertTrue(script.Contains("event.key === \"Escape\"", StringComparison.Ordinal)
+        && script.Contains("closeCompactNavigationAndRestoreFocus()", StringComparison.Ordinal),
+        "Escape should close compact navigation before other transient workspace surfaces");
     AssertTrue(script.Contains("workspace.scrollTop = 0", StringComparison.Ordinal), "every workspace view switch should reset the actual scrolling container");
     AssertTrue(script.Contains("\"#overview-panel\": \"#ddom-decision-panel/structure-settings\"", StringComparison.Ordinal), "legacy overview hash should have a read-only canonical alias");
     AssertTrue(script.Contains("\"#saved-scenarios-panel\": \"#coordination-panel/action-tracking\"", StringComparison.Ordinal), "legacy saved scenario hash should point to action tracking");

@@ -645,6 +645,39 @@ function handleWorkspaceHashChange() {
   applyWorkspaceRoute(route);
 }
 
+function closeCompactNavigation() {
+  if (!window.matchMedia("(max-width: 900px)").matches) return;
+  byId("scenario-workspace-app").classList.remove("nav-collapsed");
+  syncNavigationExpandedState();
+}
+
+function syncNavigationExpandedState() {
+  const app = byId("scenario-workspace-app");
+  const navigation = byId("primary-navigation");
+  const compact = window.matchMedia("(max-width: 900px)").matches;
+  const expanded = compact ? app.classList.contains("nav-collapsed") : !app.classList.contains("nav-collapsed");
+  byId("navigation-toggle").setAttribute("aria-expanded", String(expanded));
+  if (compact && !expanded) {
+    navigation.setAttribute("inert", "");
+    navigation.setAttribute("aria-hidden", "true");
+  } else {
+    navigation.removeAttribute("inert");
+    navigation.removeAttribute("aria-hidden");
+  }
+}
+
+function closeCompactNavigationAndRestoreFocus() {
+  if (!window.matchMedia("(max-width: 900px)").matches) return;
+  closeCompactNavigation();
+  byId("navigation-toggle").focus();
+}
+
+function closeCompactNavigationAfterSelection() {
+  if (!window.matchMedia("(max-width: 900px)").matches) return;
+  closeCompactNavigation();
+  window.requestAnimationFrame(() => byId("workspace").focus());
+}
+
 function initializeWorkspaceUi() {
   attachInlineHelp();
   initializeCollapsiblePanels();
@@ -656,6 +689,15 @@ function initializeWorkspaceUi() {
       const route = parseWorkspaceRoute(toggle.dataset.stageRoute);
       navigateWorkspace(route.stageId, route.viewId, false);
     });
+  });
+  document.querySelectorAll(".nav-subitem, .validation-group ~ .nav-item").forEach(item => {
+    item.addEventListener("click", closeCompactNavigationAfterSelection);
+  });
+  byId("compact-navigation-close").addEventListener("click", closeCompactNavigationAndRestoreFocus);
+  syncNavigationExpandedState();
+  window.matchMedia("(max-width: 900px)").addEventListener("change", () => {
+    byId("scenario-workspace-app").classList.remove("nav-collapsed");
+    syncNavigationExpandedState();
   });
   window.addEventListener("hashchange", handleWorkspaceHashChange);
   handleWorkspaceHashChange();
@@ -6484,25 +6526,60 @@ function savedFutureComparison(responseId) {
   return state.savedFutureComparisons[futureComparisonKey(responseId)] || null;
 }
 
+function preferredFutureComparisonCase(cases) {
+  return cases.find(item => item.preview?.feasibility?.status === "Adoptable")
+    || cases.find(item => item.preview?.feasibility?.status === "Reconcile")
+    || cases.find(item => item.preview?.feasibility
+      && item.preview.feasibility.status !== "Blocked"
+      && !item.preview.feasibility.isBlocked)
+    || cases[0]
+    || null;
+}
+
 function renderFutureComparison(result) {
   state.futureComparison = result;
   const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
-  const options = cases.map(item => `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)}</option>`).join("");
-  byId("governance-response-id").innerHTML = options;
-  byId("future-comparison-save-response-id").innerHTML = options;
+  const preferredCase = preferredFutureComparisonCase(cases);
+  const optionHtml = cases.map(item => {
+    const feasibility = item.preview?.feasibility || { status: "Blocked", label: "后端可行性缺失", isBlocked: true };
+    const blockedSuffix = feasibility.status === "Blocked" || feasibility.isBlocked ? "（不可选定）" : "";
+    return `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)} · ${escapeHtml(feasibility.label)}${blockedSuffix}</option>`;
+  }).join("");
+  const governanceResponseSelect = byId("governance-response-id");
+  const saveResponseSelect = byId("future-comparison-save-response-id");
+  governanceResponseSelect.innerHTML = optionHtml;
+  saveResponseSelect.innerHTML = optionHtml;
+  if (preferredCase) {
+    governanceResponseSelect.value = preferredCase.responseId;
+    saveResponseSelect.value = preferredCase.responseId;
+  }
   byId("governance-baseline-id").value = result.baselineSnapshotId;
   byId("save-future-comparison").disabled = false;
-  byId("future-comparison-save-status").className = "status-chip is-paused";
-  byId("future-comparison-save-status").textContent = "比较完成，尚未保存";
+  const preferredFeasibility = preferredCase?.preview?.feasibility;
+  const hasReviewableCase = preferredFeasibility && preferredFeasibility.status !== "Blocked" && !preferredFeasibility.isBlocked;
+  byId("future-comparison-save-status").className = `status-chip ${hasReviewableCase ? "is-warning" : "is-invalid"}`;
+  byId("future-comparison-save-status").textContent = hasReviewableCase
+    ? `已预选${preferredCase.name}（${preferredFeasibility.label}），尚未保存`
+    : "全部方案被阻断；可保存留痕，不能选定";
   byId("future-compare-status").className = "status-chip is-valid";
   byId("future-compare-status").textContent = `${result.baselineSnapshotNumber} · ${cases.length} 个方案`;
   byId("future-comparison-cards").innerHTML = cases.map(item => {
     const metrics = item.preview.scenario.metrics;
+    const feasibility = item.preview?.feasibility || { status: "Blocked", label: "后端可行性缺失", isBlocked: true };
+    const isBlocked = feasibility.status === "Blocked" || feasibility.isBlocked;
+    const isPreferred = preferredCase?.responseId === item.responseId;
+    const cardClasses = [
+      "comparison-column",
+      item.responseId === "NO_RESPONSE" ? "no-response-case" : "response-case",
+      isBlocked ? "is-blocked" : "is-reviewable",
+      isPreferred ? "is-preferred" : "",
+    ].filter(Boolean).join(" ");
+    const feasibilityClass = isBlocked ? "is-invalid" : feasibility.status === "Adoptable" ? "is-valid" : "is-warning";
     const breachEvidenceComplete = item.breaches.length > 0 && item.breaches.every(breach => breach.evidenceStatus === "Complete" || breach.evidenceStatus === "NotApplicable");
     const allBreachEvidenceNotApplicable = item.breaches.length > 0 && item.breaches.every(breach => breach.evidenceStatus === "NotApplicable");
     const breached = item.breaches.filter(breach => breach.evidenceStatus === "Complete" && breach.isBreached).length;
     const breachCountLabel = !breachEvidenceComplete ? "证据缺失" : allBreachEvidenceNotApplicable ? "不适用" : number(breached);
-    return `<div class="comparison-column ${item.responseId === "NO_RESPONSE" ? "no-response-case" : "is-recommended"}"><h3>${escapeHtml(item.name)}</h3><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
+    return `<div class="${cardClasses}"><div class="comparison-case-heading"><h3>${escapeHtml(item.name)}</h3><span class="status-chip ${feasibilityClass}">${escapeHtml(feasibility.label)}${isBlocked ? " · 不可选定" : isPreferred ? " · 默认保存项" : ""}</span></div><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
   }).join("");
   const breachRows = cases.flatMap(item => item.breaches.map(breach => ({ caseName: item.name, ...breach })));
   byId("future-breach-body").innerHTML = breachRows.length
@@ -7050,6 +7127,10 @@ document.addEventListener("click", event => {
 
 document.addEventListener("keydown", event => {
   if (event.key === "Escape") {
+    if (window.matchMedia("(max-width: 900px)").matches && byId("scenario-workspace-app").classList.contains("nav-collapsed")) {
+      closeCompactNavigationAndRestoreFocus();
+      return;
+    }
     if (state.focusedPanel) {
       closeFocusedPanel();
       return;
@@ -7393,6 +7474,7 @@ byId("apply-exception-to-scenario").addEventListener("click", applyExceptionToSc
 
 byId("navigation-toggle").addEventListener("click", () => {
   byId("scenario-workspace-app").classList.toggle("nav-collapsed");
+  syncNavigationExpandedState();
 });
 
 loadWorkspace().catch(showWorkspaceError);
