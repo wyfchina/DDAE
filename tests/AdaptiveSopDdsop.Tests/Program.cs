@@ -231,6 +231,9 @@ var tests = new (string Name, Action Run)[]
     ("Comparison omits physical delta when evidence missing", TestComparisonOmitsIncompletePhysicalDelta),
     ("Frozen comparison preserves baseline lineage and source evidence", TestFrozenComparisonPreservesBaselineLineageAndEvidence),
     ("Inventory flow result JSON round trips", TestInventoryFlowResultJsonRoundTrips),
+    ("Scenario feasibility policy enforces shared hard limits and threshold boundaries", TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBoundaries),
+    ("Scenario feasibility policy blocks missing evidence and is attached to previews", TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview),
+    ("Blocked evidence-complete scenario can be saved without approval", TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -10557,6 +10560,170 @@ static (ScenarioWorkspaceDataSet Data, IReadOnlyList<SkuBufferSetting> Skus) Bui
             })
             .ToList()
     }, skus);
+}
+
+static void TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBoundaries()
+{
+    var (data, preview) = CreateScenarioFeasibilityFixture();
+    var deepRed = preview with
+    {
+        Scenario = preview.Scenario with
+        {
+            Metrics = preview.Scenario.Metrics with { PeakLoadPercent = 100.1m }
+        }
+    };
+
+    foreach (var mode in new[] { "Balanced", "ServiceFirst", "FlowFirst", "CashFirst", "CapacityFirst", "SupplyFirst" })
+    {
+        var assessment = ScenarioFeasibilityPolicy.Evaluate(deepRed with
+        {
+            Request = deepRed.Request with { AdoptionConstraintMode = mode }
+        }, data);
+        AssertTrue(assessment.IsBlocked, $"{mode} must not bypass a hard red line");
+        AssertEqual("Blocked", assessment.Status, $"{mode} hard-red status");
+    }
+
+    var balanced = ScenarioFeasibilityPolicy.Evaluate(deepRed with
+    {
+        Request = deepRed.Request with { AdoptionConstraintMode = "Balanced" }
+    }, data);
+    var supplyFirst = ScenarioFeasibilityPolicy.Evaluate(deepRed with
+    {
+        Request = deepRed.Request with { AdoptionConstraintMode = "SupplyFirst" }
+    }, data);
+    AssertEqual(balanced.IsBlocked, supplyFirst.IsBlocked, "priority mode must not change a hard result");
+    AssertTrue(balanced.Checks[0].Code != supplyFirst.Checks[0].Code,
+        "priority mode should only change the review ordering");
+
+    var capacityAtLimit = ScenarioFeasibilityPolicy.Evaluate(preview with
+    {
+        Scenario = preview.Scenario with { Metrics = preview.Scenario.Metrics with { PeakLoadPercent = 100m } }
+    }, data);
+    var capacityOverLimit = ScenarioFeasibilityPolicy.Evaluate(deepRed, data);
+    AssertTrue(capacityAtLimit.Checks.Single(item => item.Code == "Capacity").Status != "Red",
+        "peak load 100 must not be red");
+    AssertEqual("Red", capacityOverLimit.Checks.Single(item => item.Code == "Capacity").Status,
+        "peak load 100.1 must be red");
+
+    var supplyAtLimit = ScenarioFeasibilityPolicy.Evaluate(WithSupplyGap(preview, 15m), data);
+    var supplyOverLimit = ScenarioFeasibilityPolicy.Evaluate(WithSupplyGap(preview, 15.1m), data);
+    AssertTrue(supplyAtLimit.Checks.Single(item => item.Code == "Supply").Status != "Red",
+        "supply gap ratio 15% must not be red");
+    AssertEqual("Red", supplyOverLimit.Checks.Single(item => item.Code == "Supply").Status,
+        "supply gap ratio above 15% must be red");
+
+    var baselineInventory = preview.Baseline.Metrics.AverageInventoryValue!.Value;
+    var inventoryAtLimit = ScenarioFeasibilityPolicy.Evaluate(preview with
+    {
+        Scenario = preview.Scenario with
+        {
+            Metrics = preview.Scenario.Metrics with { AverageInventoryValue = baselineInventory * 1.12m }
+        }
+    }, data);
+    var inventoryOverLimit = ScenarioFeasibilityPolicy.Evaluate(preview with
+    {
+        Scenario = preview.Scenario with
+        {
+            Metrics = preview.Scenario.Metrics with { AverageInventoryValue = baselineInventory * 1.121m }
+        }
+    }, data);
+    AssertTrue(inventoryAtLimit.Checks.Single(item => item.Code == "Inventory").Status != "Red",
+        "inventory increase 12% must not be red");
+    AssertEqual("Red", inventoryOverLimit.Checks.Single(item => item.Code == "Inventory").Status,
+        "inventory increase above 12% must be red");
+
+    var threeRedWeeks = ScenarioFeasibilityPolicy.Evaluate(WithConsecutiveRedWeeks(preview, 3), data);
+    var fourRedWeeks = ScenarioFeasibilityPolicy.Evaluate(WithConsecutiveRedWeeks(preview, 4), data);
+    AssertTrue(threeRedWeeks.Checks.Single(item => item.Code == "RedDuration").Status != "Red",
+        "three consecutive red weeks must not be red by duration alone");
+    AssertEqual("Red", fourRedWeeks.Checks.Single(item => item.Code == "RedDuration").Status,
+        "four consecutive red weeks must be red");
+}
+
+static void TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview()
+{
+    var (data, preview) = CreateScenarioFeasibilityFixture();
+    var incomplete = preview with
+    {
+        Scenario = preview.Scenario with
+        {
+            InventoryFlow = preview.Scenario.InventoryFlow! with { Status = "EvidenceMissing" }
+        }
+    };
+    var assessment = ScenarioFeasibilityPolicy.Evaluate(incomplete, data);
+    AssertTrue(assessment.IsBlocked, "missing physical inventory evidence must be blocked");
+    AssertEqual("Red", assessment.Checks.Single(item => item.Code == "Evidence").Status,
+        "missing evidence must be a red check");
+
+    AssertTrue(preview.Feasibility is not null, "every backend preview must carry the feasibility assessment");
+    AssertEqual(preview.Feasibility!.Status, ScenarioFeasibilityPolicy.Evaluate(preview, data).Status,
+        "preview feasibility must come from the common backend policy");
+}
+
+static void TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-feasibility-{Guid.NewGuid():N}.db");
+    try
+    {
+        var previewService = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(SeedData.Create()));
+        var persistence = new ScenarioRunPersistenceService(previewService, databasePath);
+        var request = new ScenarioRunPreviewRequest(12, "TPL-CONSTRAINED", AdoptionConstraintMode: "SupplyFirst");
+        var preview = previewService.Preview(request);
+
+        AssertTrue(preview.Feasibility is { IsBlocked: true },
+            "the constrained evidence-complete preview must be blocked by feasibility without becoming unsaveable");
+        var saved = persistence.Save(new ScenarioRunSaveRequest("阻断候选保存", "验证阻断候选仍仅保存", "计划员", request));
+
+        AssertEqual("Saved", saved.Status, "blocked candidate save status");
+        AssertEqual("NotSubmitted", saved.ApprovalStatus, "blocked candidate must not be submitted or approved");
+        AssertEqual("Blocked", saved.Summary.FeasibilityStatus, "saved summary feasibility status");
+        AssertTrue(persistence.GetDetail(saved.RunId)!.Result.Feasibility is { IsBlocked: true },
+            "persisted preview must retain the backend assessment");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        foreach (var suffix in new[] { "", "-wal", "-shm" })
+        {
+            var path = $"{databasePath}{suffix}";
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+}
+
+static (ScenarioWorkspaceDataSet Data, ScenarioRunPreviewResult Preview) CreateScenarioFeasibilityFixture()
+{
+    var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+    var request = new ScenarioRunPreviewRequest(12);
+    var data = source.Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var preview = new ScenarioRunPreviewService(source).Preview(request);
+    return (data, preview);
+}
+
+static ScenarioRunPreviewResult WithSupplyGap(ScenarioRunPreviewResult preview, decimal gapPercent) => preview with
+{
+    Scenario = preview.Scenario with
+    {
+        SupplierCapacity = new[]
+        {
+            new SupplierCapacityComparison("test supplier", "test material", 1, 100m, 100m - gapPercent, gapPercent, "Test")
+        }
+    }
+};
+
+static ScenarioRunPreviewResult WithConsecutiveRedWeeks(ScenarioRunPreviewResult preview, int redWeeks)
+{
+    var sku = preview.Scenario.Plan.BufferProjections[0].Sku;
+    var plan = preview.Scenario.Plan with
+    {
+        BufferProjections = preview.Scenario.Plan.BufferProjections
+            .Select(item => item with
+            {
+                BufferStatus = item.Sku == sku && item.Week <= redWeeks ? "Red" : "Green"
+            })
+            .ToList()
+    };
+    return preview with { Scenario = preview.Scenario with { Plan = plan } };
 }
 
 static void TestScenarioPreviewReturnsComparableResults()

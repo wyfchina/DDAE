@@ -66,13 +66,13 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
                     horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
                     service_level_percent, flow_index, average_inventory_value, peak_load_percent,
                     supply_gap, red_sku_count, replenishment_order_count,
-                    baseline_snapshot_id, external_scenario_id, response_id)
+                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status)
                 VALUES (
                     $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
                     $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
                     $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
                     $supply_gap, $red_sku_count, $replenishment_order_count,
-                    $baseline_snapshot_id, $external_scenario_id, $response_id);
+                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status);
                 """;
             AddParameters(command, summary);
             command.Parameters.AddWithValue("$request_json", requestJson);
@@ -207,7 +207,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status
             FROM scenario_runs
             {whereClause}
             ORDER BY created_at_utc DESC
@@ -244,7 +244,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status
             FROM scenario_runs
             WHERE run_id = $run_id;
             """;
@@ -262,7 +262,7 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id, request_json, result_json
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status, request_json, result_json
             FROM scenario_runs
             WHERE run_id = $run_id;
             """;
@@ -275,8 +275,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         }
 
         var summary = ReadSummary(reader);
-        var requestJson = reader.GetString(21);
-        var resultJson = reader.GetString(22);
+        var requestJson = reader.GetString(23);
+        var resultJson = reader.GetString(24);
         var request = JsonSerializer.Deserialize<ScenarioRunPreviewRequest>(requestJson, JsonOptions)
             ?? new ScenarioRunPreviewRequest();
         var result = ScenarioRunPreviewService.RestoreLegacyInventoryEvidence(
@@ -371,6 +371,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         EnsureColumn(connection, "baseline_snapshot_id", "TEXT NULL");
         EnsureColumn(connection, "external_scenario_id", "TEXT NULL");
         EnsureColumn(connection, "response_id", "TEXT NULL");
+        EnsureColumn(connection, "feasibility_status", "TEXT NOT NULL DEFAULT 'Legacy'");
+        EnsureColumn(connection, "candidate_status", "TEXT NOT NULL DEFAULT 'Candidate'");
 
         using var lineageIndexes = connection.CreateCommand();
         lineageIndexes.CommandText = """
@@ -443,7 +445,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             metrics.PeakLoadPercent,
             metrics.SupplyGap,
             metrics.RedSkuCount,
-            metrics.ReplenishmentOrderCount);
+            metrics.ReplenishmentOrderCount,
+            FeasibilityStatus: preview.Feasibility?.Status ?? "Legacy");
     }
 
     private static void EnsurePhysicalInventoryEvidence(ScenarioRunPreviewResult preview)
@@ -508,6 +511,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         command.Parameters.AddWithValue("$baseline_snapshot_id", (object?)summary.BaselineSnapshotId ?? DBNull.Value);
         command.Parameters.AddWithValue("$external_scenario_id", (object?)summary.ExternalScenarioId ?? DBNull.Value);
         command.Parameters.AddWithValue("$response_id", (object?)summary.ResponseId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$feasibility_status", summary.FeasibilityStatus);
+        command.Parameters.AddWithValue("$candidate_status", summary.CandidateStatus);
     }
 
     private static void InsertAuditEvent(SqliteConnection connection, SqliteTransaction transaction, ScenarioRunAuditEvent auditEvent)
@@ -555,7 +560,9 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             reader.GetInt32(17),
             reader.IsDBNull(18) ? null : reader.GetString(18),
             reader.IsDBNull(19) ? null : reader.GetString(19),
-            reader.IsDBNull(20) ? null : reader.GetString(20));
+            reader.IsDBNull(20) ? null : reader.GetString(20),
+            reader.IsDBNull(21) ? "Legacy" : reader.GetString(21),
+            reader.IsDBNull(22) ? "Candidate" : reader.GetString(22));
     }
 
     private static string? NormalizeFilter(string? value) =>

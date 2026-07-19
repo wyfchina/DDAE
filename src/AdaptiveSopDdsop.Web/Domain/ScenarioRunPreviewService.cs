@@ -120,7 +120,7 @@ public sealed class ScenarioRunPreviewService
                 "Information"));
         }
 
-        return new ScenarioRunPreviewResult(
+        var result = new ScenarioRunPreviewResult(
             request with { HorizonWeeks = horizonWeeks, Parameters = parameters },
             baseline,
             scenario,
@@ -128,6 +128,7 @@ public sealed class ScenarioRunPreviewService
             RccpWorkspaceService.Compare(baseline.Rccp, scenario.Rccp),
             trace,
             IsPersisted: false);
+        return result with { Feasibility = ScenarioFeasibilityPolicy.Evaluate(result, data) };
     }
 
     private static ScenarioWorkspaceDataSet ApplyFrozenBaseline(

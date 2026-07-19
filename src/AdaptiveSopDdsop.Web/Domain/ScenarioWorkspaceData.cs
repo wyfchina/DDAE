@@ -723,7 +723,8 @@ public sealed record ScenarioRunPreviewResult(
     RccpComparison RccpComparison,
     IReadOnlyList<ScenarioAuditTrace> Trace,
     bool IsPersisted,
-    ProtectionAnalysisResult? ProtectionAnalysis = null);
+    ProtectionAnalysisResult? ProtectionAnalysis = null,
+    ScenarioFeasibilityAssessment? Feasibility = null);
 
 public sealed record ScenarioRunSaveRequest(
     string Name,
@@ -759,7 +760,9 @@ public sealed record ScenarioRunSummary(
     int ReplenishmentOrderCount,
     string? BaselineSnapshotId = null,
     string? ExternalScenarioId = null,
-    string? ResponseId = null);
+    string? ResponseId = null,
+    string FeasibilityStatus = "Legacy",
+    string CandidateStatus = "Candidate");
 
 public sealed record ScenarioRunDetail(
     ScenarioRunSummary Summary,
