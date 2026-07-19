@@ -14008,6 +14008,37 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var governance = new MasterSettingsGovernanceService(source, previewService, lineage, databasePath);
         var packages = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
 
+        var concurrentCreates = Enumerable.Range(1, 4)
+            .Select(index => Task.Run(() => packages.Create(new DdomChangePackageCreateRequest(
+                reviewable.Summary.RunId, $"并发编号包 {index}", null, "计划员", context))))
+            .ToArray();
+        Task.WaitAll(concurrentCreates);
+        AssertEqual(4, concurrentCreates.Select(task => task.Result.PackageNumber).Distinct(StringComparer.Ordinal).Count(),
+            "concurrent package creation allocates four distinct package numbers");
+
+        var concurrentSubmitPackage = concurrentCreates[0].Result;
+        using (var submitBarrier = new Barrier(2))
+        {
+            var submitAttempts = Enumerable.Range(1, 2).Select(index => Task.Run(() =>
+            {
+                submitBarrier.SignalAndWait();
+                try
+                {
+                    packages.Submit(concurrentSubmitPackage.PackageId, new DdomPackageActionRequest($"并发提交人 {index}", "并发提交"));
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            })).ToArray();
+            Task.WaitAll(submitAttempts);
+            AssertEqual(1, submitAttempts.Count(task => task.Result),
+                "concurrent submit compare-and-swap allows exactly one winner");
+        }
+        AssertEqual(1, packages.GetAuditEvents(concurrentSubmitPackage.PackageId).Count(item => item.EventType == "PackageSubmitted"),
+            "concurrent submit appends exactly one submit audit event");
+
         AssertRejected(
             () => packages.Create(new DdomChangePackageCreateRequest(
                 reviewable.Summary.RunId, "缺少审批人包", null, "计划员", context with { Approver = null })),
@@ -14031,9 +14062,19 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
 
         var submitted = packages.Submit(created.PackageId, new DdomPackageActionRequest("提交人", "提交评审"));
         AssertEqual("Submitted", submitted.Status, "submit is the only draft transition");
+        AssertRejected(
+            () => packages.Submit(created.PackageId, new DdomPackageActionRequest("重复提交人", "双击重复提交")),
+            "duplicate submit cannot append a second audit event");
+        AssertEqual(1, packages.GetAuditEvents(created.PackageId).Count(item => item.EventType == "PackageSubmitted"),
+            "duplicate submit keeps exactly one submit audit event");
         var validation = packages.Validate(created.PackageId, new DdomPackageActionRequest("验证人", "服务端白盒重算"));
         AssertTrue(validation.ValidationStatus == "Passed", $"reconcile or adoptable white-box validation passes: {string.Join(" | ", validation.FailureReasons)}");
         AssertTrue(validation.FeasibilityStatus is "Adoptable" or "Reconcile", "passed validation must carry a non-blocked feasibility result");
+        AssertRejected(
+            () => packages.Validate(created.PackageId, new DdomPackageActionRequest("重复验证人", "双击重复验证")),
+            "duplicate validation cannot append another validation or audit pair");
+        AssertEqual(1, packages.GetAuditEvents(created.PackageId).Count(item => item.EventType == "WhiteBoxRecalculated"),
+            "duplicate validation keeps exactly one recalculation audit event");
         var latestValidation = new DdomChangePackageService(baselineService, governance, lineage, databasePath).GetDetail(created.PackageId)!.LatestValidation;
         AssertTrue(latestValidation is not null, "package detail reloads the latest SQLite validation without recalculation");
         AssertEqual(validation.ValidationId, latestValidation!.ValidationId, "latest validation id round trips through package detail");
@@ -14115,6 +14156,34 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         AssertRejected(
             () => packages.UpdateStatus(fingerprintGate.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "指纹已改变")),
             "latest validation input fingerprint gate");
+
+        var gapFirst = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口一", null, "计划员", context));
+        var gapSecond = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口二", null, "计划员", context));
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                DELETE FROM ddom_change_package_lines WHERE package_id = $package_id;
+                DELETE FROM ddom_change_package_audit_events WHERE package_id = $package_id;
+                DELETE FROM ddom_change_packages WHERE package_id = $package_id;
+                """;
+            command.Parameters.AddWithValue("$package_id", gapFirst.PackageId);
+            command.ExecuteNonQuery();
+        }
+        var afterGap = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口后三", null, "计划员", context));
+        AssertTrue(afterGap.PackageNumber != gapSecond.PackageNumber,
+            "package-number allocation remains monotonic and unique after a deleted row creates a count gap");
+
+        var serviceSource = File.ReadAllText(Path.Combine(
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..")),
+            "src", "AdaptiveSopDdsop.Web", "Domain", "DdomChangePackageService.cs"));
+        AssertTrue(serviceSource.Contains("WHERE package_id = $package_id AND status = $expected_status", StringComparison.Ordinal)
+            && serviceSource.Contains("ExecuteNonQuery() != 1", StringComparison.Ordinal),
+            "DDOM state changes must use affected-row checked status compare-and-swap updates");
+        AssertTrue(serviceSource.Contains("ddom_change_package_number_sequences", StringComparison.Ordinal)
+            && !serviceSource.Contains("SELECT COUNT(*) + 1 FROM ddom_change_packages", StringComparison.Ordinal),
+            "package numbers must use an atomic sequence instead of COUNT plus one");
     }
     finally
     {

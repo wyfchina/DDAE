@@ -19,6 +19,8 @@ const state = {
   ddomPackages: [],
   selectedDdomPackageId: null,
   currentDdomPackageDetail: null,
+  ddomActionInFlight: false,
+  ddomDetailRequestGeneration: 0,
   historyReview: null,
   ddmrpStandardReference: null,
   ddmrpStandardReferencePromise: null,
@@ -837,6 +839,14 @@ function businessEvidenceLabel(value) {
     .replace(/\bEscalated\b/g, "已升级")
     .replace(/\bCompleted\b/g, "已完成")
     .replace(/\bProposed\b/g, "待评审")
+    .replace(/\bDraft\b/g, "草稿")
+    .replace(/\bSubmitted\b/g, "已提交")
+    .replace(/\bPassed\b/g, "已通过")
+    .replace(/\bFailed\b/g, "未通过")
+    .replace(/\bNotRun\b/g, "未运行")
+    .replace(/\bAdoptable\b/g, "可采纳")
+    .replace(/\bReconcile\b/g, "需协同")
+    .replace(/\bBlocked\b/g, "已阻断")
     .replace(/\bCurrent\b/g, "当前")
     .replace(/\bReviewed\b/g, "已评审")
     .replace(/\bApproved\b/g, "已批准")
@@ -854,6 +864,7 @@ function businessEvidenceLabel(value) {
     .replace(/Week (\d+): ObservedDelayDays is missing/g, "第 $1 周：实测延误天数缺失")
     .replace(/Week (\d+): EvidenceStatus=/g, "第 $1 周：证据状态=")
     .replace(/\bScenario Preview\b/g, "场景预览")
+    .replace(/\brun\b/gi, "场景运行")
     .replace(/\bBalanced\b/g, "综合平衡")
     .replace(/\bServiceFirst\b/g, "服务优先")
     .replace(/\bFlowFirst\b/g, "流速优先")
@@ -3077,8 +3088,10 @@ function renderPreviewResult(result) {
   const adoption = evaluateAdoption({ feasibility });
   byId("preview-status").className = statusClass(adoption.status);
   byId("preview-status").textContent = `可行性：${adoption.label}`;
-  byId("preview-candidate-chip").className = "status-chip neutral";
-  byId("preview-candidate-chip").textContent = "候选：未选定（保存后可人工选定）";
+  byId("preview-candidate-chip").className = feasibility.status === "Blocked" ? "status-chip is-invalid" : "status-chip neutral";
+  byId("preview-candidate-chip").textContent = feasibility.status === "Blocked"
+    ? "阻断候选：可保存留痕，但不可选定；可创建协调事项或修订后重算"
+    : "候选：未选定（保存后可人工选定）";
   byId("route-status").className = "status-chip is-valid";
   byId("route-status").textContent = "预览结果已生成";
   showScenarioSavePanel(result);
@@ -3112,7 +3125,19 @@ function showScenarioSavePanel(result) {
 function renderSavedScenarioRuns(runs) {
   state.savedScenarioRuns = valueOr(runs, []);
   saveControls.listBody.innerHTML = state.savedScenarioRuns.length
-    ? state.savedScenarioRuns.map(item => `
+    ? state.savedScenarioRuns.map(item => {
+      const hasCompleteFrozenLineage = Boolean(item.baselineSnapshotId && item.externalScenarioId && item.responseId);
+      const isReviewable = item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile";
+      const action = item.candidateStatus === "Selected" && hasCompleteFrozenLineage && isReviewable
+        ? `<button class="button secondary compact-button" type="button" data-enter-ddom-run-id="${escapeHtml(item.runId)}">进入 DDOM 配置决策</button>`
+        : item.feasibilityStatus === "Blocked"
+          ? `<button class="button secondary compact-button" type="button" data-revise-blocked-run-id="${escapeHtml(item.runId)}">创建协调事项并修订方案</button>`
+          : isReviewable && hasCompleteFrozenLineage
+            ? `<button class="button primary compact-button" type="button" data-select-ddom-run-id="${escapeHtml(item.runId)}">选定为 DDOM 候选</button>`
+            : isReviewable
+              ? `<span class="muted-note">缺少冻结比较血缘，不可选定</span>`
+              : `<span class="muted-note">后端可行性缺失/需重新计算</span>`;
+      return `
       <tr class="saved-run-row ${item.runId === state.selectedScenarioRunId ? "is-selected" : ""}">
         <td><button class="link-button" type="button" data-scenario-run-id="${escapeHtml(item.runId)}"><strong>${escapeHtml(item.runNumber)}</strong><small>${escapeHtml(new Date(item.createdAtUtc).toLocaleString("zh-CN", { hour12: false }))}</small></button></td>
         <td>${escapeHtml(item.name)}</td>
@@ -3120,18 +3145,12 @@ function renderSavedScenarioRuns(runs) {
         <td><span class="${statusClass(item.feasibilityStatus === "Blocked" ? "Red" : item.feasibilityStatus === "Reconcile" ? "Yellow" : item.feasibilityStatus === "Adoptable" ? "Green" : "Red")}">${escapeHtml(item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile" || item.feasibilityStatus === "Blocked" ? statusLabel(item.feasibilityStatus) : "后端可行性缺失")}</span></td>
         <td><span class="status-chip is-valid">已保存 ${escapeHtml(item.runNumber)}</span></td>
         <td><span class="status-chip ${item.candidateStatus === "Selected" ? "is-valid" : "neutral"}">${escapeHtml(statusLabel(item.candidateStatus || "Candidate"))}</span></td>
-        <td>${item.candidateStatus === "Selected"
-          ? `<button class="button secondary compact-button" type="button" data-enter-ddom-run-id="${escapeHtml(item.runId)}">进入 DDOM 配置决策</button>`
-          : item.feasibilityStatus === "Blocked"
-            ? `<button class="button secondary compact-button" type="button" data-revise-blocked-run-id="${escapeHtml(item.runId)}">创建协调事项并修订方案</button>`
-            : item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile"
-              ? `<button class="button primary compact-button" type="button" data-select-ddom-run-id="${escapeHtml(item.runId)}">选定为 DDOM 候选</button>`
-              : `<span class="muted-note">后端可行性缺失/需重新计算</span>`}</td>
+        <td>${action}</td>
         <td>${percent(item.serviceLevelPercent)}</td>
         <td>${percent(item.peakLoadPercent)}</td>
         <td>${number(item.supplyGap)}</td>
-      </tr>
-    `).join("")
+      </tr>`;
+    }).join("")
     : emptyRow("暂无已保存场景。运行预览后可以保存为审计记录。", 10);
   configureCoordinationLineageSelectors();
 }
@@ -3271,8 +3290,10 @@ async function saveScenarioRun() {
   saveControls.status.textContent = `已保存，未提交审批：${saved.runNumber}`;
   byId("preview-persistence-chip").className = "status-chip is-valid";
   byId("preview-persistence-chip").textContent = `已保存，未提交审批：${saved.runNumber}`;
-  byId("preview-candidate-chip").className = "status-chip neutral";
-  byId("preview-candidate-chip").textContent = "候选：未选定（需人工点击选定）";
+  byId("preview-candidate-chip").className = saved.feasibilityStatus === "Blocked" ? "status-chip is-invalid" : "status-chip neutral";
+  byId("preview-candidate-chip").textContent = saved.feasibilityStatus === "Blocked"
+    ? "阻断候选：已保存留痕但不可选定；请创建协调事项或修订后重算"
+    : "候选：未选定（需人工点击选定）";
   await loadSavedScenarioRuns(saved.runId);
 }
 
@@ -3288,8 +3309,8 @@ function ddomPackageGate(summary) {
 }
 
 function packageActionEnabled(summary, action) {
-  if (!summary) return false;
-  return ({ submit: summary.status === "Draft", validate: summary.status === "Submitted", review: summary.status === "Submitted" && summary.validationStatus === "Passed" && summary.feasibilityStatus !== "Blocked", approve: summary.status === "Reviewed", effective: summary.status === "Approved", expire: summary.status === "Effective" })[action] || false;
+  if (!summary || state.ddomActionInFlight) return false;
+  return ({ submit: summary.status === "Draft", validate: summary.status === "Submitted" && summary.validationStatus === "NotRun", review: summary.status === "Submitted" && summary.validationStatus === "Passed" && summary.feasibilityStatus !== "Blocked", approve: summary.status === "Reviewed", effective: summary.status === "Approved", expire: summary.status === "Effective" })[action] || false;
 }
 
 function renderDdomPackageActions(summary) {
@@ -3298,15 +3319,33 @@ function renderDdomPackageActions(summary) {
   bindings.forEach(([id, action]) => {
     const button = byId(id);
     button.disabled = !packageActionEnabled(summary, action);
-    button.title = button.disabled ? reason : "此操作只执行当前一步，不会自动推进后续状态。";
+    button.title = state.ddomActionInFlight ? "当前操作正在处理，请等待返回。" : button.disabled ? reason : "此操作只执行当前一步，不会自动推进后续状态。";
   });
-  byId("ddom-package-gate").textContent = reason;
+  byId("ddom-package-gate").textContent = state.ddomActionInFlight ? "正在处理当前人工步骤，请勿重复提交。" : reason;
 }
 
 function renderDdomPackageList(packages) {
   byId("ddom-package-list").innerHTML = packages.length
     ? packages.map(item => `<button class="master-setting-card" type="button" data-ddom-package-id="${escapeHtml(item.packageId)}"><strong>${escapeHtml(item.packageNumber)} · ${escapeHtml(item.name)}</strong><span>${escapeHtml(statusLabel(item.status))} / ${escapeHtml(statusLabel(item.validationStatus))} / ${escapeHtml(statusLabel(item.feasibilityStatus))}</span><small>${escapeHtml(item.sourceScenarioRunId)} · ${escapeHtml(item.createdBy)} · ${escapeHtml(item.createdAtUtc)}</small></button>`).join("")
     : `<div class="table-empty"><strong>尚无 DDOM 变更包</strong><span>先在第 03 阶段保存并人工选定可评审候选。</span></div>`;
+}
+
+function ddomParameterSummary(parameters) {
+  if (!parameters) return "无响应参数调整";
+  const groups = [
+    ["提前建库", parameters.prebuildCampaigns],
+    ["能力临调", parameters.capacityAdjustments],
+    ["SKU 策略", parameters.skuPolicyOverrides],
+    ["供应能力", parameters.supplierCapacityLimits],
+    ["时间保护", parameters.timeBufferAdjustments],
+  ].filter(([, items]) => Array.isArray(items) && items.length > 0);
+  return groups.length ? groups.map(([label, items]) => `${label} ${items.length} 项`).join("；") : "无响应参数调整";
+}
+
+function ddomProposalReasonLabel(proposal) {
+  const risk = ({ Red: "高", Yellow: "中", Green: "低" })[proposal?.riskLevel] || "待复核";
+  const trigger = businessEvidenceLabel(proposal?.trigger || "冻结基线与已选场景白盒重算");
+  return `${trigger}；风险等级：${risk}`;
 }
 
 function renderDdomPackageDetail(detail, auditEvents = []) {
@@ -3318,17 +3357,17 @@ function renderDdomPackageDetail(detail, auditEvents = []) {
   byId("ddom-package-lineage").innerHTML = summary ? [
     ["来源基线", summary.sourceBaselineId], ["场景运行", summary.sourceScenarioRunId], ["外部场景", summary.externalScenarioId], ["响应方案", summary.responseId],
     ["可行性", statusLabel(summary.feasibilityStatus)], ["负责人 / 审批人", `${summary.owner} / ${summary.approver}`], ["创建人 / 日期", `${summary.createdBy} / ${summary.createdAtUtc}`],
-    ["最终参数", JSON.stringify(detail.finalParameters || {})],
+    ["响应参数摘要", ddomParameterSummary(detail.finalParameters)],
   ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("") : "";
   byId("ddom-package-line-body").innerHTML = summary ? detail.lines.map(line => row([
     number(line.sequence), escapeHtml(masterSettingTypeLabel(line.proposal.settingType)), escapeHtml(line.proposal.target), escapeHtml(line.proposal.currentValue), escapeHtml(line.proposal.proposedValue),
-    escapeHtml((line.proposal.rationale || []).join("；") || line.proposal.riskLevel || "后端生成建议"),
+    escapeHtml(ddomProposalReasonLabel(line.proposal)),
   ])).join("") : emptyRow("请选择变更包", 6);
   const latestValidation = detail && detail.latestValidation;
   byId("ddom-package-validation").innerHTML = latestValidation
-    ? `<div class="diagnostic-item ${latestValidation.validationStatus === "Failed" ? "is-error" : ""}"><strong>最新白盒验证：${escapeHtml(statusLabel(latestValidation.validationStatus))}</strong><span>可行性：${escapeHtml(statusLabel(latestValidation.feasibilityStatus))}；失败原因：${escapeHtml((latestValidation.failureReasons || []).join("；") || "无")}</span><small>验证人：${escapeHtml(latestValidation.validatedBy)} · ${escapeHtml(latestValidation.validatedAtUtc)}</small></div>`
+    ? `<div class="diagnostic-item ${latestValidation.validationStatus === "Failed" ? "is-error" : ""}"><strong>最新白盒验证：${escapeHtml(statusLabel(latestValidation.validationStatus))}</strong><span>可行性：${escapeHtml(statusLabel(latestValidation.feasibilityStatus))}；失败原因：${escapeHtml((latestValidation.failureReasons || []).join("；") || "无")}</span><small>验证人：${escapeHtml(latestValidation.validatedBy)} · ${escapeHtml(latestValidation.validatedAtUtc)}</small>${latestValidation.validationStatus === "Failed" ? `<button class="button secondary compact-button" type="button" data-coordinate-ddom-package-id="${escapeHtml(summary.packageId)}">创建协调事项</button>` : ""}</div>`
     : `<div class="diagnostic-item"><strong>最新验证</strong><span>尚未运行白盒验证。</span></div>`;
-  byId("ddom-package-audit").innerHTML = auditEvents.length ? auditEvents.map(item => `<div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(traceStageLabel(item.stage))} · ${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : "";
+  byId("ddom-package-audit").innerHTML = auditEvents.length ? auditEvents.map(item => `<div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(businessEvidenceLabel(item.message))}</span><small>${escapeHtml(traceStageLabel(item.stage))} · ${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : "";
   renderDdomPackageActions(summary);
 }
 
@@ -3346,11 +3385,13 @@ async function loadDdomPackages(selectedPackageId) {
 }
 
 async function loadDdomPackageDetail(packageId) {
+  const requestGeneration = ++state.ddomDetailRequestGeneration;
   state.selectedDdomPackageId = packageId;
   const [detailResponse, auditResponse] = await Promise.all([
     fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}`, { headers: { Accept: "application/json" } }),
     fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}/audit`, { headers: { Accept: "application/json" } }),
   ]);
+  if (requestGeneration !== state.ddomDetailRequestGeneration || packageId !== state.selectedDdomPackageId) return;
   if (detailResponse.status === 404 || auditResponse.status === 404) {
     state.selectedDdomPackageId = null;
     renderDdomPackageDetail(null);
@@ -3382,16 +3423,24 @@ async function createDdomPackage() {
 }
 
 async function ddomPackageAction(action) {
+  if (state.ddomActionInFlight) return;
   const packageId = state.selectedDdomPackageId;
   if (!packageId) throw new Error("请先选择变更包。");
   const endpoint = action === "submit" ? "submit" : action === "validate" ? "validate" : "status";
   const body = action === "submit" || action === "validate"
     ? { updatedBy: action === "validate" ? "白盒验证员" : "DDS&OP 计划员", note: "工作台人工触发当前步骤" }
     : { status: ({ review: "Reviewed", approve: "Approved", effective: "Effective", expire: "Expired" })[action], updatedBy: action === "approve" ? byId("governance-approver").value : "DDS&OP 计划员", note: "工作台人工触发当前步骤" };
-  const response = await fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}/${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.message || `DDOM 操作失败：${response.status}`);
-  await loadDdomPackages(packageId);
+  state.ddomActionInFlight = true;
+  renderDdomPackageActions(state.currentDdomPackageDetail?.summary);
+  try {
+    const response = await fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}/${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || `DDOM 操作失败：${response.status}`);
+    await loadDdomPackages(packageId);
+  } finally {
+    state.ddomActionInFlight = false;
+    renderDdomPackageActions(state.currentDdomPackageDetail?.summary);
+  }
 }
 
 function renderBufferTrend(trends) {
@@ -6498,15 +6547,17 @@ function configureCoordinationLineageSelectors() {
   const previousChange = changeSelect.value;
   const previousPackage = packageSelect.value;
   const previousSourceRun = sourceRunSelect.value;
-  const comparableRuns = (state.savedScenarioRuns || []).filter(item => item.baselineSnapshotId && item.externalScenarioId && item.responseId);
-  scenarioSelect.innerHTML = [`<option value="">不关联</option>`, ...comparableRuns.map(item => `<option value="${escapeHtml(item.runId)}">${escapeHtml(item.runNumber)} · ${escapeHtml(item.name)}</option>`)].join("");
+  const coordinationRuns = state.savedScenarioRuns || [];
+  scenarioSelect.innerHTML = [`<option value="">不关联</option>`, ...coordinationRuns.map(item => `<option value="${escapeHtml(item.runId)}">${escapeHtml(item.runNumber)} · ${escapeHtml(item.name)}</option>`)].join("");
   const changes = state.masterSettings?.recentChanges || [];
   const packages = Array.isArray(state.ddomPackages) ? state.ddomPackages : [];
-  const selectedRuns = (state.savedScenarioRuns || []).filter(item => item.candidateStatus === "Selected");
+  const selectedRuns = (state.savedScenarioRuns || []).filter(item => item.candidateStatus === "Selected"
+    && item.baselineSnapshotId && item.externalScenarioId && item.responseId
+    && (item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile"));
   changeSelect.innerHTML = [`<option value="">不关联</option>`, ...changes.map(item => `<option value="${escapeHtml(item.changeId)}">${escapeHtml(item.changeNumber)} · ${escapeHtml(masterSettingDisplayValue(item.changeId, "target", item.target))}</option>`)].join("");
   packageSelect.innerHTML = [`<option value="">不关联</option>`, ...packages.map(item => `<option value="${escapeHtml(item.packageId)}">${escapeHtml(item.packageNumber)} · ${escapeHtml(item.name)}</option>`)].join("");
   sourceRunSelect.innerHTML = [`<option value="">请先在第 03 阶段人工选定候选</option>`, ...selectedRuns.map(item => `<option value="${escapeHtml(item.runId)}">${escapeHtml(item.runNumber)} · ${escapeHtml(item.name)} · ${escapeHtml(statusLabel(item.feasibilityStatus))}</option>`)].join("");
-  if (comparableRuns.some(item => item.runId === previousScenario)) scenarioSelect.value = previousScenario;
+  if (coordinationRuns.some(item => item.runId === previousScenario)) scenarioSelect.value = previousScenario;
   if (changes.some(item => item.changeId === previousChange)) changeSelect.value = previousChange;
   if (packages.some(item => item.packageId === previousPackage)) packageSelect.value = previousPackage;
   if (selectedRuns.some(item => item.runId === previousSourceRun)) sourceRunSelect.value = previousSourceRun;
@@ -6613,6 +6664,46 @@ async function openDdomPackageLineageDetail(packageId) {
 async function openCoordinationLineageDetail(itemId) {
   navigateWorkspace("coordination-panel", "action-tracking", false);
   await loadCoordinationDetail(itemId);
+}
+
+function prefillCoordinationFailure({ scenarioRunId = null, ddomPackageId = null, failureReasons = [], sourceLabel }) {
+  configureCoordinationLineageSelectors();
+  const reasonText = valueOr(failureReasons, []).filter(Boolean).join("；") || "需要跨部门复核阻断原因并修订方案";
+  const scenarioSelect = byId("coordination-related-scenario");
+  const packageSelect = byId("coordination-related-ddom-package");
+  scenarioSelect.value = "";
+  packageSelect.value = "";
+  if (scenarioRunId && [...scenarioSelect.options].some(option => option.value === scenarioRunId)) scenarioSelect.value = scenarioRunId;
+  if (ddomPackageId && [...packageSelect.options].some(option => option.value === ddomPackageId)) packageSelect.value = ddomPackageId;
+  byId("coordination-title").value = `${sourceLabel}需协调修订`;
+  byId("coordination-impact-objects").value = ddomPackageId ? "DDOM 变更包,场景响应" : "场景方案,受影响对象";
+  byId("coordination-decision-required").value = `处理以下阻断并决定修订方案：${reasonText}`;
+  navigateWorkspace("coordination-panel", "issue-list", false);
+}
+
+async function openScenarioCoordination(runId) {
+  const response = await fetch(`/api/scenario-runs/${encodeURIComponent(runId)}`, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`场景阻断证据读取失败：${response.status}`);
+  const detail = await response.json();
+  const failureReasons = valueOr(detail?.result?.feasibility?.checks, [])
+    .filter(check => check.status === "Red")
+    .map(check => check.message);
+  prefillCoordinationFailure({ scenarioRunId: runId, failureReasons, sourceLabel: "场景阻断" });
+}
+
+async function openDdomValidationCoordination(packageId) {
+  let detail = state.currentDdomPackageDetail;
+  if (detail?.summary?.packageId !== packageId) {
+    const response = await fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}`, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`DDOM 验证证据读取失败：${response.status}`);
+    detail = await response.json();
+  }
+  prefillCoordinationFailure({
+    scenarioRunId: detail?.summary?.sourceScenarioRunId || null,
+    ddomPackageId: packageId,
+    failureReasons: detail?.latestValidation?.failureReasons || [],
+    sourceLabel: "DDOM 验证失败",
+  });
 }
 
 async function createCoordinationItem() {
@@ -7219,9 +7310,10 @@ document.addEventListener("click", event => {
   }
   const reviseButton = event.target.closest("[data-revise-blocked-run-id]");
   if (reviseButton) {
-    byId("coordination-related-scenario").value = reviseButton.dataset.reviseBlockedRunId;
-    navigateWorkspace("coordination-panel", "issue-list", false);
+    openScenarioCoordination(reviseButton.dataset.reviseBlockedRunId).catch(showWorkspaceError);
   }
+  const validationButton = event.target.closest("[data-coordinate-ddom-package-id]");
+  if (validationButton) openDdomValidationCoordination(validationButton.dataset.coordinateDdomPackageId).catch(showWorkspaceError);
   const packageButton = event.target.closest("[data-ddom-package-id]");
   if (packageButton) loadDdomPackageDetail(packageButton.dataset.ddomPackageId).catch(showWorkspaceError);
 });

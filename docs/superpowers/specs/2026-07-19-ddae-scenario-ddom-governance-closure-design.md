@@ -1,8 +1,10 @@
 # DDAE 场景可行性与 DDOM 治理闭环整改设计
 
-日期：2026-07-19  
-状态：用户已要求集中整改，按既有授权直接进入实施  
-目标分支：`codex/scenario-ddom-governance-closure`  
+日期：2026-07-19
+
+状态：用户已要求集中整改，按既有授权直接进入实施
+
+目标分支：`codex/scenario-ddom-governance-closure`
 设计基线：`d876139`
 
 ## 1. 目标

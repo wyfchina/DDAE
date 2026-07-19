@@ -58,7 +58,6 @@ public sealed class DdomChangePackageService
         var generated = _governanceService.ProposeFromSavedRun(run.RunId, baseline, context);
         var now = DateTimeOffset.UtcNow;
         var packageId = Guid.NewGuid().ToString("N");
-        var packageNumber = $"DDOM-{now:yyyyMMdd}-{NextPackageSequence():0000}";
         var createdBy = NormalizeActor(request.CreatedBy);
         var owner = string.IsNullOrWhiteSpace(context.Owner) ? createdBy : context.Owner.Trim();
         var approver = context.Approver.Trim();
@@ -66,13 +65,13 @@ public sealed class DdomChangePackageService
         var finalParametersJson = Serialize(generated.Request.Parameters);
         var contextJson = Serialize(context);
         var fingerprint = Fingerprint(finalRequestJson);
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var packageNumber = $"DDOM-{now:yyyyMMdd}-{NextPackageSequence(connection, transaction, now):0000}";
         var summary = new DdomChangePackageSummary(
             packageId, packageNumber, request.Name.Trim(), baseline.SnapshotId, run.RunId,
             run.ExternalScenarioId!, run.ResponseId!, "Draft", "NotRun", run.FeasibilityStatus,
             owner, approver, createdBy, now.ToString("O"), null);
-
-        using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
         using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
@@ -230,6 +229,7 @@ public sealed class DdomChangePackageService
     {
         var header = RequireHeader(packageId);
         if (header.Summary.Status != "Submitted") throw new InvalidOperationException("只有已提交的变更包可以运行白盒验证。");
+        if (header.Summary.ValidationStatus != "NotRun") throw new InvalidOperationException("当前不可重复运行白盒验证；请基于修订场景创建新变更包。");
         var baseline = _baselineService.GetDetail(header.Summary.SourceBaselineId)
             ?? throw new KeyNotFoundException("来源冻结基线不存在。");
         var finalRequest = Deserialize<ScenarioRunPreviewRequest>(header.FinalRequestJson)
@@ -246,7 +246,20 @@ public sealed class DdomChangePackageService
         var note = NormalizeNote(request.Note);
         var validation = new DdomChangePackageValidation(Guid.NewGuid().ToString("N"), packageId, validationStatus, feasibility.Status, header.Fingerprint, reasons, actor, now.ToString("O"));
         using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE ddom_change_packages SET validation_status = $validation_status, feasibility_status = $feasibility_status, validated_at_utc = $validated_at_utc WHERE package_id = $package_id AND status = $expected_status AND validation_status = $expected_validation_status;";
+            command.Parameters.AddWithValue("$validation_status", validation.ValidationStatus);
+            command.Parameters.AddWithValue("$feasibility_status", validation.FeasibilityStatus);
+            command.Parameters.AddWithValue("$validated_at_utc", validation.ValidatedAtUtc);
+            command.Parameters.AddWithValue("$package_id", packageId);
+            command.Parameters.AddWithValue("$expected_status", "Submitted");
+            command.Parameters.AddWithValue("$expected_validation_status", "NotRun");
+            if (command.ExecuteNonQuery() != 1)
+                throw new InvalidOperationException("变更包状态已被其他操作更新，请刷新后重试。");
+        }
         using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
@@ -268,16 +281,6 @@ public sealed class DdomChangePackageService
             command.Parameters.AddWithValue("$trace_json", Serialize(preview.Trace));
             command.Parameters.AddWithValue("$validated_by", validation.ValidatedBy);
             command.Parameters.AddWithValue("$validated_at_utc", validation.ValidatedAtUtc);
-            command.ExecuteNonQuery();
-        }
-        using (var command = connection.CreateCommand())
-        {
-            command.Transaction = transaction;
-            command.CommandText = "UPDATE ddom_change_packages SET validation_status = $validation_status, feasibility_status = $feasibility_status, validated_at_utc = $validated_at_utc WHERE package_id = $package_id;";
-            command.Parameters.AddWithValue("$validation_status", validation.ValidationStatus);
-            command.Parameters.AddWithValue("$feasibility_status", validation.FeasibilityStatus);
-            command.Parameters.AddWithValue("$validated_at_utc", validation.ValidatedAtUtc);
-            command.Parameters.AddWithValue("$package_id", packageId);
             command.ExecuteNonQuery();
         }
         InsertAudit(connection, transaction, packageId, "WhiteBoxRecalculated", "Engine", "Information", "已从冻结基线和保存 run 白盒复算。", Serialize(new { actor, note, validation.ValidationId }), now);
@@ -333,14 +336,16 @@ public sealed class DdomChangePackageService
         var now = DateTimeOffset.UtcNow;
         var normalizedNote = NormalizeNote(note);
         using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
+        using var transaction = connection.BeginTransaction(deferred: false);
         using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
-            command.CommandText = "UPDATE ddom_change_packages SET status = $status WHERE package_id = $package_id;";
+            command.CommandText = "UPDATE ddom_change_packages SET status = $status WHERE package_id = $package_id AND status = $expected_status;";
             command.Parameters.AddWithValue("$status", status);
             command.Parameters.AddWithValue("$package_id", header.Summary.PackageId);
-            command.ExecuteNonQuery();
+            command.Parameters.AddWithValue("$expected_status", header.Summary.Status);
+            if (command.ExecuteNonQuery() != 1)
+                throw new InvalidOperationException("变更包状态已被其他操作更新，请刷新后重试。");
         }
         InsertAudit(connection, transaction, header.Summary.PackageId, eventType, "Governance", "Information", $"{message}。操作者：{actor}。{normalizedNote ?? string.Empty}".Trim(), Serialize(new { actor, note = normalizedNote, status }), now);
         transaction.Commit();
@@ -432,14 +437,29 @@ public sealed class DdomChangePackageService
         command.ExecuteNonQuery();
     }
 
-    private int NextPackageSequence()
+    private static int NextPackageSequence(SqliteConnection connection, SqliteTransaction transaction, DateTimeOffset now)
     {
-        using var connection = OpenConnection(); using var command = connection.CreateCommand(); command.CommandText = "SELECT COUNT(*) + 1 FROM ddom_change_packages;"; return Convert.ToInt32(command.ExecuteScalar());
+        var sequenceDate = now.ToString("yyyyMMdd");
+        var prefix = $"DDOM-{sequenceDate}-";
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO ddom_change_package_number_sequences (sequence_date, next_value)
+            VALUES (
+                $sequence_date,
+                (SELECT COALESCE(MAX(CAST(substr(package_number, length($prefix) + 1) AS INTEGER)), 0) + 2
+                 FROM ddom_change_packages WHERE package_number LIKE $prefix || '%'))
+            ON CONFLICT(sequence_date) DO UPDATE SET next_value = next_value + 1
+            RETURNING next_value - 1;
+            """;
+        command.Parameters.AddWithValue("$sequence_date", sequenceDate);
+        command.Parameters.AddWithValue("$prefix", prefix);
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     private SqliteConnection OpenConnection()
     {
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _databasePath }.ToString()); connection.Open(); return connection;
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _databasePath, DefaultTimeout = 30 }.ToString()); connection.Open(); return connection;
     }
 
     private void EnsureCreated()
@@ -454,6 +474,9 @@ public sealed class DdomChangePackageService
                 final_request_json TEXT NOT NULL, final_parameters_json TEXT NOT NULL, input_fingerprint TEXT NOT NULL, governance_context_json TEXT NOT NULL,
                 owner TEXT NOT NULL, approver TEXT NOT NULL, effective_from TEXT NULL, effective_through TEXT NULL, review_on TEXT NULL, expected_effect TEXT NULL, rollback_condition TEXT NULL,
                 created_by TEXT NOT NULL, created_at_utc TEXT NOT NULL, validated_at_utc TEXT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ddom_change_package_number_sequences (
+                sequence_date TEXT PRIMARY KEY, next_value INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS ddom_change_package_lines (
                 line_id TEXT PRIMARY KEY, package_id TEXT NOT NULL, sequence INTEGER NOT NULL, setting_type TEXT NOT NULL, target TEXT NOT NULL,
