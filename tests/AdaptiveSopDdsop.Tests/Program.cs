@@ -34,6 +34,7 @@ var tests = new (string Name, Action Run)[]
     ("Baseline data demonstrates red yellow green and over top of green buffer statuses with Chinese names", TestBaselineStatusVarietyAndChineseNames),
     ("Five-stage internal files do not reference protected contract types or endpoints", TestFiveStageServicesDoNotReferenceExternalContractTypesOrEndpoints),
     ("Desktop startup does not require Windows Event Log write access", TestDesktopStartupDoesNotRequireWindowsEventLog),
+    ("Event Log permission diagnostics are detected robustly", TestEventLogPermissionFailureDiagnostics),
     ("Seed scale matches a credible satellite manufacturing demo", TestSeedScaleMatchesSatelliteManufacturingDemo),
     ("FPGA belongs only to its independent inventory control point", TestFpgaBelongsOnlyToIndependentInventoryControlPoint),
     ("Three independent inventory control points are explicit", TestThreeIndependentInventoryControlPointsAreExplicit),
@@ -1045,9 +1046,9 @@ static void TestDesktopStartupDoesNotRequireWindowsEventLog()
 
         AssertEqual(System.Net.HttpStatusCode.OK, response.StatusCode,
             $"Production startup smoke test should return HTTP 200 from {boundAddress}");
-        AssertTrue(!ReadProcessOutput(output, outputLock).Contains("EventLog", StringComparison.OrdinalIgnoreCase) ||
-                   !ReadProcessOutput(output, outputLock).Contains("Access is denied", StringComparison.OrdinalIgnoreCase),
-            $"Production startup must not record Event Log permission failures:{Environment.NewLine}{ReadProcessOutput(output, outputLock)}");
+        var transcript = ReadProcessOutput(output, outputLock);
+        AssertTrue(!HasEventLogPermissionFailure(transcript),
+            $"Production startup must not record Event Log permission failures:{Environment.NewLine}{transcript}");
     }
     finally
     {
@@ -1060,6 +1061,43 @@ static void TestDesktopStartupDoesNotRequireWindowsEventLog()
 
     AssertEqual("None", eventLogLevel,
         "base appsettings must disable the privileged Windows Event Log provider for Production startup");
+}
+
+static void TestEventLogPermissionFailureDiagnostics()
+{
+    AssertTrue(
+        HasEventLogPermissionFailure("Cannot open log for source '.NET Runtime'. You may not have write access."),
+        "detector should recognize the observed Event Log write-access diagnostic");
+    AssertTrue(
+        HasEventLogPermissionFailure("Event Log provider failed: Access is denied."),
+        "detector should recognize spaced Event Log access-denied wording");
+    AssertTrue(
+        HasEventLogPermissionFailure("EventLog provider failed: Access is denied."),
+        "detector should recognize unspaced EventLog access-denied wording");
+    AssertTrue(
+        HasEventLogPermissionFailure(
+            "Microsoft.Extensions.Logging.EventLog.EventLogLogger: System.ComponentModel.Win32Exception (5): Access is denied."),
+        "detector should recognize Win32Exception(5) access denial tied to EventLog diagnostics");
+    AssertTrue(
+        !HasEventLogPermissionFailure("Database request failed: Access is denied."),
+        "detector should not classify unrelated access-denied diagnostics as Event Log failures");
+}
+
+static bool HasEventLogPermissionFailure(string diagnostic)
+{
+    var hasEventLogDiagnostic =
+        diagnostic.Contains("Cannot open log for source", StringComparison.OrdinalIgnoreCase) ||
+        diagnostic.Contains("Event Log", StringComparison.OrdinalIgnoreCase) ||
+        diagnostic.Contains("EventLog", StringComparison.OrdinalIgnoreCase);
+    var hasPermissionFailure =
+        diagnostic.Contains("write access", StringComparison.OrdinalIgnoreCase) ||
+        diagnostic.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
+        System.Text.RegularExpressions.Regex.IsMatch(
+            diagnostic,
+            @"Win32Exception\s*\(\s*5\s*\)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    return hasEventLogDiagnostic && hasPermissionFailure;
 }
 
 static string WaitForBoundAddress(Process process, System.Text.StringBuilder output, object outputLock)
