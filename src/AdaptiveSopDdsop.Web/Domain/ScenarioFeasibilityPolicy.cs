@@ -37,9 +37,7 @@ public static class ScenarioFeasibilityPolicy
                 scenarioKeys) &&
             result.Baseline.Metrics.AverageInventoryValue.HasValue &&
             result.Scenario.Metrics.AverageInventoryValue.HasValue;
-        var targetService = data.Families.Count == 0 ? 95m : data.Families.Average(item => item.TargetServiceLevel);
-        var serviceReference = Math.Max(targetService, result.Baseline.Metrics.ServiceLevelPercent);
-        var serviceLoss = Math.Max(0m, serviceReference - result.Scenario.Metrics.ServiceLevelPercent);
+        var serviceLoss = WorstFamilyServiceLoss(result, data);
         var supplyRequired = result.Scenario.SupplierCapacity.Sum(item => item.RequiredQuantity);
         var supplyGapRatio = supplyRequired <= 0m
             ? 0m
@@ -58,7 +56,7 @@ public static class ScenarioFeasibilityPolicy
             ["Evidence"] = new(
                 "Evidence", "实体库存证据", null, null, null, "无", evidenceComplete ? "Green" : "Red",
                 evidenceComplete ? "实体库存投影证据完整。" : "实体库存投影证据不完整。"),
-            ["Service"] = CreateThresholdCheck("Service", "服务目标/基准损失", serviceLoss, 1m, 3m, "百分点"),
+            ["Service"] = CreateThresholdCheck("Service", "最差产品族服务目标/基准损失", serviceLoss, 1m, 3m, "百分点"),
             ["Capacity"] = CreateThresholdCheck("Capacity", "峰值产能负荷", result.Scenario.Metrics.PeakLoadPercent, 85m, 100m, "%"),
             ["Supply"] = CreateThresholdCheck("Supply", "供应缺口/需求供应量", supplyGapRatio, 5m, 15m, "%"),
             ["Inventory"] = CreateThresholdCheck("Inventory", "相对基准的平均库存增幅", inventoryIncrease, 5m, 12m, "%"),
@@ -129,6 +127,31 @@ public static class ScenarioFeasibilityPolicy
         })
         .DefaultIfEmpty(0)
         .Max();
+
+    private static decimal WorstFamilyServiceLoss(ScenarioRunPreviewResult result, ScenarioWorkspaceDataSet data)
+    {
+        var scenarioFamilies = result.Scenario.ProductFamilyDashboard.Summaries;
+        if (scenarioFamilies.Count == 0)
+        {
+            var targetService = data.Families.Count == 0 ? 95m : data.Families.Average(item => item.TargetServiceLevel);
+            var serviceReference = Math.Max(targetService, result.Baseline.Metrics.ServiceLevelPercent);
+            return Math.Max(0m, serviceReference - result.Scenario.Metrics.ServiceLevelPercent);
+        }
+
+        var baselineServices = result.Baseline.ProductFamilyDashboard.Summaries
+            .ToDictionary(item => item.Family, item => item.ServiceLevelPercent, StringComparer.Ordinal);
+        return scenarioFamilies
+            .Select(family =>
+            {
+                var baselineService = baselineServices.TryGetValue(family.Family, out var value)
+                    ? value
+                    : family.TargetServiceLevel;
+                var reference = Math.Max(family.TargetServiceLevel, baselineService);
+                return Math.Max(0m, reference - family.ServiceLevelPercent);
+            })
+            .DefaultIfEmpty(0m)
+            .Max();
+    }
 
     private static string NormalizeMode(string? mode) => mode switch
     {

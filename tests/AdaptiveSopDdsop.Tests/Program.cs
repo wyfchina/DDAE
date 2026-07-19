@@ -233,6 +233,7 @@ var tests = new (string Name, Action Run)[]
     ("Frozen comparison preserves baseline lineage and source evidence", TestFrozenComparisonPreservesBaselineLineageAndEvidence),
     ("Inventory flow result JSON round trips", TestInventoryFlowResultJsonRoundTrips),
     ("Scenario feasibility policy enforces shared hard limits and threshold boundaries", TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBoundaries),
+    ("Scenario feasibility service gate uses the worst product-family deficit", TestScenarioFeasibilityPolicyUsesWorstFamilyServiceDeficit),
     ("Scenario feasibility policy blocks missing evidence and is attached to previews", TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview),
     ("Blocked evidence-complete scenario can be saved without approval", TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval),
     ("Candidate selection persists manual selection and supersedes a selected sibling", TestCandidateSelectionPersistsManualSelectionAndSupersedesSibling),
@@ -249,6 +250,7 @@ var tests = new (string Name, Action Run)[]
     ("Master settings governance saves audits and advances status", TestMasterSettingsGovernanceSavesAuditsAndAdvancesStatus),
     ("Master settings governance preserves decision package metadata without auto effect", TestMasterSettingsGovernancePreservesDecisionPackageMetadata),
     ("DDOM change packages regenerate selected runs and enforce white-box governance gates", TestDdomChangePackagesEnforceWhiteBoxGovernanceGates),
+    ("DDOM package storage migrates legacy validation coordination evidence additively", TestDdomPackageStorageMigratesLegacyCoordinationEvidence),
     ("DDOM change package APIs stay internal and map package errors strictly", TestDdomChangePackageApiUsesStrictStatusMapping),
     ("Manual governance change requires baseline and allows no scenario", TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario),
     ("Scenario-derived master-setting persistence is denied in favor of DDOM packages", TestScenarioDerivedMasterSettingPersistenceIsDeniedInFavorOfDdomPackages),
@@ -10664,6 +10666,40 @@ static void TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBou
         "four consecutive red weeks must be red");
 }
 
+static void TestScenarioFeasibilityPolicyUsesWorstFamilyServiceDeficit()
+{
+    var (data, preview) = CreateScenarioFeasibilityFixture();
+    var baselineFamilies = preview.Baseline.ProductFamilyDashboard.Summaries.Take(2).ToList();
+    AssertEqual(2, baselineFamilies.Count, "masking fixture needs two product families");
+    var firstBaseline = baselineFamilies[0] with { TargetServiceLevel = 95m, ServiceLevelPercent = 96m };
+    var secondBaseline = baselineFamilies[1] with { TargetServiceLevel = 95m, ServiceLevelPercent = 96m };
+    var firstScenario = firstBaseline with { ServiceLevelPercent = 92.9m };
+    var secondScenario = secondBaseline with { ServiceLevelPercent = 100m };
+    var masked = preview with
+    {
+        Baseline = preview.Baseline with
+        {
+            Metrics = preview.Baseline.Metrics with { ServiceLevelPercent = 98m },
+            ProductFamilyDashboard = preview.Baseline.ProductFamilyDashboard with
+            {
+                Summaries = new[] { firstBaseline, secondBaseline }
+            }
+        },
+        Scenario = preview.Scenario with
+        {
+            Metrics = preview.Scenario.Metrics with { ServiceLevelPercent = 99m },
+            ProductFamilyDashboard = preview.Scenario.ProductFamilyDashboard with
+            {
+                Summaries = new[] { firstScenario, secondScenario }
+            }
+        }
+    };
+
+    var service = ScenarioFeasibilityPolicy.Evaluate(masked, data).Checks.Single(item => item.Code == "Service");
+    AssertEqual(3.1m, service.Actual!.Value, "service gate uses the worst family target-or-baseline deficit");
+    AssertEqual("Red", service.Status, "one red family cannot be masked by another family or the aggregate service metric");
+}
+
 static void TestSeedBaselineSupplierCommitmentsPreserveFrozenPlanningKeys()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-seed-supplier-keys-{Guid.NewGuid():N}.db");
@@ -13979,6 +14015,10 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var context = new GovernanceDecisionContext(
             frozen.SnapshotId, null, "运营经理", "执行委员会", "2026-08-01", "2026-08-31", "2026-08-15",
             "降低约束资源红区", "服务未改善或现金占用超过上限时人工回滚");
+        GovernanceDecisionContext ContextFor(string purpose) => context with
+        {
+            ExpectedEffect = $"{context.ExpectedEffect}（{purpose}）"
+        };
 
         ScenarioRunDetail BuildSelectedRun(string runId, string templateId, string feasibilityStatus)
         {
@@ -14008,13 +14048,27 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var governance = new MasterSettingsGovernanceService(source, previewService, lineage, databasePath);
         var packages = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
 
+        DdomChangePackageSummary AdvanceToApproved(string name, GovernanceDecisionContext packageContext)
+        {
+            var package = packages.Create(new DdomChangePackageCreateRequest(
+                reviewable.Summary.RunId, name, null, "计划员", packageContext));
+            packages.Submit(package.PackageId, new DdomPackageActionRequest("提交人", "日期门禁测试"));
+            var packageValidation = packages.Validate(package.PackageId, new DdomPackageActionRequest("验证人", "日期门禁测试"));
+            AssertEqual("Passed", packageValidation.ValidationStatus, $"{name} should reach the manual date gate");
+            packages.UpdateStatus(package.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "日期门禁测试"));
+            return packages.UpdateStatus(package.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "日期门禁测试"));
+        }
+
+        var idempotentContext = ContextFor("并发幂等创建");
         var concurrentCreates = Enumerable.Range(1, 4)
             .Select(index => Task.Run(() => packages.Create(new DdomChangePackageCreateRequest(
-                reviewable.Summary.RunId, $"并发编号包 {index}", null, "计划员", context))))
+                reviewable.Summary.RunId, $"并发幂等包 {index}", null, "计划员", idempotentContext))))
             .ToArray();
         Task.WaitAll(concurrentCreates);
-        AssertEqual(4, concurrentCreates.Select(task => task.Result.PackageNumber).Distinct(StringComparer.Ordinal).Count(),
-            "concurrent package creation allocates four distinct package numbers");
+        AssertEqual(1, concurrentCreates.Select(task => task.Result.PackageId).Distinct(StringComparer.Ordinal).Count(),
+            "concurrent retries for the same selected run and canonical context return one draft package");
+        AssertEqual(1, packages.GetAuditEvents(concurrentCreates[0].Result.PackageId).Count(item => item.EventType == "PackageCreated"),
+            "idempotent concurrent creation appends exactly one package-created audit event");
 
         var concurrentSubmitPackage = concurrentCreates[0].Result;
         using (var submitBarrier = new Barrier(2))
@@ -14038,6 +14092,10 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         }
         AssertEqual(1, packages.GetAuditEvents(concurrentSubmitPackage.PackageId).Count(item => item.EventType == "PackageSubmitted"),
             "concurrent submit appends exactly one submit audit event");
+        AssertRejected(
+            () => packages.Create(new DdomChangePackageCreateRequest(
+                reviewable.Summary.RunId, "已提交幂等键重试", null, "计划员", idempotentContext)),
+            "a retry for an existing non-draft business key must not create another package");
 
         AssertRejected(
             () => packages.Create(new DdomChangePackageCreateRequest(
@@ -14045,7 +14103,9 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
             "DDOM package creation requires a configured approver");
 
         var created = packages.Create(new DdomChangePackageCreateRequest(
-            reviewable.Summary.RunId, "约束资源缓解包", "浏览器不得提交建议行", "计划员", context));
+            reviewable.Summary.RunId, "约束资源缓解包", "浏览器不得提交建议行", "计划员", ContextFor("主治理流程")));
+        AssertTrue(created.PackageId != concurrentSubmitPackage.PackageId,
+            "a revised governance context creates a new package with a different business key");
         AssertEqual("Draft", created.Status, "package create status");
         AssertEqual("NotRun", created.ValidationStatus, "package initial validation status");
         AssertEqual(frozen.SnapshotId, created.SourceBaselineId, "package baseline comes from stored selected run");
@@ -14082,6 +14142,12 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         AssertEqual(validation.ValidatedAtUtc, latestValidation.ValidatedAtUtc, "latest validation timestamp round trips through package detail");
         AssertEqual(validation.FeasibilityStatus, latestValidation.FeasibilityStatus, "latest validation feasibility round trips through package detail");
         AssertEqual(JsonSerializer.Serialize(validation.FailureReasons), JsonSerializer.Serialize(latestValidation.FailureReasons), "latest validation failure reasons round trip through package detail");
+        if (validation.FeasibilityStatus == "Reconcile")
+        {
+            AssertTrue(validation.CoordinationItems?.Count > 0, "reconcile validation returns yellow coordination evidence");
+            AssertEqual(JsonSerializer.Serialize(validation.CoordinationItems ?? Array.Empty<string>()), JsonSerializer.Serialize(latestValidation.CoordinationItems ?? Array.Empty<string>()),
+                "yellow coordination evidence round trips through SQLite package detail");
+        }
         AssertEqual("Submitted", packages.GetDetail(created.PackageId)!.Summary.Status, "validation must not automatically review a package");
         AssertRejected(
             () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "不能跳过人工评审")),
@@ -14132,7 +14198,7 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         }
 
         var blockedCreated = packages.Create(new DdomChangePackageCreateRequest(
-            blocked.Summary.RunId, "阻断包", null, "计划员", context));
+            blocked.Summary.RunId, "阻断包", null, "计划员", ContextFor("阻断复算")));
         packages.Submit(blockedCreated.PackageId, new DdomPackageActionRequest("提交人", null));
         var blockedValidation = packages.Validate(blockedCreated.PackageId, new DdomPackageActionRequest("验证人", null));
         AssertEqual("Failed", blockedValidation.ValidationStatus, "blocked validation persists failed evidence");
@@ -14142,7 +14208,7 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
             "latest blocked validation review gate");
         AssertEqual("Submitted", packages.GetDetail(blockedCreated.PackageId)!.Summary.Status, "blocked validation keeps package submitted");
 
-        var fingerprintGate = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "指纹门禁包", null, "计划员", context));
+        var fingerprintGate = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "指纹门禁包", null, "计划员", ContextFor("指纹门禁")));
         packages.Submit(fingerprintGate.PackageId, new DdomPackageActionRequest("提交人", null));
         packages.Validate(fingerprintGate.PackageId, new DdomPackageActionRequest("验证人", null));
         using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
@@ -14157,8 +14223,8 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
             () => packages.UpdateStatus(fingerprintGate.PackageId, new DdomPackageStatusRequest("Reviewed", "评审人", "指纹已改变")),
             "latest validation input fingerprint gate");
 
-        var gapFirst = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口一", null, "计划员", context));
-        var gapSecond = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口二", null, "计划员", context));
+        var gapFirst = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口一", null, "计划员", ContextFor("序列缺口一")));
+        var gapSecond = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口二", null, "计划员", ContextFor("序列缺口二")));
         using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
         {
             connection.Open();
@@ -14171,9 +14237,57 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
             command.Parameters.AddWithValue("$package_id", gapFirst.PackageId);
             command.ExecuteNonQuery();
         }
-        var afterGap = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口后三", null, "计划员", context));
+        var afterGap = packages.Create(new DdomChangePackageCreateRequest(reviewable.Summary.RunId, "序列缺口后三", null, "计划员", ContextFor("序列缺口后三")));
         AssertTrue(afterGap.PackageNumber != gapSecond.PackageNumber,
             "package-number allocation remains monotonic and unique after a deleted row creates a count gap");
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM ddom_change_package_create_keys WHERE package_id = $package_id;";
+            command.Parameters.AddWithValue("$package_id", afterGap.PackageId);
+            command.ExecuteNonQuery();
+        }
+        var migratedIdempotencyService = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
+        var migratedRetry = migratedIdempotencyService.Create(new DdomChangePackageCreateRequest(
+            reviewable.Summary.RunId,
+            "迁移后重试不得重复创建",
+            null,
+            "计划员",
+            ContextFor("序列缺口后三") with { Owner = " 运营经理 ", Approver = " 执行委员会 " }));
+        AssertEqual(afterGap.PackageId, migratedRetry.PackageId,
+            "startup migration backfills the idempotency business key and normalizes equivalent context whitespace");
+
+        var malformedDates = AdvanceToApproved(
+            "非法日期包",
+            ContextFor("非法日期") with { EffectiveFrom = "2026/08/01" });
+        AssertRejected(
+            () => packages.UpdateStatus(malformedDates.PackageId, new DdomPackageStatusRequest("Effective", "生效责任人", "日期格式非法")),
+            "effective metadata rejects non-ISO dates");
+
+        var reversedDates = AdvanceToApproved(
+            "逆序日期包",
+            ContextFor("逆序日期") with { EffectiveFrom = "2026-08-20", ReviewOn = "2026-08-15", EffectiveThrough = "2026-08-31" });
+        AssertRejected(
+            () => packages.UpdateStatus(reversedDates.PackageId, new DdomPackageStatusRequest("Effective", "生效责任人", "日期顺序非法")),
+            "effective metadata enforces effective-from through review through effective-through order");
+
+        foreach (var changedCandidateStatus in new[] { "Superseded", "Withdrawn" })
+        {
+            var racingRun = BuildSelectedRun($"RUN-DDOM-RACE-{changedCandidateStatus}", "TPL-ORDER-POLICY", "Reconcile");
+            var racingLineage = new PostDetailMutatingScenarioRunLineageReader(racingRun, changedCandidateStatus);
+            var racingGovernance = new MasterSettingsGovernanceService(source, previewService, racingLineage, databasePath);
+            var racingPackages = new DdomChangePackageService(baselineService, racingGovernance, racingLineage, databasePath);
+            AssertRejected(
+                () => racingPackages.Create(new DdomChangePackageCreateRequest(
+                    racingRun.Summary.RunId, $"并发{changedCandidateStatus}包", null, "计划员", ContextFor($"并发{changedCandidateStatus}"))),
+                $"package creation revalidates a source run concurrently changed to {changedCandidateStatus}");
+            AssertEqual(0L, Convert.ToInt64(ReadSqliteScalar(
+                databasePath,
+                "SELECT COUNT(*) FROM ddom_change_packages WHERE source_scenario_run_id = $run_id;",
+                ("$run_id", racingRun.Summary.RunId))),
+                $"a source run changed to {changedCandidateStatus} cannot leave a package row");
+        }
 
         var serviceSource = File.ReadAllText(Path.Combine(
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..")),
@@ -14184,6 +14298,74 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         AssertTrue(serviceSource.Contains("ddom_change_package_number_sequences", StringComparison.Ordinal)
             && !serviceSource.Contains("SELECT COUNT(*) + 1 FROM ddom_change_packages", StringComparison.Ordinal),
             "package numbers must use an atomic sequence instead of COUNT plus one");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestDdomPackageStorageMigratesLegacyCoordinationEvidence()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-ddom-legacy-validation-{Guid.NewGuid():N}.db");
+    try
+    {
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE ddom_change_package_validations (
+                    validation_id TEXT PRIMARY KEY, package_id TEXT NOT NULL, input_fingerprint TEXT NOT NULL,
+                    request_json TEXT NOT NULL, result_json TEXT NOT NULL, feasibility_status TEXT NOT NULL,
+                    validation_status TEXT NOT NULL, failure_reasons_json TEXT NOT NULL, trace_json TEXT NOT NULL,
+                    validated_by TEXT NOT NULL, validated_at_utc TEXT NOT NULL
+                );
+                INSERT INTO ddom_change_package_validations (
+                    validation_id, package_id, input_fingerprint, request_json, result_json, feasibility_status,
+                    validation_status, failure_reasons_json, trace_json, validated_by, validated_at_utc)
+                VALUES (
+                    'VAL-LEGACY-001', 'PKG-LEGACY-001', 'legacy-fingerprint', '{}', $result_json, 'Reconcile',
+                    'Passed', '[]', '[]', '历史验证人', '2026-07-19T08:00:00Z');
+                INSERT INTO ddom_change_package_validations (
+                    validation_id, package_id, input_fingerprint, request_json, result_json, feasibility_status,
+                    validation_status, failure_reasons_json, trace_json, validated_by, validated_at_utc)
+                VALUES
+                    ('VAL-LEGACY-NULL', 'PKG-LEGACY-NULL', 'legacy-null', '{}', 'null', 'Reconcile', 'Passed', '[]', '[]', '历史验证人', '2026-07-19T08:01:00Z'),
+                    ('VAL-LEGACY-ARRAY', 'PKG-LEGACY-ARRAY', 'legacy-array', '{}', '[]', 'Reconcile', 'Passed', '[]', '[]', '历史验证人', '2026-07-19T08:02:00Z'),
+                    ('VAL-LEGACY-NULL-FEASIBILITY', 'PKG-LEGACY-NULL-FEASIBILITY', 'legacy-null-feasibility', '{}', '{"feasibility":null}', 'Reconcile', 'Passed', '[]', '[]', '历史验证人', '2026-07-19T08:03:00Z'),
+                    ('VAL-LEGACY-ODD-CHECKS', 'PKG-LEGACY-ODD-CHECKS', 'legacy-odd-checks', '{}', '{"feasibility":{"checks":[null,{"status":1,"message":false}]}}', 'Reconcile', 'Passed', '[]', '[]', '历史验证人', '2026-07-19T08:04:00Z');
+                """;
+            command.Parameters.AddWithValue("$result_json", """
+                {"feasibility":{"checks":[
+                    {"status":"Yellow","message":"服务差距需跨部门协调"},
+                    {"status":"Green","message":"库存门禁通过"}
+                ]}}
+                """);
+            command.ExecuteNonQuery();
+        }
+
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(SeedData.Create()), databasePath);
+        var lineage = new FixedScenarioRunLineageReader(Array.Empty<ScenarioRunSummary>());
+        var governance = new MasterSettingsGovernanceService(source, new ScenarioRunPreviewService(source), lineage, databasePath);
+        _ = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
+
+        var migratedJson = Convert.ToString(ReadSqliteScalar(
+            databasePath,
+            "SELECT coordination_items_json FROM ddom_change_package_validations WHERE validation_id = 'VAL-LEGACY-001';"))!;
+        var migratedItems = JsonSerializer.Deserialize<IReadOnlyList<string>>(migratedJson) ?? Array.Empty<string>();
+        AssertEqual(1, migratedItems.Count, "legacy Reconcile validation recovers one yellow coordination item from result_json");
+        AssertEqual("服务差距需跨部门协调", migratedItems[0], "legacy yellow coordination message is preserved");
+        AssertEqual(4L, Convert.ToInt64(ReadSqliteScalar(
+            databasePath,
+            "SELECT COUNT(*) FROM ddom_change_package_validations WHERE validation_id <> 'VAL-LEGACY-001' AND coordination_items_json = '[]';")),
+            "valid but incompatible legacy result JSON remains readable with an empty coordination fallback");
+        AssertEqual(1L, Convert.ToInt64(ReadSqliteScalar(
+            databasePath,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ddom_change_package_create_keys';")),
+            "legacy DDOM storage gains the additive idempotency-key table");
     }
     finally
     {
@@ -14680,6 +14862,36 @@ internal sealed class FixedScenarioRunLineageReader : IScenarioRunLineageReader
 
     public ScenarioRunDetail? GetDetail(string runId) =>
         _details.TryGetValue(runId, out var detail) ? detail : null;
+}
+
+internal sealed class PostDetailMutatingScenarioRunLineageReader : IScenarioRunLineageReader
+{
+    private readonly ScenarioRunDetail _detail;
+    private readonly string _candidateStatusAfterDetail;
+    private bool _detailWasRead;
+
+    public PostDetailMutatingScenarioRunLineageReader(
+        ScenarioRunDetail detail,
+        string candidateStatusAfterDetail)
+    {
+        _detail = detail;
+        _candidateStatusAfterDetail = candidateStatusAfterDetail;
+    }
+
+    public ScenarioRunSummary? GetSummary(string runId)
+    {
+        if (!string.Equals(runId, _detail.Summary.RunId, StringComparison.Ordinal)) return null;
+        return _detailWasRead
+            ? _detail.Summary with { CandidateStatus = _candidateStatusAfterDetail }
+            : _detail.Summary;
+    }
+
+    public ScenarioRunDetail? GetDetail(string runId)
+    {
+        if (!string.Equals(runId, _detail.Summary.RunId, StringComparison.Ordinal)) return null;
+        _detailWasRead = true;
+        return _detail;
+    }
 }
 
 internal sealed class StaticScenarioWorkspaceDataSource : IScenarioWorkspaceDataSource

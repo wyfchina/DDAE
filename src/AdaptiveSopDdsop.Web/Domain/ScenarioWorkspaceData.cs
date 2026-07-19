@@ -948,7 +948,8 @@ public sealed record DdomChangePackageValidation(
     string InputFingerprint,
     IReadOnlyList<string> FailureReasons,
     string ValidatedBy,
-    string ValidatedAtUtc);
+    string ValidatedAtUtc,
+    IReadOnlyList<string>? CoordinationItems = null);
 
 public sealed record DdomChangePackageAuditEvent(
     string EventId,

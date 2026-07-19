@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import vm from "node:vm";
 
 const root = resolve(process.argv[2] || process.cwd());
 const page = readFileSync(resolve(root, "src/AdaptiveSopDdsop.Web/Pages/Index.cshtml"), "utf8");
@@ -14,6 +15,153 @@ function body(name, nextName) {
   const end = nextName ? script.indexOf(`function ${nextName}`, start) : -1;
   expect(start >= 0 && end > start, `missing bounded function ${name}`);
   return script.slice(start, end);
+}
+
+function functionSource(name) {
+  const signatures = [`async function ${name}`, `function ${name}`];
+  const start = signatures
+    .map(signature => script.indexOf(signature))
+    .filter(index => index >= 0)
+    .sort((left, right) => left - right)[0];
+  expect(start !== undefined, `missing executable function ${name}`);
+  const bodyStart = script.indexOf("{", start);
+  let depth = 0;
+  for (let index = bodyStart; index < script.length; index += 1) {
+    if (script[index] === "{") depth += 1;
+    if (script[index] === "}") depth -= 1;
+    if (depth === 0) return script.slice(start, index + 1);
+  }
+  throw new Error(`missing executable function end ${name}`);
+}
+
+function deferred() {
+  let resolvePromise;
+  const promise = new Promise(resolve => { resolvePromise = resolve; });
+  return { promise, resolve: resolvePromise };
+}
+
+function jsonResponse(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+  };
+}
+
+async function executableNestedSaveResponseUsesSummary() {
+  const elements = new Map([
+    ["preview-persistence-chip", { className: "", textContent: "" }],
+    ["preview-candidate-chip", { className: "", textContent: "" }],
+  ]);
+  const loaded = [];
+  const context = vm.createContext({
+    console,
+    state: {
+      preview: {
+        request: { templateId: "TPL-CONSTRAINED" },
+        baseline: { metrics: { averageInventoryValue: 10 } },
+        scenario: { metrics: { averageInventoryValue: 11 } },
+      },
+    },
+    saveControls: {
+      status: { className: "", textContent: "" },
+      name: { value: "阻断方案" },
+      description: { value: "回归测试" },
+      createdBy: { value: "计划员" },
+    },
+    byId: id => elements.get(id),
+    hasCompletePhysicalInventoryEvidence: () => true,
+    isFiniteChartValue: Number.isFinite,
+    fetch: async () => jsonResponse({
+      runId: "RUN-BLOCKED",
+      runNumber: "SR-EXEC-001",
+      summary: {
+        runId: "RUN-BLOCKED",
+        feasibilityStatus: "Blocked",
+        baselineSnapshotId: null,
+        externalScenarioId: null,
+        responseId: null,
+      },
+    }),
+    loadSavedScenarioRuns: async runId => loaded.push(runId),
+  });
+  vm.runInContext(`${functionSource("saveScenarioRun")}\nglobalThis.__saveScenarioRun = saveScenarioRun;`, context);
+  await context.__saveScenarioRun();
+
+  expect(elements.get("preview-candidate-chip").textContent.includes("已保存留痕但不可选定"),
+    "nested blocked save response must remain non-selectable");
+  expect(loaded.length === 1 && loaded[0] === "RUN-BLOCKED",
+    "nested save response must reload the persisted run");
+}
+
+async function executableScenarioDetailDropsOutOfOrder404() {
+  const oldResponses = Array.from({ length: 4 }, () => deferred());
+  let oldIndex = 0;
+  const rendered = [];
+  const context = vm.createContext({
+    console,
+    state: {
+      savedScenarioRuns: [],
+      selectedScenarioRunId: null,
+      scenarioDetailRequestGeneration: 0,
+    },
+    renderSavedScenarioRuns() {},
+    renderScenarioAudit: detail => rendered.push(detail?.summary?.runId || null),
+    fetch: url => {
+      if (url.includes("RUN-A")) return oldResponses[oldIndex++].promise;
+      if (url.endsWith("/RUN-B")) return Promise.resolve(jsonResponse({ summary: { runId: "RUN-B" } }));
+      return Promise.resolve(jsonResponse([]));
+    },
+  });
+  vm.runInContext(`${functionSource("loadScenarioRunDetail")}\nglobalThis.__loadScenarioRunDetail = loadScenarioRunDetail;`, context);
+
+  const oldLoad = context.__loadScenarioRunDetail("RUN-A");
+  await context.__loadScenarioRunDetail("RUN-B");
+  oldResponses[0].resolve(jsonResponse(null, 404));
+  oldResponses[1].resolve(jsonResponse([]));
+  oldResponses[2].resolve(jsonResponse([]));
+  oldResponses[3].resolve(jsonResponse([]));
+  await oldLoad;
+
+  expect(context.state.selectedScenarioRunId === "RUN-B",
+    "an older A 404 must not clear the newer selected run B");
+  expect(rendered.length === 1 && rendered[0] === "RUN-B",
+    "an older A response must not overwrite the rendered B detail");
+}
+
+async function executableDdomCreateHasInFlightGate() {
+  const createResponse = deferred();
+  const elements = new Map([
+    ["ddom-source-run", { value: "RUN-SELECTED" }],
+    ["ddom-package-name", { value: "并发门禁测试" }],
+    ["create-ddom-package", { disabled: false, title: "" }],
+  ]);
+  let fetchCount = 0;
+  const loaded = [];
+  const context = vm.createContext({
+    console,
+    state: { ddomCreateInFlight: false },
+    byId: id => elements.get(id),
+    governanceDecisionContext: () => ({ owner: "运营经理" }),
+    fetch: () => {
+      fetchCount += 1;
+      return createResponse.promise;
+    },
+    loadDdomPackages: async packageId => loaded.push(packageId),
+  });
+  vm.runInContext(`${functionSource("createDdomPackage")}\nglobalThis.__createDdomPackage = createDdomPackage;`, context);
+
+  const first = context.__createDdomPackage();
+  const second = context.__createDdomPackage();
+  await Promise.resolve();
+  expect(fetchCount === 1, "double click must issue only one DDOM create request");
+  expect(elements.get("create-ddom-package").disabled === true,
+    "DDOM create button must stay disabled while its request is in flight");
+  createResponse.resolve(jsonResponse({ packageId: "PKG-001" }));
+  await Promise.all([first, second]);
+  expect(context.state.ddomCreateInFlight === false && elements.get("create-ddom-package").disabled === false,
+    "DDOM create gate and button must recover after the request settles");
+  expect(loaded.length === 1 && loaded[0] === "PKG-001", "created package must reload once");
 }
 
 for (const id of new Set([...script.matchAll(/byId\("([^"]+)"\)/g)].map(match => match[1]))) {
@@ -32,6 +180,8 @@ expect(preview.includes("result.feasibility") && !preview.includes("，未保存
 expect(preview.includes('feasibility.status === "Blocked"')
   && preview.includes("阻断候选：可保存留痕，但不可选定；可创建协调事项或修订后重算"),
   "blocked previews must describe save-for-evidence without promising DDOM selection");
+expect(preview.includes("保存仅用于审计") && preview.includes("仅在冻结比较中保存的方案可人工选定"),
+  "ordinary preview must not imply that a non-comparison save can become a DDOM candidate");
 expect(page.includes("计算范围") && page.includes("措施对象 SKU") && page.includes('id="scenario-scope-summary"') && page.includes('id="preview-candidate-chip"'),
   "calculation scope and action SKU must be distinct in the markup");
 expect(script.includes("function renderScenarioScopeSummary") && script.includes("familyFilter:") && script.includes("skuFilter:"),
@@ -62,8 +212,9 @@ const savePanel = body("showScenarioSavePanel", "renderSavedScenarioRuns");
 expect(savePanel.includes("saveControls.button.disabled = !physicalInventoryComplete") && !savePanel.includes("feasibilityStatus"),
   "save availability must remain an evidence gate, including for blocked results");
 const saveRun = body("saveScenarioRun", "ddomPackageGate");
-expect(saveRun.includes('saved.feasibilityStatus === "Blocked"')
-  && saveRun.includes("已保存留痕但不可选定"),
+expect(saveRun.includes('saved.summary.feasibilityStatus === "Blocked"')
+  && saveRun.includes("已保存留痕但不可选定")
+  && saveRun.includes("仅冻结比较方案可人工选定"),
   "saving a blocked run must preserve its non-selectable candidate message");
 
 const selection = body("selectScenarioForDdom", "createDdomPackage");
@@ -84,6 +235,8 @@ for (const [id, action] of [["submit-ddom-package", "submit"], ["validate-ddom-p
 const packageDetail = body("renderDdomPackageDetail", "loadDdomPackages");
 expect(packageDetail.includes("detail.latestValidation") && packageDetail.includes("failureReasons") && packageDetail.includes("validatedBy") && packageDetail.includes("validatedAtUtc") && packageDetail.includes("feasibilityStatus"),
   "DDOM detail must render the exact latest validation DTO fields");
+expect(packageDetail.includes("coordinationItems") && packageDetail.includes("待协调事项"),
+  "reconcilable DDOM validation must show its persisted coordination items in Chinese");
 expect(!packageDetail.includes("JSON.stringify(detail.finalParameters") && !packageDetail.includes("proposal.rationale")
   && packageDetail.includes("ddomParameterSummary") && packageDetail.includes("ddomProposalReasonLabel"),
   "business DDOM detail must show localized parameter and action summaries instead of raw JSON or internal rationale codes");
@@ -112,8 +265,37 @@ expect(packageLoad.includes("state.ddomPackages.some") && packageDetailLoad.incl
 expect(packageDetailLoad.includes("ddomDetailRequestGeneration")
   && packageDetailLoad.includes("packageId !== state.selectedDdomPackageId"),
   "DDOM detail loading must ignore an older A response after B becomes selected");
+expect(runDetailLoad.includes("scenarioDetailRequestGeneration")
+  && runDetailLoad.includes("runId !== state.selectedScenarioRunId")
+  && runDetailLoad.indexOf("runId !== state.selectedScenarioRunId") < runDetailLoad.indexOf("status === 404"),
+  "scenario detail loading must discard an older A response before its stale 404 can clear B");
 
-const actions = script.slice(script.indexOf('document.addEventListener("click", event => {', script.indexOf("data-select-ddom-run-id")), script.indexOf('byId("create-ddom-package")'));
+const createPackage = body("createDdomPackage", "ddomPackageAction");
+expect(createPackage.includes("ddomCreateInFlight") && createPackage.includes('byId("create-ddom-package")')
+  && createPackage.includes("try") && createPackage.includes("finally"),
+  "DDOM package creation must hold an independent in-flight button gate");
+
+const sourceLabels = body("baselineSourceLabel", "baselineActorLabel");
+expect(sourceLabels.includes('"DDAE Internal Operating Fact Set": "DDAE 内部经营事实集"'),
+  "internal operating fact source must be localized");
+expect(script.includes('Historical closing balances to current baseline')
+  && script.includes("历史期末余额衔接至当前基线"),
+  "history-to-baseline scope must be localized");
+for (const [code, label] of [
+  ["ON_HAND", "在手库存"],
+  ["INVENTORY_VALUE", "库存金额"],
+  ["WORK_IN_PROCESS", "在制品"],
+  ["BACKLOG", "积压需求"],
+  ["RESOURCE_AVAILABLE_CAPACITY", "资源可用能力"],
+  ["ALL", "全部"],
+]) {
+  expect(script.includes(code) && script.includes(label), `baseline reconciliation code must be localized: ${code}`);
+}
+expect(businessLabels.includes("已从冻结基线和已保存场景运行进行白盒复算。"),
+  "DDOM audit wording must use natural Chinese for the saved scenario run");
+
+const actionsStart = script.indexOf('document.addEventListener("click", event => {', script.indexOf("data-select-ddom-run-id"));
+const actions = script.slice(actionsStart, script.indexOf('byId("create-ddom-package").addEventListener', actionsStart));
 expect(actions.includes("openScenarioCoordination") && actions.includes("openDdomValidationCoordination"),
   "scenario and DDOM validation failures must prefill their coordination lineage and reasons");
 
@@ -132,4 +314,7 @@ expect(coordinationPrefill.includes('scenarioSelect.value = ""') && coordination
 const outcome = body("recordCoordinationOutcome", "loadWorkspace");
 expect(!outcome.includes("/api/ddom-change-packages") && !outcome.includes("ddomPackageAction"),
   "coordination outcome must remain record-only and not mutate DDOM governance");
+await executableNestedSaveResponseUsesSummary();
+await executableScenarioDetailDropsOutOfOrder404();
+await executableDdomCreateHasInFlightGate();
 console.log("task-6 persisted UI fixture passed");

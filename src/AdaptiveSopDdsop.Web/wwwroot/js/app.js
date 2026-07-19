@@ -19,8 +19,10 @@ const state = {
   ddomPackages: [],
   selectedDdomPackageId: null,
   currentDdomPackageDetail: null,
+  ddomCreateInFlight: false,
   ddomActionInFlight: false,
   ddomDetailRequestGeneration: 0,
+  scenarioDetailRequestGeneration: 0,
   historyReview: null,
   ddmrpStandardReference: null,
   ddmrpStandardReferencePromise: null,
@@ -732,6 +734,7 @@ function baselineSourceLabel(source) {
     "DDAE Demo Time Evidence": "DDAE 时间缓冲演示证据",
     "DDAE DemoFixture explicit historical operating ledger": "DDAE 历史演示台账",
     "DDAE 演示历史事实台账": "DDAE 历史演示台账",
+    "DDAE Internal Operating Fact Set": "DDAE 内部经营事实集",
   })[source];
   if (mapped) return mapped;
   if (normalized.includes("DemoFixture")) return "演示数据";
@@ -865,6 +868,8 @@ function businessEvidenceLabel(value) {
     .replace(/Week (\d+): EvidenceStatus=/g, "第 $1 周：证据状态=")
     .replace(/\bScenario Preview\b/g, "场景预览")
     .replace(/\brun\b/gi, "场景运行")
+    .replaceAll("已从冻结基线和保存 场景运行 白盒复算。", "已从冻结基线和已保存场景运行进行白盒复算。")
+    .replaceAll("Historical closing balances to current baseline", "历史期末余额衔接至当前基线")
     .replace(/\bBalanced\b/g, "综合平衡")
     .replace(/\bServiceFirst\b/g, "服务优先")
     .replace(/\bFlowFirst\b/g, "流速优先")
@@ -3091,7 +3096,7 @@ function renderPreviewResult(result) {
   byId("preview-candidate-chip").className = feasibility.status === "Blocked" ? "status-chip is-invalid" : "status-chip neutral";
   byId("preview-candidate-chip").textContent = feasibility.status === "Blocked"
     ? "阻断候选：可保存留痕，但不可选定；可创建协调事项或修订后重算"
-    : "候选：未选定（保存后可人工选定）";
+    : "预览结果：保存仅用于审计；仅在冻结比较中保存的方案可人工选定";
   byId("route-status").className = "status-chip is-valid";
   byId("route-status").textContent = "预览结果已生成";
   showScenarioSavePanel(result);
@@ -3222,6 +3227,7 @@ async function loadSavedScenarioRuns(selectedRunId) {
 }
 
 async function loadScenarioRunDetail(runId) {
+  const requestGeneration = ++state.scenarioDetailRequestGeneration;
   state.selectedScenarioRunId = runId;
   renderSavedScenarioRuns(state.savedScenarioRuns);
   const [detailResponse, auditResponse, changesResponse, coordinationResponse] = await Promise.all([
@@ -3230,6 +3236,7 @@ async function loadScenarioRunDetail(runId) {
     fetch(`/api/master-settings/changes?limit=50&sourceScenarioRunId=${encodeURIComponent(runId)}`, { headers: { Accept: "application/json" } }),
     fetch(`/api/coordination-items?limit=50&relatedScenarioRunId=${encodeURIComponent(runId)}`, { headers: { Accept: "application/json" } }),
   ]);
+  if (requestGeneration !== state.scenarioDetailRequestGeneration || runId !== state.selectedScenarioRunId) return;
   if (detailResponse.status === 404) {
     state.selectedScenarioRunId = null;
     renderSavedScenarioRuns(state.savedScenarioRuns);
@@ -3286,14 +3293,18 @@ async function saveScenarioRun() {
   }
 
   const saved = await response.json();
+  const savedSummary = saved.summary;
+  const hasCompleteFrozenLineage = Boolean(savedSummary?.baselineSnapshotId && savedSummary?.externalScenarioId && savedSummary?.responseId);
   saveControls.status.className = "status-chip is-valid";
   saveControls.status.textContent = `已保存，未提交审批：${saved.runNumber}`;
   byId("preview-persistence-chip").className = "status-chip is-valid";
   byId("preview-persistence-chip").textContent = `已保存，未提交审批：${saved.runNumber}`;
-  byId("preview-candidate-chip").className = saved.feasibilityStatus === "Blocked" ? "status-chip is-invalid" : "status-chip neutral";
-  byId("preview-candidate-chip").textContent = saved.feasibilityStatus === "Blocked"
+  byId("preview-candidate-chip").className = saved.summary.feasibilityStatus === "Blocked" ? "status-chip is-invalid" : "status-chip neutral";
+  byId("preview-candidate-chip").textContent = saved.summary.feasibilityStatus === "Blocked"
     ? "阻断候选：已保存留痕但不可选定；请创建协调事项或修订后重算"
-    : "候选：未选定（需人工点击选定）";
+    : hasCompleteFrozenLineage
+      ? "候选：未选定（需人工点击选定）"
+      : "已保存为审计记录；仅冻结比较方案可人工选定";
   await loadSavedScenarioRuns(saved.runId);
 }
 
@@ -3364,8 +3375,14 @@ function renderDdomPackageDetail(detail, auditEvents = []) {
     escapeHtml(ddomProposalReasonLabel(line.proposal)),
   ])).join("") : emptyRow("请选择变更包", 6);
   const latestValidation = detail && detail.latestValidation;
+  const validationCoordinationItems = Array.isArray(latestValidation?.coordinationItems)
+    ? latestValidation.coordinationItems.filter(Boolean)
+    : [];
+  const validationCoordinationHtml = validationCoordinationItems.length
+    ? `<span>待协调事项：${escapeHtml(validationCoordinationItems.map(businessEvidenceLabel).join("；"))}</span>`
+    : "";
   byId("ddom-package-validation").innerHTML = latestValidation
-    ? `<div class="diagnostic-item ${latestValidation.validationStatus === "Failed" ? "is-error" : ""}"><strong>最新白盒验证：${escapeHtml(statusLabel(latestValidation.validationStatus))}</strong><span>可行性：${escapeHtml(statusLabel(latestValidation.feasibilityStatus))}；失败原因：${escapeHtml((latestValidation.failureReasons || []).join("；") || "无")}</span><small>验证人：${escapeHtml(latestValidation.validatedBy)} · ${escapeHtml(latestValidation.validatedAtUtc)}</small>${latestValidation.validationStatus === "Failed" ? `<button class="button secondary compact-button" type="button" data-coordinate-ddom-package-id="${escapeHtml(summary.packageId)}">创建协调事项</button>` : ""}</div>`
+    ? `<div class="diagnostic-item ${latestValidation.validationStatus === "Failed" ? "is-error" : ""}"><strong>最新白盒验证：${escapeHtml(statusLabel(latestValidation.validationStatus))}</strong><span>可行性：${escapeHtml(statusLabel(latestValidation.feasibilityStatus))}；失败原因：${escapeHtml((latestValidation.failureReasons || []).join("；") || "无")}</span>${validationCoordinationHtml}<small>验证人：${escapeHtml(latestValidation.validatedBy)} · ${escapeHtml(latestValidation.validatedAtUtc)}</small>${latestValidation.validationStatus === "Failed" ? `<button class="button secondary compact-button" type="button" data-coordinate-ddom-package-id="${escapeHtml(summary.packageId)}">创建协调事项</button>` : ""}</div>`
     : `<div class="diagnostic-item"><strong>最新验证</strong><span>尚未运行白盒验证。</span></div>`;
   byId("ddom-package-audit").innerHTML = auditEvents.length ? auditEvents.map(item => `<div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(businessEvidenceLabel(item.message))}</span><small>${escapeHtml(traceStageLabel(item.stage))} · ${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : "";
   renderDdomPackageActions(summary);
@@ -3414,12 +3431,23 @@ async function selectScenarioForDdom(runId) {
 }
 
 async function createDdomPackage() {
+  if (state.ddomCreateInFlight) return;
   const sourceScenarioRunId = byId("ddom-source-run").value;
   if (!sourceScenarioRunId) throw new Error("请先在第 03 阶段人工选定一个可评审候选。");
-  const response = await fetch("/api/ddom-change-packages", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ sourceScenarioRunId, name: byId("ddom-package-name").value || "DDOM 场景变更包", description: "由已选场景创建", createdBy: "DDS&OP 计划员", governanceContext: governanceDecisionContext(sourceScenarioRunId) }) });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.message || `创建 DDOM 变更包失败：${response.status}`);
-  await loadDdomPackages(payload.packageId);
+  const createButton = byId("create-ddom-package");
+  state.ddomCreateInFlight = true;
+  createButton.disabled = true;
+  createButton.title = "正在创建变更包，请等待返回。";
+  try {
+    const response = await fetch("/api/ddom-change-packages", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ sourceScenarioRunId, name: byId("ddom-package-name").value || "DDOM 场景变更包", description: "由已选场景创建", createdBy: "DDS&OP 计划员", governanceContext: governanceDecisionContext(sourceScenarioRunId) }) });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || `创建 DDOM 变更包失败：${response.status}`);
+    await loadDdomPackages(payload.packageId);
+  } finally {
+    state.ddomCreateInFlight = false;
+    createButton.disabled = false;
+    createButton.title = "创建草稿变更包，不会自动提交或生效。";
+  }
 }
 
 async function ddomPackageAction(action) {
@@ -5745,6 +5773,20 @@ function baselineReconciliationNumber(value, reason) {
     : escapeHtml(numberFormat.format(numeric));
 }
 
+function baselineReconciliationMetricLabel(metricCode) {
+  return ({
+    ON_HAND: "在手库存",
+    INVENTORY_VALUE: "库存金额",
+    WORK_IN_PROCESS: "在制品",
+    BACKLOG: "积压需求",
+    RESOURCE_AVAILABLE_CAPACITY: "资源可用能力",
+  })[metricCode] || valueOr(metricCode, "证据缺失");
+}
+
+function baselineReconciliationItemLabel(itemKey) {
+  return itemKey === "ALL" ? "全部" : valueOr(itemKey, "证据缺失");
+}
+
 function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", updatePage = true) {
   const reconciliation = baseline?.payload?.historyReconciliation;
   const isFrozen = viewKind === "Frozen";
@@ -5772,7 +5814,7 @@ function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", u
       ? ""
       : ` · 原因 ${escapeHtml(businessEvidenceLabel(line.differenceReason))}`;
     return [
-      `${baselineEvidenceValue(line?.metricCode, "后端未提供指标")} / ${baselineEvidenceValue(line?.itemKey, "后端未提供对象")}`,
+      `${baselineEvidenceValue(line?.metricCode, "后端未提供指标", baselineReconciliationMetricLabel)} / ${baselineEvidenceValue(line?.itemKey, "后端未提供对象", baselineReconciliationItemLabel)}`,
       `历史期末 ${baselineReconciliationNumber(line?.historyClosingBalance, "后端未提供历史期末余额")} · 增加 ${baselineReconciliationNumber(line?.intervalIncrease, "后端未提供增加值")} · 减少 ${baselineReconciliationNumber(line?.intervalDecrease, "后端未提供减少值")} · 调整 ${baselineReconciliationNumber(line?.adjustment, "后端未提供调整值")} · 基线 ${baselineReconciliationNumber(line?.baselineBalance, "后端未提供基线余额")} · 差异 ${baselineReconciliationNumber(line?.difference, "后端未提供有效差异")} · 状态 ${baselineEvidenceStatus(line?.evidenceStatus, "后端未提供对账行证据状态")}${reason}`,
     ];
   }) : [["对账行", baselineEvidenceMissing("后端未提供历史衔接对账行")]];
@@ -5782,8 +5824,8 @@ function renderBaselineHistoryReconciliation(baseline, viewKind = "Candidate", u
       ? ""
       : `<small>${escapeHtml(businessEvidenceLabel(line.differenceReason))}</small>`;
     return row([
-      baselineEvidenceValue(line?.metricCode, "后端未提供指标"),
-      baselineEvidenceValue(line?.itemKey, "后端未提供对象"),
+      baselineEvidenceValue(line?.metricCode, "后端未提供指标", baselineReconciliationMetricLabel),
+      baselineEvidenceValue(line?.itemKey, "后端未提供对象", baselineReconciliationItemLabel),
       baselineReconciliationNumber(line?.historyClosingBalance, "后端未提供历史期末余额"),
       baselineReconciliationNumber(line?.intervalIncrease, "后端未提供增加值"),
       baselineReconciliationNumber(line?.intervalDecrease, "后端未提供减少值"),
