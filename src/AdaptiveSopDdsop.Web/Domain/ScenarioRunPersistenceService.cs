@@ -66,13 +66,15 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
                     horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
                     service_level_percent, flow_index, average_inventory_value, peak_load_percent,
                     supply_gap, red_sku_count, replenishment_order_count,
-                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status)
+                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                    selected_by, selected_at_utc, selection_note)
                 VALUES (
                     $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
                     $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
                     $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
                     $supply_gap, $red_sku_count, $replenishment_order_count,
-                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status);
+                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status,
+                    $selected_by, $selected_at_utc, $selection_note);
                 """;
             AddParameters(command, summary);
             command.Parameters.AddWithValue("$request_json", requestJson);
@@ -143,13 +145,15 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
                     horizon_weeks, template_id, adoption_constraint_mode, request_json, result_json,
                     service_level_percent, flow_index, average_inventory_value, peak_load_percent,
                     supply_gap, red_sku_count, replenishment_order_count,
-                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status)
+                    baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                    selected_by, selected_at_utc, selection_note)
                 VALUES (
                     $run_id, $run_number, $name, $description, $created_by, $status, $approval_status, $created_at_utc,
                     $horizon_weeks, $template_id, $adoption_constraint_mode, $request_json, $result_json,
                     $service_level_percent, $flow_index, $average_inventory_value, $peak_load_percent,
                     $supply_gap, $red_sku_count, $replenishment_order_count,
-                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status);
+                    $baseline_snapshot_id, $external_scenario_id, $response_id, $feasibility_status, $candidate_status,
+                    $selected_by, $selected_at_utc, $selection_note);
                 """;
             AddParameters(command, summary);
             command.Parameters.AddWithValue("$request_json", requestJson);
@@ -164,6 +168,67 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
 
         transaction.Commit();
         return new ScenarioRunSaveResponse(runId, runNumber, "Saved", "NotSubmitted", true, summary);
+    }
+
+    public ScenarioCandidateSelectionResponse UpdateCandidateStatus(
+        string runId,
+        ScenarioCandidateSelectionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("场景运行标识不能为空。", nameof(runId));
+        }
+        if (string.IsNullOrWhiteSpace(request.Status))
+        {
+            throw new ArgumentException("候选方案状态不能为空。", nameof(request));
+        }
+
+        var requestedStatus = request.Status.Trim();
+        var actor = string.IsNullOrWhiteSpace(request.UpdatedBy) ? "计划员" : request.UpdatedBy.Trim();
+        var note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
+        var now = DateTimeOffset.UtcNow;
+        var nowText = now.ToString("O");
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        var current = GetSummary(connection, transaction, runId)
+            ?? throw new KeyNotFoundException("未找到场景运行记录。");
+
+        if (requestedStatus == "Selected")
+        {
+            EnsureCanSelect(current);
+            var selectedSiblings = GetSelectedSiblings(connection, transaction, current);
+            foreach (var sibling in selectedSiblings)
+            {
+                UpdateCandidateStatus(connection, transaction, sibling.RunId, "Superseded", null, null, null);
+                InsertSelectionAuditEvent(connection, transaction, sibling.RunId, "CandidateSuperseded", actor, note, nowText,
+                    "同一基线和外部场景下已选候选方案被人工选择的新方案替代。");
+            }
+
+            UpdateCandidateStatus(connection, transaction, current.RunId, "Selected", actor, nowText, note);
+            InsertSelectionAuditEvent(connection, transaction, current.RunId, "CandidateSelected", actor, note, nowText,
+                "候选方案已由人工明确选定。");
+            transaction.Commit();
+            return new ScenarioCandidateSelectionResponse(
+                current with { CandidateStatus = "Selected", SelectedBy = actor, SelectedAtUtc = nowText, SelectionNote = note },
+                true);
+        }
+
+        if (requestedStatus == "Withdrawn")
+        {
+            if (current.CandidateStatus != "Selected")
+            {
+                throw new ArgumentException("只有已选定的候选方案可以撤回。", nameof(request));
+            }
+
+            UpdateCandidateStatus(connection, transaction, current.RunId, "Withdrawn", null, null, null);
+            InsertSelectionAuditEvent(connection, transaction, current.RunId, "CandidateWithdrawn", actor, note, nowText,
+                "已选定候选方案已由人工撤回。");
+            transaction.Commit();
+            return new ScenarioCandidateSelectionResponse(current with { CandidateStatus = "Withdrawn" }, true);
+        }
+
+        throw new ArgumentException("候选方案只能人工选定或从已选定状态撤回。", nameof(request));
     }
 
     public IReadOnlyList<ScenarioRunSummary> List(
@@ -207,7 +272,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                   selected_by, selected_at_utc, selection_note
             FROM scenario_runs
             {whereClause}
             ORDER BY created_at_utc DESC
@@ -244,7 +310,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                   selected_by, selected_at_utc, selection_note
             FROM scenario_runs
             WHERE run_id = $run_id;
             """;
@@ -262,7 +329,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
                    horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
                    average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
-                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status, request_json, result_json
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                   selected_by, selected_at_utc, selection_note, request_json, result_json
             FROM scenario_runs
             WHERE run_id = $run_id;
             """;
@@ -275,8 +343,8 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         }
 
         var summary = ReadSummary(reader);
-        var requestJson = reader.GetString(23);
-        var resultJson = reader.GetString(24);
+        var requestJson = reader.GetString(26);
+        var resultJson = reader.GetString(27);
         var request = JsonSerializer.Deserialize<ScenarioRunPreviewRequest>(requestJson, JsonOptions)
             ?? new ScenarioRunPreviewRequest();
         var result = ScenarioRunPreviewService.RestoreLegacyInventoryEvidence(
@@ -315,6 +383,147 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         }
 
         return results;
+    }
+
+    private static void EnsureCanSelect(ScenarioRunSummary summary)
+    {
+        if (summary.Status != "Saved")
+        {
+            throw new ArgumentException("只有已保存的冻结比较候选方案可以选定。", nameof(summary));
+        }
+        if (summary.CandidateStatus != "Candidate")
+        {
+            throw new ArgumentException("只有候选状态的方案可以选定。", nameof(summary));
+        }
+        if (string.IsNullOrWhiteSpace(summary.BaselineSnapshotId) ||
+            string.IsNullOrWhiteSpace(summary.ExternalScenarioId) ||
+            string.IsNullOrWhiteSpace(summary.ResponseId))
+        {
+            throw new ArgumentException("候选方案缺少冻结比较血缘，不能选定。", nameof(summary));
+        }
+        if (summary.FeasibilityStatus == "Blocked")
+        {
+            throw new InvalidOperationException("可行性结果为 Blocked 的候选方案不能选定。");
+        }
+        if (summary.FeasibilityStatus is not ("Adoptable" or "Reconcile"))
+        {
+            throw new ArgumentException("候选方案缺少可选定的后端可行性结果。", nameof(summary));
+        }
+    }
+
+    private static ScenarioRunSummary? GetSummary(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
+                   horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
+                   average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                   selected_by, selected_at_utc, selection_note
+            FROM scenario_runs
+            WHERE run_id = $run_id;
+            """;
+        command.Parameters.AddWithValue("$run_id", runId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadSummary(reader) : null;
+    }
+
+    private static IReadOnlyList<ScenarioRunSummary> GetSelectedSiblings(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ScenarioRunSummary selected)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT run_id, run_number, name, description, created_by, status, approval_status, created_at_utc,
+                   horizon_weeks, template_id, adoption_constraint_mode, service_level_percent, flow_index,
+                   average_inventory_value, peak_load_percent, supply_gap, red_sku_count, replenishment_order_count,
+                   baseline_snapshot_id, external_scenario_id, response_id, feasibility_status, candidate_status,
+                   selected_by, selected_at_utc, selection_note
+            FROM scenario_runs
+            WHERE baseline_snapshot_id = $baseline_snapshot_id
+              AND external_scenario_id = $external_scenario_id
+              AND candidate_status = 'Selected'
+              AND run_id <> $run_id;
+            """;
+        command.Parameters.AddWithValue("$baseline_snapshot_id", selected.BaselineSnapshotId!);
+        command.Parameters.AddWithValue("$external_scenario_id", selected.ExternalScenarioId!);
+        command.Parameters.AddWithValue("$run_id", selected.RunId);
+        using var reader = command.ExecuteReader();
+        var siblings = new List<ScenarioRunSummary>();
+        while (reader.Read())
+        {
+            siblings.Add(ReadSummary(reader));
+        }
+        return siblings;
+    }
+
+    private static void UpdateCandidateStatus(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        string candidateStatus,
+        string? selectedBy,
+        string? selectedAtUtc,
+        string? selectionNote)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE scenario_runs
+            SET candidate_status = $candidate_status,
+                selected_by = COALESCE($selected_by, selected_by),
+                selected_at_utc = COALESCE($selected_at_utc, selected_at_utc),
+                selection_note = COALESCE($selection_note, selection_note)
+            WHERE run_id = $run_id;
+            """;
+        command.Parameters.AddWithValue("$candidate_status", candidateStatus);
+        command.Parameters.AddWithValue("$selected_by", (object?)selectedBy ?? DBNull.Value);
+        command.Parameters.AddWithValue("$selected_at_utc", (object?)selectedAtUtc ?? DBNull.Value);
+        command.Parameters.AddWithValue("$selection_note", (object?)selectionNote ?? DBNull.Value);
+        command.Parameters.AddWithValue("$run_id", runId);
+        if (command.ExecuteNonQuery() != 1)
+        {
+            throw new KeyNotFoundException("未找到场景运行记录。");
+        }
+    }
+
+    private static void InsertSelectionAuditEvent(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        string eventType,
+        string actor,
+        string? note,
+        string createdAtUtc,
+        string message)
+    {
+        var sequence = NextAuditSequence(connection, transaction, runId);
+        var payload = JsonSerializer.Serialize(new { actor, note }, JsonOptions);
+        InsertAuditEvent(connection, transaction, new ScenarioRunAuditEvent(
+            Guid.NewGuid().ToString("N"),
+            runId,
+            sequence,
+            eventType,
+            "CandidateSelection",
+            "Information",
+            message,
+            payload,
+            createdAtUtc));
+    }
+
+    private static int NextAuditSequence(SqliteConnection connection, SqliteTransaction transaction, string runId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COALESCE(MAX(sequence), 0) + 1 FROM scenario_run_audit_events WHERE run_id = $run_id;";
+        command.Parameters.AddWithValue("$run_id", runId);
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     private void EnsureCreated()
@@ -373,6 +582,9 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         EnsureColumn(connection, "response_id", "TEXT NULL");
         EnsureColumn(connection, "feasibility_status", "TEXT NOT NULL DEFAULT 'Legacy'");
         EnsureColumn(connection, "candidate_status", "TEXT NOT NULL DEFAULT 'Candidate'");
+        EnsureColumn(connection, "selected_by", "TEXT NULL");
+        EnsureColumn(connection, "selected_at_utc", "TEXT NULL");
+        EnsureColumn(connection, "selection_note", "TEXT NULL");
 
         using var lineageIndexes = connection.CreateCommand();
         lineageIndexes.CommandText = """
@@ -513,6 +725,9 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
         command.Parameters.AddWithValue("$response_id", (object?)summary.ResponseId ?? DBNull.Value);
         command.Parameters.AddWithValue("$feasibility_status", summary.FeasibilityStatus);
         command.Parameters.AddWithValue("$candidate_status", summary.CandidateStatus);
+        command.Parameters.AddWithValue("$selected_by", (object?)summary.SelectedBy ?? DBNull.Value);
+        command.Parameters.AddWithValue("$selected_at_utc", (object?)summary.SelectedAtUtc ?? DBNull.Value);
+        command.Parameters.AddWithValue("$selection_note", (object?)summary.SelectionNote ?? DBNull.Value);
     }
 
     private static void InsertAuditEvent(SqliteConnection connection, SqliteTransaction transaction, ScenarioRunAuditEvent auditEvent)
@@ -562,7 +777,10 @@ public sealed class ScenarioRunPersistenceService : IScenarioRunLineageReader
             reader.IsDBNull(19) ? null : reader.GetString(19),
             reader.IsDBNull(20) ? null : reader.GetString(20),
             reader.IsDBNull(21) ? "Legacy" : reader.GetString(21),
-            reader.IsDBNull(22) ? "Candidate" : reader.GetString(22));
+            reader.IsDBNull(22) ? "Candidate" : reader.GetString(22),
+            reader.IsDBNull(23) ? null : reader.GetString(23),
+            reader.IsDBNull(24) ? null : reader.GetString(24),
+            reader.IsDBNull(25) ? null : reader.GetString(25));
     }
 
     private static string? NormalizeFilter(string? value) =>

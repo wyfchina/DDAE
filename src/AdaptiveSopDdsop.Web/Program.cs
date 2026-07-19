@@ -435,6 +435,34 @@ app.MapGet("/api/scenario-runs/{runId}/audit", (string runId, ScenarioRunPersist
     return Results.Ok(service.GetAuditEvents(runId));
 });
 
+app.MapPost("/api/scenario-runs/{runId}/selection", (
+    string runId,
+    ScenarioCandidateSelectionRequest request,
+    ScenarioRunPersistenceService service) =>
+{
+    if (service.GetSummary(runId) is null)
+    {
+        return Results.NotFound();
+    }
+
+    try
+    {
+        return Results.Ok(service.UpdateCandidateStatus(runId, request));
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound();
+    }
+});
+
 app.MapGet("/api/master-settings-workspace", (int? limit, MasterSettingsGovernanceService service) =>
 {
     return Results.Ok(service.GetWorkspace(limit.GetValueOrDefault(50)));

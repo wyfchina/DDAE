@@ -234,6 +234,10 @@ var tests = new (string Name, Action Run)[]
     ("Scenario feasibility policy enforces shared hard limits and threshold boundaries", TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBoundaries),
     ("Scenario feasibility policy blocks missing evidence and is attached to previews", TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview),
     ("Blocked evidence-complete scenario can be saved without approval", TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval),
+    ("Candidate selection persists manual selection and supersedes a selected sibling", TestCandidateSelectionPersistsManualSelectionAndSupersedesSibling),
+    ("Candidate selection rolls back sibling replacement when audit persistence fails", TestCandidateSelectionRollsBackSiblingReplacementWhenAuditFails),
+    ("Candidate selection rejects blocked missing-lineage and invalid transitions", TestCandidateSelectionRejectsBlockedMissingLineageAndInvalidTransitions),
+    ("Candidate selection API remains internal with strict status mapping", TestCandidateSelectionApiUsesStrictStatusMapping),
     ("Scenario Run Workspace uses backend feasibility without local adoption thresholds", TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionThresholds),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
@@ -10703,6 +10707,207 @@ static void TestBlockedEvidenceCompleteScenarioCanBeSavedWithoutApproval()
             if (File.Exists(path)) File.Delete(path);
         }
     }
+}
+
+static void TestCandidateSelectionPersistsManualSelectionAndSupersedesSibling()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-candidate-selection-{Guid.NewGuid():N}.db");
+    try
+    {
+        var seed = SeedData.Create();
+        var baseline = new CurrentBaselineService(new SeedCurrentBaselineDataSource(seed), databasePath);
+        var frozen = baseline.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "候选方案人工选定"));
+        var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed));
+        var comparison = new ScenarioComparisonService(baseline, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparison, databasePath);
+        var request = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var first = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-A", "候选方案一", null, "计划员甲"));
+        var second = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-A", "候选方案二", null, "计划员乙"));
+        SetScenarioRunFeasibility(databasePath, first.RunId, "Adoptable");
+        SetScenarioRunFeasibility(databasePath, second.RunId, "Reconcile");
+
+        var firstBefore = runs.GetDetail(first.RunId)!;
+        var firstFrozenJson = JsonSerializer.Serialize(new { firstBefore.Request, firstBefore.Result });
+        var firstSelected = runs.UpdateCandidateStatus(first.RunId,
+            new ScenarioCandidateSelectionRequest("Selected", "运营经理", "选择候选方案一"));
+
+        AssertTrue(firstSelected.IsPersisted, "manual candidate selection should retain persistence");
+        AssertEqual("Selected", firstSelected.Summary.CandidateStatus, "first candidate selected state");
+        AssertEqual("运营经理", firstSelected.Summary.SelectedBy!, "first candidate selected by");
+        AssertTrue(!string.IsNullOrWhiteSpace(firstSelected.Summary.SelectedAtUtc), "first candidate selected timestamp");
+        AssertEqual("选择候选方案一", firstSelected.Summary.SelectionNote!, "first candidate selection note");
+        var firstAfter = runs.GetDetail(first.RunId)!;
+        AssertEqual(firstFrozenJson, JsonSerializer.Serialize(new { firstAfter.Request, firstAfter.Result }),
+            "selection must not change frozen request_json or result_json");
+
+        var secondSelected = runs.UpdateCandidateStatus(second.RunId,
+            new ScenarioCandidateSelectionRequest("Selected", "运营经理", "切换至候选方案二"));
+
+        AssertEqual("Superseded", runs.GetSummary(first.RunId)!.CandidateStatus,
+            "selecting a sibling should supersede the prior selection");
+        AssertEqual("Selected", secondSelected.Summary.CandidateStatus, "second candidate selected state");
+        AssertTrue(runs.GetAuditEvents(first.RunId).Any(item => item.EventType == "CandidateSelected"),
+            "first candidate should audit its manual selection");
+        AssertTrue(runs.GetAuditEvents(first.RunId).Any(item => item.EventType == "CandidateSuperseded"),
+            "first candidate should audit sibling supersession");
+        AssertTrue(runs.GetAuditEvents(second.RunId).Any(item => item.EventType == "CandidateSelected"),
+            "second candidate should audit its manual selection");
+
+        var reconstructed = new ScenarioRunPersistenceService(preview, comparison, databasePath);
+        var persisted = reconstructed.GetSummary(second.RunId)!;
+        AssertEqual("Selected", persisted.CandidateStatus, "selected candidate must survive service reconstruction");
+        AssertEqual("运营经理", persisted.SelectedBy!, "selected actor must survive service reconstruction");
+        AssertEqual("切换至候选方案二", persisted.SelectionNote!, "selected note must survive service reconstruction");
+
+        var withdrawn = reconstructed.UpdateCandidateStatus(second.RunId,
+            new ScenarioCandidateSelectionRequest("Withdrawn", "运营经理", "人工撤回"));
+        AssertEqual("Withdrawn", withdrawn.Summary.CandidateStatus, "selected candidate may be withdrawn");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCandidateSelectionRollsBackSiblingReplacementWhenAuditFails()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-candidate-selection-rollback-{Guid.NewGuid():N}.db");
+    try
+    {
+        var seed = SeedData.Create();
+        var baseline = new CurrentBaselineService(new SeedCurrentBaselineDataSource(seed), databasePath);
+        var frozen = baseline.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "候选方案事务回滚"));
+        var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed));
+        var comparison = new ScenarioComparisonService(baseline, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparison, databasePath);
+        var request = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var first = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-A", "原已选候选", null, "计划员甲"));
+        var second = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-A", "替代候选", null, "计划员乙"));
+        SetScenarioRunFeasibility(databasePath, first.RunId, "Adoptable");
+        SetScenarioRunFeasibility(databasePath, second.RunId, "Reconcile");
+        _ = runs.UpdateCandidateStatus(first.RunId,
+            new ScenarioCandidateSelectionRequest("Selected", "运营经理", "原人工选择"));
+
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var trigger = connection.CreateCommand();
+            trigger.CommandText = $"""
+                CREATE TRIGGER block_second_candidate_selected_audit
+                BEFORE INSERT ON scenario_run_audit_events
+                WHEN NEW.run_id = '{second.RunId}' AND NEW.event_type = 'CandidateSelected'
+                BEGIN
+                    SELECT RAISE(ABORT, 'selection audit persistence blocked');
+                END;
+                """;
+            trigger.ExecuteNonQuery();
+        }
+
+        var failure = string.Empty;
+        try
+        {
+            _ = runs.UpdateCandidateStatus(second.RunId,
+                new ScenarioCandidateSelectionRequest("Selected", "运营经理", "应当整体回滚"));
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex)
+        {
+            failure = ex.Message;
+        }
+
+        AssertTrue(failure.Contains("selection audit persistence blocked", StringComparison.Ordinal),
+            "test trigger should block the selected-candidate audit insert");
+        AssertEqual("Selected", runs.GetSummary(first.RunId)!.CandidateStatus,
+            "failed replacement must roll back the prior selected sibling state");
+        AssertEqual("Candidate", runs.GetSummary(second.RunId)!.CandidateStatus,
+            "failed replacement must roll back the new candidate state");
+        AssertTrue(!runs.GetAuditEvents(first.RunId).Any(item => item.EventType == "CandidateSuperseded"),
+            "failed replacement must not leave a superseded audit event");
+        AssertTrue(!runs.GetAuditEvents(second.RunId).Any(item => item.EventType == "CandidateSelected"),
+            "failed replacement must not leave a selected audit event");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCandidateSelectionRejectsBlockedMissingLineageAndInvalidTransitions()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-candidate-selection-rejections-{Guid.NewGuid():N}.db");
+    try
+    {
+        var seed = SeedData.Create();
+        var baseline = new CurrentBaselineService(new SeedCurrentBaselineDataSource(seed), databasePath);
+        var frozen = baseline.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "候选方案阻断验证"));
+        var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed));
+        var comparison = new ScenarioComparisonService(baseline, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparison, databasePath);
+        var request = CreateLineageComparisonRequest(frozen.SnapshotId);
+        var blocked = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-A", "被阻断候选", null, "计划员"));
+        SetScenarioRunFeasibility(databasePath, blocked.RunId, "Blocked");
+
+        AssertInvalidOperationRejected(
+            () => runs.UpdateCandidateStatus(blocked.RunId, new ScenarioCandidateSelectionRequest("Selected", "运营经理", null)),
+            "可行性");
+        var stillSaved = runs.GetSummary(blocked.RunId)!;
+        AssertEqual("Saved", stillSaved.Status, "blocked candidate remains saved");
+        AssertEqual("Candidate", stillSaved.CandidateStatus, "blocked candidate remains a candidate");
+
+        var unlinked = runs.Save(new ScenarioRunSaveRequest(
+            "缺失血缘候选", null, "计划员", new ScenarioRunPreviewRequest(6)));
+        AssertArgumentRejected(
+            () => runs.UpdateCandidateStatus(unlinked.RunId, new ScenarioCandidateSelectionRequest("Selected", "运营经理", null)),
+            "missing frozen comparison lineage");
+
+        var candidate = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
+            request, "RESP-LINEAGE-B", "直接废止候选", null, "计划员"));
+        SetScenarioRunFeasibility(databasePath, candidate.RunId, "Adoptable");
+        AssertArgumentRejected(
+            () => runs.UpdateCandidateStatus(candidate.RunId, new ScenarioCandidateSelectionRequest("Superseded", "运营经理", null)),
+            "candidate cannot be superseded directly");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestCandidateSelectionApiUsesStrictStatusMapping()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+
+    AssertTrue(program.Contains("app.MapPost(\"/api/scenario-runs/{runId}/selection\"", StringComparison.Ordinal),
+        "candidate selection should expose an internal DDAE API");
+    AssertTrue(program.Contains("Results.NotFound", StringComparison.Ordinal),
+        "selection API should return 404 for an unknown run");
+    AssertTrue(program.Contains("Results.BadRequest", StringComparison.Ordinal),
+        "selection API should return 400 for invalid transitions or lineage");
+    AssertTrue(program.Contains("Results.Conflict", StringComparison.Ordinal),
+        "selection API should return 409 when feasibility blocks selection");
+    AssertTrue(!program.Contains("/api/scenario-runs/{runId}/selection/import", StringComparison.Ordinal)
+        && !program.Contains("/api/scenario-runs/{runId}/selection/network", StringComparison.Ordinal)
+        && !program.Contains("/api/scenario-runs/{runId}/selection/protocol", StringComparison.Ordinal),
+        "candidate selection must remain internal and not expose external integration routes");
+}
+
+static void SetScenarioRunFeasibility(string databasePath, string runId, string feasibilityStatus)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var command = connection.CreateCommand();
+    command.CommandText = "UPDATE scenario_runs SET feasibility_status = $feasibility_status WHERE run_id = $run_id;";
+    command.Parameters.AddWithValue("$feasibility_status", feasibilityStatus);
+    command.Parameters.AddWithValue("$run_id", runId);
+    AssertEqual(1, command.ExecuteNonQuery(), "selection fixture feasibility update");
 }
 
 static (ScenarioWorkspaceDataSet Data, ScenarioRunPreviewResult Preview) CreateScenarioFeasibilityFixture()

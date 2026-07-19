@@ -762,7 +762,10 @@ public sealed record ScenarioRunSummary(
     string? ExternalScenarioId = null,
     string? ResponseId = null,
     string FeasibilityStatus = "Legacy",
-    string CandidateStatus = "Candidate");
+    string CandidateStatus = "Candidate",
+    string? SelectedBy = null,
+    string? SelectedAtUtc = null,
+    string? SelectionNote = null);
 
 public sealed record ScenarioRunDetail(
     ScenarioRunSummary Summary,
@@ -787,6 +790,15 @@ public sealed record ScenarioRunSaveResponse(
     string ApprovalStatus,
     bool IsPersisted,
     ScenarioRunSummary Summary);
+
+public sealed record ScenarioCandidateSelectionRequest(
+    string Status,
+    string? UpdatedBy,
+    string? Note);
+
+public sealed record ScenarioCandidateSelectionResponse(
+    ScenarioRunSummary Summary,
+    bool IsPersisted);
 
 public sealed record MasterSettingStatusCount(
     string Status,
