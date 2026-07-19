@@ -1010,55 +1010,84 @@ static void TestDesktopStartupDoesNotRequireWindowsEventLog()
         "Debug",
         "net9.0",
         "AdaptiveSopDdsop.Web.dll");
+    var isolatedContentRoot = Path.Combine(
+        Path.GetTempPath(),
+        $"ddae-production-startup-{Guid.NewGuid():N}");
+    var isolatedDatabasePath = Path.Combine(
+        isolatedContentRoot,
+        "data",
+        "ddae-scenario-runs.db");
 
     AssertTrue(File.Exists(webDllPath), $"Production startup smoke test requires built Web DLL: {webDllPath}");
-
-    using var process = new Process
-    {
-        StartInfo = new ProcessStartInfo
-        {
-            FileName = "dotnet",
-            WorkingDirectory = Path.Combine(root, "src", "AdaptiveSopDdsop.Web"),
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        },
-    };
-    process.StartInfo.ArgumentList.Add(webDllPath);
-    process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
-    process.StartInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
-
-    var output = new System.Text.StringBuilder();
-    var outputLock = new object();
-    process.OutputDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
-    process.ErrorDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
-
     try
     {
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        Directory.CreateDirectory(isolatedContentRoot);
+        File.Copy(settingsPath, Path.Combine(isolatedContentRoot, "appsettings.json"));
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                WorkingDirectory = isolatedContentRoot,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        AssertProductionSmokeContentRootIsIsolated(root, process.StartInfo.WorkingDirectory);
+        process.StartInfo.ArgumentList.Add(webDllPath);
+        process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
+        process.StartInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
+        process.StartInfo.Environment["ASPNETCORE_CONTENTROOT"] = isolatedContentRoot;
 
-        var boundAddress = WaitForBoundAddress(process, output, outputLock);
-        using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        var response = client.GetAsync(new Uri(new Uri(boundAddress), "/")).GetAwaiter().GetResult();
+        var output = new System.Text.StringBuilder();
+        var outputLock = new object();
+        process.OutputDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
+        process.ErrorDataReceived += (_, args) => AppendProcessOutput(output, outputLock, args.Data);
+        var processStarted = false;
+        try
+        {
+            processStarted = process.Start();
+            AssertTrue(processStarted, "Production startup smoke child process should start");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
 
-        AssertEqual(System.Net.HttpStatusCode.OK, response.StatusCode,
-            $"Production startup smoke test should return HTTP 200 from {boundAddress}");
-        var transcript = ReadProcessOutput(output, outputLock);
-        AssertTrue(!HasEventLogPermissionFailure(transcript),
-            $"Production startup must not record Event Log permission failures:{Environment.NewLine}{transcript}");
+            var boundAddress = WaitForBoundAddress(process, output, outputLock);
+            using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var response = client.GetAsync(new Uri(new Uri(boundAddress), "/")).GetAwaiter().GetResult();
+
+            AssertEqual(System.Net.HttpStatusCode.OK, response.StatusCode,
+                $"Production startup smoke test should return HTTP 200 from {boundAddress}");
+            AssertTrue(File.Exists(isolatedDatabasePath),
+                $"Production startup should create its database under the isolated content root: {isolatedDatabasePath}");
+            var transcript = ReadProcessOutput(output, outputLock);
+            AssertTrue(!HasEventLogPermissionFailure(transcript),
+                $"Production startup must not record Event Log permission failures:{Environment.NewLine}{transcript}");
+        }
+        finally
+        {
+            if (processStarted)
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+
+                process.WaitForExit();
+            }
+        }
     }
     finally
     {
-        if (!process.HasExited)
+        if (Directory.Exists(isolatedContentRoot))
         {
-            process.Kill(entireProcessTree: true);
-            process.WaitForExit(5_000);
+            DeleteProductionSmokeContentRoot(isolatedContentRoot);
         }
     }
 
+    AssertTrue(!Directory.Exists(isolatedContentRoot),
+        $"Production startup smoke should remove its isolated content root: {isolatedContentRoot}");
     AssertEqual("None", eventLogLevel,
         "base appsettings must disable the privileged Windows Event Log provider for Production startup");
 }
@@ -1144,6 +1173,37 @@ static string ReadProcessOutput(System.Text.StringBuilder output, object outputL
     lock (outputLock)
     {
         return output.ToString();
+    }
+}
+
+static void AssertProductionSmokeContentRootIsIsolated(string repositoryRoot, string contentRoot)
+{
+    var normalizedRepositoryRoot = Path.GetFullPath(repositoryRoot)
+        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+    var normalizedContentRoot = Path.GetFullPath(contentRoot)
+        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+    AssertTrue(!normalizedContentRoot.StartsWith(normalizedRepositoryRoot, StringComparison.OrdinalIgnoreCase),
+        $"Production startup smoke content root must be outside the repository: {normalizedContentRoot}");
+}
+
+static void DeleteProductionSmokeContentRoot(string contentRoot)
+{
+    var timeout = Stopwatch.StartNew();
+    while (Directory.Exists(contentRoot))
+    {
+        try
+        {
+            Directory.Delete(contentRoot, recursive: true);
+        }
+        catch (IOException) when (timeout.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            Thread.Sleep(50);
+        }
+        catch (UnauthorizedAccessException) when (timeout.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            Thread.Sleep(50);
+        }
     }
 }
 
