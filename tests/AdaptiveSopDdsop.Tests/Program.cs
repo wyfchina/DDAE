@@ -240,6 +240,7 @@ var tests = new (string Name, Action Run)[]
     ("Candidate selection rejects blocked missing-lineage and invalid transitions", TestCandidateSelectionRejectsBlockedMissingLineageAndInvalidTransitions),
     ("Candidate selection API remains internal with strict status mapping", TestCandidateSelectionApiUsesStrictStatusMapping),
     ("Scenario Run Workspace uses backend feasibility without local adoption thresholds", TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionThresholds),
+    ("Persisted scenario and DDOM UI keeps workflow states independent", TestPersistedScenarioAndDdomUiUsesIndependentStates),
     ("Scenario preview returns baseline and scenario results from data source", TestScenarioPreviewReturnsComparableResults),
     ("Scenario run persistence saves preview result and audit chain", TestScenarioRunPersistenceSavesPreviewResultAndAuditChain),
     ("Scenario Run Workspace exposes scenario save audit UI", TestScenarioRunWorkspaceExposesSaveAuditUi),
@@ -11033,6 +11034,83 @@ static void TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionTh
         "save availability must remain based only on physical inventory evidence");
 }
 
+static void TestPersistedScenarioAndDdomUiUsesIndependentStates()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+    var previewStart = script.IndexOf("function renderPreviewResult(result)", StringComparison.Ordinal);
+    var previewEnd = script.IndexOf("function showScenarioSavePanel", previewStart, StringComparison.Ordinal);
+    AssertTrue(previewStart >= 0 && previewEnd > previewStart, "preview renderer should remain bounded");
+    var previewRenderer = script[previewStart..previewEnd];
+    AssertTrue(previewRenderer.Contains("result.feasibility", StringComparison.Ordinal)
+        && !previewRenderer.Contains("，未保存", StringComparison.Ordinal),
+        "preview status must render only the backend feasibility result, never persistence text");
+
+    AssertTrue(page.Contains("计算范围", StringComparison.Ordinal)
+        && page.Contains("措施对象 SKU", StringComparison.Ordinal)
+        && page.Contains("id=\"scenario-scope-summary\"", StringComparison.Ordinal)
+        && page.Contains("id=\"preview-candidate-chip\"", StringComparison.Ordinal),
+        "scenario UI should distinguish calculation scope from action SKU");
+    AssertTrue(script.Contains("function renderScenarioScopeSummary", StringComparison.Ordinal)
+        && script.Contains("familyFilter:", StringComparison.Ordinal)
+        && script.Contains("skuFilter:", StringComparison.Ordinal),
+        "scope summary must describe filters without changing backend request fields");
+
+    AssertTrue(script.Contains("/api/scenario-runs/${encodeURIComponent(runId)}", StringComparison.Ordinal)
+        && script.Contains("/api/ddom-change-packages", StringComparison.Ordinal)
+        && script.Contains("function loadDdomPackages", StringComparison.Ordinal),
+        "refresh must recover saved runs and packages from persisted APIs");
+    var ddomWorkflowStart = script.IndexOf("function loadDdomPackages", StringComparison.Ordinal);
+    var ddomWorkflowEnd = script.IndexOf("function renderBufferTrend", ddomWorkflowStart, StringComparison.Ordinal);
+    AssertTrue(ddomWorkflowStart >= 0 && ddomWorkflowEnd > ddomWorkflowStart
+        && !script[ddomWorkflowStart..ddomWorkflowEnd].Contains("savedFutureComparisons", StringComparison.Ordinal),
+        "persisted DDOM workflow must not depend on transient savedFutureComparisons");
+
+    foreach (var label in new[] { "创建变更包", "提交评审", "运行白盒验证", "标记已评审", "批准", "生效", "失效" })
+    {
+        AssertTrue(page.Contains(label, StringComparison.Ordinal), $"DDOM UI should expose explicit {label} action");
+    }
+
+    AssertTrue(script.Contains("/selection", StringComparison.Ordinal)
+        && script.Contains("选定为 DDOM 候选", StringComparison.Ordinal)
+        && script.Contains("创建协调事项并修订方案", StringComparison.Ordinal),
+        "saved candidates should separately expose selection or blocked coordination actions");
+    AssertTrue(page.Contains("id=\"coordination-related-ddom-package\"", StringComparison.Ordinal)
+        && script.Contains("relatedDdomPackageId", StringComparison.Ordinal)
+        && !script.Contains("/api/ddom-change-packages/${state.selectedDdomPackageId}/status", StringComparison.Ordinal),
+        "coordination can link a package without advancing package governance");
+
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "task-6-persisted-ui-fixture.mjs");
+    using var process = new Process
+    {
+        StartInfo = new ProcessStartInfo
+        {
+            FileName = FindNodeExecutable(),
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        },
+    };
+    process.StartInfo.ArgumentList.Add(fixturePath);
+    process.StartInfo.ArgumentList.Add(root);
+    process.Start();
+    var output = process.StandardOutput.ReadToEndAsync();
+    var error = process.StandardError.ReadToEndAsync();
+    if (!process.WaitForExit(30_000))
+    {
+        process.Kill(entireProcessTree: true);
+        throw new InvalidOperationException("Task 6 persisted UI fixture timed out after 30 seconds");
+    }
+    Task.WaitAll(output, error);
+    AssertEqual(0, process.ExitCode, $"Task 6 persisted UI fixture failed: {error.Result}");
+    AssertTrue(output.Result.Contains("task-6 persisted UI fixture passed", StringComparison.Ordinal),
+        $"Task 6 persisted UI fixture did not report completion: {output.Result}");
+}
+
 static void TestScenarioPreviewReturnsComparableResults()
 {
     var source = new TrackingScenarioWorkspaceDataSource(SeedData.Create());
@@ -12672,7 +12750,11 @@ static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
     AssertTrue(page.Contains("id=\"master-setting-board\"", StringComparison.Ordinal), "page should expose master setting board");
     AssertTrue(page.Contains("id=\"master-setting-detail\"", StringComparison.Ordinal), "page should expose master setting detail");
     AssertTrue(page.Contains("id=\"master-setting-audit-list\"", StringComparison.Ordinal), "page should expose master setting audit chain");
-    AssertTrue(page.Contains("从已保存比较生成建议", StringComparison.Ordinal) && page.Contains("从人工预览生成建议", StringComparison.Ordinal), "page should separate saved-comparison and manual proposal generation actions");
+    AssertTrue(page.Contains("只读兼容记录", StringComparison.Ordinal)
+        && page.Contains("创建变更包", StringComparison.Ordinal)
+        && !page.Contains("保存选中变更", StringComparison.Ordinal)
+        && !page.Contains("推进状态", StringComparison.Ordinal),
+        "scenario-derived single-change controls should be replaced by persisted DDOM package workflow while legacy records remain read-only");
     AssertTrue(page.Contains("当前主设置", StringComparison.Ordinal), "page should expose current master settings");
     AssertTrue(page.Contains("DDOM 主设置", StringComparison.Ordinal), "page should expose Chinese DDOM master settings label");
     AssertTrue(!page.Contains("Inventory Buffer", StringComparison.Ordinal), "page should not expose English inventory buffer label");
@@ -12681,9 +12763,8 @@ static void TestScenarioRunWorkspaceExposesMasterSettingsGovernanceUi()
     AssertTrue(!page.Contains("推送 DDOM", StringComparison.Ordinal), "page should not expose DDOM push");
 
     AssertTrue(script.Contains("/api/master-settings-workspace", StringComparison.Ordinal), "script should call master settings workspace API");
-    AssertTrue(script.Contains("/api/master-settings/proposals/from-preview", StringComparison.Ordinal), "script should call proposal API");
-    AssertTrue(script.Contains("/api/master-settings/changes", StringComparison.Ordinal), "script should call change persistence API");
-    AssertTrue(script.Contains("advanceMasterSettingStatus", StringComparison.Ordinal), "script should support governed status advance");
+    AssertTrue(script.Contains("/api/ddom-change-packages", StringComparison.Ordinal), "script should call persisted DDOM package API");
+    AssertTrue(script.Contains("ddomPackageAction", StringComparison.Ordinal), "script should support explicit package actions");
 }
 
 static void TestScenarioPreviewAppliesScenarioParameters()

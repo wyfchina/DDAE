@@ -347,6 +347,7 @@
                         <label><span>下次验证点</span><input id="coordination-next-review" type="date" value="2026-07-17"></label>
                         <label><span>关联场景</span><select id="coordination-related-scenario"><option value="">不关联</option></select></label>
                         <label><span>关联变更</span><select id="coordination-related-change"><option value="">不关联</option></select></label>
+                        <label><span>关联 DDOM 包</span><select id="coordination-related-ddom-package"><option value="">不关联</option></select></label>
                         <label class="form-wide"><span>决策要求</span><input id="coordination-decision-required" type="text" value="决定是否启用第二来源或临时能力"></label>
                     </div>
                     <button id="create-coordination-item" class="button primary" type="button">创建事项并留痕</button>
@@ -472,7 +473,8 @@
                     </section>
                 </div>
             <section id="data-readiness-panel" class="workspace-section">
-                <div class="result-context-bar" aria-label="筛选条件">
+                <div class="result-context-bar" aria-label="计算范围">
+                    <strong class="context-label">计算范围</strong>
                     <label><span>产品族</span><select id="family-filter"></select></label>
                     <label><span>SKU</span><select id="sku-filter"></select></label>
                     <label><span>资源</span><select id="resource-filter"></select></label>
@@ -566,7 +568,7 @@
                                 <option value="CapacityFirst">产能优先</option>
                                 <option value="SupplyFirst">供应优先</option>
                             </select></label>
-                            <label><span>目标 SKU</span><select id="preview-sku-select"></select></label>
+                            <label><span>措施对象 SKU</span><select id="preview-sku-select"></select></label>
                             <label><span>提前建库周</span><input id="prebuild-week" type="number" min="1" max="52" value="1"></label>
                             <label><span>提前建库数量</span><input id="prebuild-quantity" type="number" min="0" step="1" value="0"></label>
                             <label><span>产能资源</span><select id="capacity-resource-select"></select></label>
@@ -579,9 +581,11 @@
                             <label><span>供应限制结束周</span><input id="supplier-limit-end-week" type="number" min="1" max="52" value="12"></label>
                             <label><span>供应承诺能力</span><input id="supplier-capacity-limit" type="number" min="0" step="1" value="0"></label>
                         </div>
+                        <p id="scenario-scope-summary" class="muted-note">计算范围将在后端重算后显示；措施对象 SKU 只用于具体动作。</p>
                         <div class="preview-actions">
                             <button id="run-preview" class="button primary" type="button">运行预览</button>
                             <span id="preview-status" class="status-chip neutral">尚未运行</span>
+                            <span id="preview-candidate-chip" class="status-chip neutral">候选：未选定</span>
                         </div>
                         <div id="scenario-save-panel" class="scenario-save-panel" hidden>
                             <div class="panel-heading compact-heading">
@@ -620,7 +624,7 @@
                     <section class="saved-run-list">
                         <div class="table-scroll">
                             <table class="data-table">
-                                <thead><tr><th>场景编号</th><th>名称</th><th>创建人</th><th>状态</th><th>服务水平</th><th>补货释放峰值</th><th>供应缺口</th></tr></thead>
+                                <thead><tr><th>场景编号</th><th>名称</th><th>创建人</th><th>可行性</th><th>留痕</th><th>候选</th><th>操作</th><th>服务水平</th><th>补货释放峰值</th><th>供应缺口</th></tr></thead>
                                 <tbody id="saved-scenario-body"></tbody>
                             </table>
                         </div>
@@ -703,14 +707,14 @@
                         <label><span>复查日期</span><input id="governance-review-on" type="date" value="2026-08-03"></label>
                         <label class="form-wide"><span>预期效果</span><input id="governance-expected-effect" type="text" value="服务、现金与保护能力按白盒场景比较结果改善"></label>
                         <label class="form-wide"><span>回滚条件</span><input id="governance-rollback-condition" type="text" value="服务未改善、现金超过边界或保护能力恶化时人工回滚"></label>
-                        <label class="form-wide"><span>来源基线</span><select id="governance-baseline-id"><option value="">请选择冻结基线</option></select></label>
-                        <label class="form-wide"><span>冻结比较方案</span><select id="governance-response-id"><option value="">请先运行未来场景比较</option></select></label>
+                        <label class="form-wide"><span>已选 DDOM 候选</span><select id="ddom-source-run"><option value="">请先在第 03 阶段人工选定候选</option></select></label>
+                        <label class="form-wide"><span>变更包名称</span><input id="ddom-package-name" type="text" value="DDOM 场景变更包"></label>
+                        <div hidden aria-hidden="true"><select id="governance-baseline-id"><option value="">旧比较只读兼容</option></select><select id="governance-response-id"><option value="">旧比较只读兼容</option></select></div>
                     </div>
                     <div class="panel-inline-actions">
-                        <button id="generate-comparison-master-settings" class="button primary" type="button">从已保存比较生成建议</button>
-                        <button id="generate-master-settings" class="button secondary" type="button">从人工预览生成建议</button>
+                        <button id="create-ddom-package" class="button primary" type="button">创建变更包</button>
                     </div>
-                    <p class="muted-note">来源基线、外部场景和响应方案由后端重新核验；保存后仍为待评审，不自动审批或生效。</p>
+                    <p class="muted-note">只可从 SQLite 中已选定的场景创建；包内建议由后端从保存输入重新生成，非执行排程。</p>
                 </section>
             <section id="master-settings-panel" class="workspace-section">
                 <div class="panel-heading">
@@ -739,8 +743,7 @@
                     </section>
                     <section class="master-settings-block">
                         <div class="panel-heading compact-heading">
-                            <div><span class="panel-kicker">场景预览建议</span><h2>待保存变更建议</h2></div>
-                            <button id="save-master-setting-change" class="button primary" type="button">保存选中变更</button>
+                            <div><span class="panel-kicker">历史单条记录</span><h2>只读兼容记录</h2></div>
                         </div>
                         <div class="table-scroll">
                             <table class="data-table">
@@ -751,6 +754,29 @@
                     </section>
                 </div>
             </section>
+            </section>
+
+            <section id="ddom-package-workflow" class="workspace-section workspace-route-extension" data-workspace-route-extension="#ddom-decision-panel/parameter-decision" hidden>
+                <div class="panel-heading compact-heading"><div><span class="panel-kicker">持久化 DDOM 包</span><h2>白盒验证与人工治理</h2></div><button id="refresh-ddom-packages" class="button secondary" type="button">刷新变更包</button></div>
+                <div class="saved-run-layout">
+                    <section class="stage-card"><div id="ddom-package-list" class="diagnostics-list"></div></section>
+                    <section class="stage-card">
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">包详情</span><h2 id="ddom-package-title">尚未选择</h2></div><span id="ddom-package-status" class="status-chip neutral">未加载</span></div>
+                        <div id="ddom-package-lineage" class="metadata-list"></div>
+                        <div class="panel-inline-actions ddom-package-actions">
+                            <button id="submit-ddom-package" class="button secondary" type="button">提交评审</button>
+                            <button id="validate-ddom-package" class="button secondary" type="button">运行白盒验证</button>
+                            <button id="review-ddom-package" class="button secondary" type="button">标记已评审</button>
+                            <button id="approve-ddom-package" class="button secondary" type="button">批准</button>
+                            <button id="effective-ddom-package" class="button secondary" type="button">生效</button>
+                            <button id="expire-ddom-package" class="button secondary" type="button">失效</button>
+                        </div>
+                        <p id="ddom-package-gate" class="muted-note">请选择变更包。</p>
+                        <div class="table-scroll"><table class="data-table"><thead><tr><th>顺序</th><th>类型</th><th>目标</th><th>当前值</th><th>建议值</th><th>原因 / 风险</th></tr></thead><tbody id="ddom-package-line-body"></tbody></table></div>
+                        <div id="ddom-package-validation" class="diagnostics-list"></div>
+                        <div id="ddom-package-audit" class="diagnostics-list"></div>
+                    </section>
+                </div>
             </section>
 
             <section id="ddom-temporary-adjustment-view" class="workspace-section workspace-route-view" data-workspace-route="#ddom-decision-panel/temporary-adjustment" hidden>
@@ -766,7 +792,7 @@
                         <div class="table-scroll"><table class="data-table"><thead><tr><th>编号</th><th>类型</th><th>目标</th><th>来源基线</th><th>来源运行</th><th>状态</th><th>风险</th><th>生效窗口</th></tr></thead><tbody id="master-setting-change-body"></tbody></table></div>
                     </section>
                     <section class="master-settings-block">
-                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中变更详情</span><h2 id="master-setting-detail-title">主设置变更详情</h2></div><button id="advance-master-setting-status" class="button secondary" type="button">推进状态</button></div>
+                        <div class="panel-heading compact-heading"><div><span class="panel-kicker">选中变更详情</span><h2 id="master-setting-detail-title">主设置变更详情（只读）</h2></div></div>
                         <div id="master-setting-detail" class="metadata-list"></div>
                         <div id="master-setting-lineage-list" class="diagnostics-list"></div>
                     </section>

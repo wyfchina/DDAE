@@ -1114,6 +1114,11 @@ body.has-focus-panel { overflow: hidden; }
 .saved-run-layout > * { min-width: 0; }
 .saved-run-list { min-width: 0; }
 .saved-run-row.is-selected td { background: #edf8f5; }
+.ddom-package-actions { flex-wrap: wrap; }
+.ddom-package-actions .button[disabled] { cursor: not-allowed; opacity: .56; }
+#ddom-package-workflow { display: grid; gap: 12px; }
+#ddom-package-workflow[hidden] { display: none; }
+#ddom-package-lineage dd { overflow-wrap: anywhere; }
 .master-settings-layout {
   display: grid;
   gap: 14px;
