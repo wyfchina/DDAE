@@ -937,7 +937,8 @@ public sealed record DdomChangePackageDetail(
     ScenarioRunParameterSet? FinalParameters,
     string InputFingerprint,
     GovernanceDecisionContext GovernanceContext,
-    IReadOnlyList<DdomChangePackageLine> Lines);
+    IReadOnlyList<DdomChangePackageLine> Lines,
+    DdomChangePackageValidation? LatestValidation = null);
 
 public sealed record DdomChangePackageValidation(
     string ValidationId,

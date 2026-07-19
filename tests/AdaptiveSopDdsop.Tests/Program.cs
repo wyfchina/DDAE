@@ -14034,6 +14034,13 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var validation = packages.Validate(created.PackageId, new DdomPackageActionRequest("验证人", "服务端白盒重算"));
         AssertTrue(validation.ValidationStatus == "Passed", $"reconcile or adoptable white-box validation passes: {string.Join(" | ", validation.FailureReasons)}");
         AssertTrue(validation.FeasibilityStatus is "Adoptable" or "Reconcile", "passed validation must carry a non-blocked feasibility result");
+        var latestValidation = new DdomChangePackageService(baselineService, governance, lineage, databasePath).GetDetail(created.PackageId)!.LatestValidation;
+        AssertTrue(latestValidation is not null, "package detail reloads the latest SQLite validation without recalculation");
+        AssertEqual(validation.ValidationId, latestValidation!.ValidationId, "latest validation id round trips through package detail");
+        AssertEqual(validation.ValidatedBy, latestValidation.ValidatedBy, "latest validation actor round trips through package detail");
+        AssertEqual(validation.ValidatedAtUtc, latestValidation.ValidatedAtUtc, "latest validation timestamp round trips through package detail");
+        AssertEqual(validation.FeasibilityStatus, latestValidation.FeasibilityStatus, "latest validation feasibility round trips through package detail");
+        AssertEqual(JsonSerializer.Serialize(validation.FailureReasons), JsonSerializer.Serialize(latestValidation.FailureReasons), "latest validation failure reasons round trip through package detail");
         AssertEqual("Submitted", packages.GetDetail(created.PackageId)!.Summary.Status, "validation must not automatically review a package");
         AssertRejected(
             () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "不能跳过人工评审")),

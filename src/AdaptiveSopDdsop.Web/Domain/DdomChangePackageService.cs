@@ -185,7 +185,7 @@ public sealed class DdomChangePackageService
         var finalParameters = Deserialize<ScenarioRunParameterSet>(reader.GetString(17));
         var context = Deserialize<GovernanceDecisionContext>(reader.GetString(19)) ?? new GovernanceDecisionContext();
         var lines = GetLines(connection, packageId);
-        return new DdomChangePackageDetail(summary, reader.IsDBNull(15) ? null : reader.GetString(15), finalRequest, finalParameters, reader.GetString(18), context, lines);
+        return new DdomChangePackageDetail(summary, reader.IsDBNull(15) ? null : reader.GetString(15), finalRequest, finalParameters, reader.GetString(18), context, lines, GetLatestValidation(connection, packageId));
     }
 
     public IReadOnlyList<DdomChangePackageAuditEvent> GetAuditEvents(string packageId)
@@ -201,6 +201,22 @@ public sealed class DdomChangePackageService
         var results = new List<DdomChangePackageAuditEvent>();
         while (reader.Read()) results.Add(new DdomChangePackageAuditEvent(reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.IsDBNull(7) ? null : reader.GetString(7), reader.GetString(8)));
         return results;
+    }
+
+    private static DdomChangePackageValidation? GetLatestValidation(SqliteConnection connection, string packageId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT validation_id, package_id, validation_status, feasibility_status, input_fingerprint,
+                   failure_reasons_json, validated_by, validated_at_utc
+            FROM ddom_change_package_validations WHERE package_id = $package_id
+            ORDER BY validated_at_utc DESC, validation_id DESC LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$package_id", packageId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        var reasons = Deserialize<IReadOnlyList<string>>(reader.GetString(5)) ?? Array.Empty<string>();
+        return new DdomChangePackageValidation(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reasons, reader.GetString(6), reader.GetString(7));
     }
 
     public DdomChangePackageSummary Submit(string packageId, DdomPackageActionRequest request)

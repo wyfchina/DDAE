@@ -16,6 +16,13 @@ function body(name, nextName) {
   return script.slice(start, end);
 }
 
+for (const id of new Set([...script.matchAll(/byId\("([^"]+)"\)/g)].map(match => match[1]))) {
+  expect(page.includes(`id="${id}"`), `static byId target is missing from Index.cshtml: ${id}`);
+}
+for (const legacyId of ["save-master-setting-change", "advance-master-setting-status"]) {
+  expect(!script.includes(legacyId) && !page.includes(legacyId), `legacy single-change control must be removed: ${legacyId}`);
+}
+
 const preview = script.slice(
   script.indexOf("function renderPreviewResult(result)"),
   script.indexOf("function showScenarioSavePanel"),
@@ -40,6 +47,8 @@ expect(script.includes("relatedDdomPackageId") && page.includes('id="coordinatio
 const savedRuns = body("renderSavedScenarioRuns", "renderScenarioLineage");
 expect(savedRuns.includes('item.feasibilityStatus === "Blocked"') && savedRuns.includes("data-select-ddom-run-id") && savedRuns.includes("创建协调事项并修订方案"),
   "blocked saved runs must offer coordination/revision rather than DDOM selection");
+expect(savedRuns.includes('item.feasibilityStatus === "Adoptable"') && savedRuns.includes('item.feasibilityStatus === "Reconcile"') && savedRuns.includes("后端可行性缺失/需重新计算"),
+  "only backend Adoptable/Reconcile runs may expose DDOM selection; Legacy and unknown values must be recalculated");
 
 const savePanel = body("showScenarioSavePanel", "renderSavedScenarioRuns");
 expect(savePanel.includes("saveControls.button.disabled = !physicalInventoryComplete") && !savePanel.includes("feasibilityStatus"),
@@ -56,6 +65,26 @@ for (const [id, action] of [["submit-ddom-package", "submit"], ["validate-ddom-p
   expect(script.includes(`byId("${id}").addEventListener("click", () => ddomPackageAction("${action}")`),
     `${id} must only invoke its explicit workflow action`);
 }
+
+const packageDetail = body("renderDdomPackageDetail", "loadDdomPackages");
+expect(packageDetail.includes("detail.latestValidation") && packageDetail.includes("failureReasons") && packageDetail.includes("validatedBy") && packageDetail.includes("validatedAtUtc") && packageDetail.includes("feasibilityStatus"),
+  "DDOM detail must render the exact latest validation DTO fields");
+for (const key of ["PackageCreated", "PackageSubmitted", "WhiteBoxRecalculated", "ValidationPassed", "ValidationFailed", "PackageReviewed", "PackageApproved", "PackageEffective", "PackageExpired"]) {
+  expect(body("auditEventLabel", "baselineAuditMessage").includes(key), `audit event should be localized: ${key}`);
+}
+expect(body("traceStageLabel", "adoptionConstraintLabel").includes('Engine: "白盒引擎"') && body("traceStageLabel", "adoptionConstraintLabel").includes('Governance: "治理"'),
+  "DDOM audit stage labels must not leak ordinary English codes");
+
+const packageLoad = body("loadDdomPackages", "loadDdomPackageDetail");
+const packageDetailLoad = body("loadDdomPackageDetail", "selectScenarioForDdom");
+const runLoad = body("loadSavedScenarioRuns", "loadScenarioRunDetail");
+const runDetailLoad = body("loadScenarioRunDetail", "saveScenarioRun");
+expect(packageLoad.includes("state.ddomPackages.some") && packageDetailLoad.includes("status === 404") && runLoad.includes("runs.some") && runDetailLoad.includes("status === 404"),
+  "empty and stale persisted selections must clear to a safe empty detail state");
+
+const coordinationLineage = body("renderCoordinationLineage", "loadCoordinationDetail");
+expect(coordinationLineage.includes("relatedDdomPackageId") && coordinationLineage.includes("data-lineage-ddom-package-id"),
+  "package-only coordination lineage must display and navigate to its DDOM package");
 
 const outcome = body("recordCoordinationOutcome", "loadWorkspace");
 expect(!outcome.includes("/api/ddom-change-packages") && !outcome.includes("ddomPackageAction"),

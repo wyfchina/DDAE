@@ -942,7 +942,7 @@ function traceStageLabel(stage) {
   return ({
     Data: "数据",
     Scenario: "场景",
-    Engine: "引擎",
+    Engine: "白盒引擎",
     Result: "结果",
     Persistence: "保存状态",
     Demand: "不受限需求",
@@ -1117,6 +1117,15 @@ function auditEventLabel(eventType) {
     BaselineFrozen: "基线已冻结",
     DataRepairApplied: "历史数据纠正已留痕",
     SmokeAudit: "历史烟测审计",
+    PackageCreated: "变更包已创建",
+    PackageSubmitted: "已提交评审",
+    WhiteBoxRecalculated: "白盒已复算",
+    ValidationPassed: "白盒验证通过",
+    ValidationFailed: "白盒验证失败",
+    PackageReviewed: "已标记评审",
+    PackageApproved: "已批准",
+    PackageEffective: "已生效",
+    PackageExpired: "已失效",
   })[eventType] || valueOr(eventType, "-");
 }
 
@@ -3107,14 +3116,16 @@ function renderSavedScenarioRuns(runs) {
         <td><button class="link-button" type="button" data-scenario-run-id="${escapeHtml(item.runId)}"><strong>${escapeHtml(item.runNumber)}</strong><small>${escapeHtml(new Date(item.createdAtUtc).toLocaleString("zh-CN", { hour12: false }))}</small></button></td>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.createdBy)}</td>
-        <td><span class="${statusClass(item.feasibilityStatus === "Blocked" ? "Red" : item.feasibilityStatus === "Reconcile" ? "Yellow" : "Green")}">${escapeHtml(statusLabel(item.feasibilityStatus))}</span></td>
+        <td><span class="${statusClass(item.feasibilityStatus === "Blocked" ? "Red" : item.feasibilityStatus === "Reconcile" ? "Yellow" : item.feasibilityStatus === "Adoptable" ? "Green" : "Red")}">${escapeHtml(item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile" || item.feasibilityStatus === "Blocked" ? statusLabel(item.feasibilityStatus) : "后端可行性缺失")}</span></td>
         <td><span class="status-chip is-valid">已保存 ${escapeHtml(item.runNumber)}</span></td>
         <td><span class="status-chip ${item.candidateStatus === "Selected" ? "is-valid" : "neutral"}">${escapeHtml(statusLabel(item.candidateStatus || "Candidate"))}</span></td>
         <td>${item.candidateStatus === "Selected"
           ? `<button class="button secondary compact-button" type="button" data-enter-ddom-run-id="${escapeHtml(item.runId)}">进入 DDOM 配置决策</button>`
           : item.feasibilityStatus === "Blocked"
             ? `<button class="button secondary compact-button" type="button" data-revise-blocked-run-id="${escapeHtml(item.runId)}">创建协调事项并修订方案</button>`
-            : `<button class="button primary compact-button" type="button" data-select-ddom-run-id="${escapeHtml(item.runId)}">选定为 DDOM 候选</button>`}</td>
+            : item.feasibilityStatus === "Adoptable" || item.feasibilityStatus === "Reconcile"
+              ? `<button class="button primary compact-button" type="button" data-select-ddom-run-id="${escapeHtml(item.runId)}">选定为 DDOM 候选</button>`
+              : `<span class="muted-note">后端可行性缺失/需重新计算</span>`}</td>
         <td>${percent(item.serviceLevelPercent)}</td>
         <td>${percent(item.peakLoadPercent)}</td>
         <td>${number(item.supplyGap)}</td>
@@ -3180,7 +3191,8 @@ async function loadSavedScenarioRuns(selectedRunId) {
     throw new Error(`已保存场景列表接口失败：${response.status}`);
   }
   const runs = await response.json();
-  state.selectedScenarioRunId = selectedRunId || state.selectedScenarioRunId || valueOr(runs[0]?.runId, null);
+  const requestedRunId = selectedRunId || state.selectedScenarioRunId;
+  state.selectedScenarioRunId = runs.some(item => item.runId === requestedRunId) ? requestedRunId : valueOr(runs[0]?.runId, null);
   renderSavedScenarioRuns(runs);
   if (state.selectedScenarioRunId) {
     await loadScenarioRunDetail(state.selectedScenarioRunId);
@@ -3198,6 +3210,12 @@ async function loadScenarioRunDetail(runId) {
     fetch(`/api/master-settings/changes?limit=50&sourceScenarioRunId=${encodeURIComponent(runId)}`, { headers: { Accept: "application/json" } }),
     fetch(`/api/coordination-items?limit=50&relatedScenarioRunId=${encodeURIComponent(runId)}`, { headers: { Accept: "application/json" } }),
   ]);
+  if (detailResponse.status === 404) {
+    state.selectedScenarioRunId = null;
+    renderSavedScenarioRuns(state.savedScenarioRuns);
+    renderScenarioAudit(null, []);
+    return;
+  }
   if (!detailResponse.ok) {
     throw new Error(`场景详情接口失败：${detailResponse.status}`);
   }
@@ -3305,17 +3323,21 @@ function renderDdomPackageDetail(detail, auditEvents = []) {
     number(line.sequence), escapeHtml(masterSettingTypeLabel(line.proposal.settingType)), escapeHtml(line.proposal.target), escapeHtml(line.proposal.currentValue), escapeHtml(line.proposal.proposedValue),
     escapeHtml((line.proposal.rationale || []).join("；") || line.proposal.riskLevel || "后端生成建议"),
   ])).join("") : emptyRow("请选择变更包", 6);
-  const validation = auditEvents.filter(item => item.eventType === "ValidationPassed" || item.eventType === "ValidationFailed" || item.eventType === "WhiteBoxRecalculated");
-  byId("ddom-package-validation").innerHTML = validation.length ? validation.map(item => `<div class="diagnostic-item ${item.eventType === "ValidationFailed" ? "is-error" : ""}"><strong>${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : `<div class="diagnostic-item"><strong>最新验证</strong><span>尚未运行白盒验证。</span></div>`;
-  byId("ddom-package-audit").innerHTML = auditEvents.length ? auditEvents.map(item => `<div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(item.stage)} · ${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : "";
+  const latestValidation = detail && detail.latestValidation;
+  byId("ddom-package-validation").innerHTML = latestValidation
+    ? `<div class="diagnostic-item ${latestValidation.validationStatus === "Failed" ? "is-error" : ""}"><strong>最新白盒验证：${escapeHtml(statusLabel(latestValidation.validationStatus))}</strong><span>可行性：${escapeHtml(statusLabel(latestValidation.feasibilityStatus))}；失败原因：${escapeHtml((latestValidation.failureReasons || []).join("；") || "无")}</span><small>验证人：${escapeHtml(latestValidation.validatedBy)} · ${escapeHtml(latestValidation.validatedAtUtc)}</small></div>`
+    : `<div class="diagnostic-item"><strong>最新验证</strong><span>尚未运行白盒验证。</span></div>`;
+  byId("ddom-package-audit").innerHTML = auditEvents.length ? auditEvents.map(item => `<div class="diagnostic-item ${item.severity === "Warning" ? "is-error" : ""}"><strong>${number(item.sequence)}. ${escapeHtml(auditEventLabel(item.eventType))}</strong><span>${escapeHtml(item.message)}</span><small>${escapeHtml(traceStageLabel(item.stage))} · ${escapeHtml(item.createdAtUtc)}</small></div>`).join("") : "";
   renderDdomPackageActions(summary);
 }
 
 async function loadDdomPackages(selectedPackageId) {
   const response = await fetch("/api/ddom-change-packages", { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`DDOM 变更包接口失败：${response.status}`);
-  state.ddomPackages = await response.json();
-  state.selectedDdomPackageId = selectedPackageId || state.selectedDdomPackageId || state.ddomPackages[0]?.packageId || null;
+  const packages = await response.json();
+  state.ddomPackages = Array.isArray(packages) ? packages : [];
+  const requestedPackageId = selectedPackageId || state.selectedDdomPackageId;
+  state.selectedDdomPackageId = state.ddomPackages.some(item => item.packageId === requestedPackageId) ? requestedPackageId : state.ddomPackages[0]?.packageId || null;
   renderDdomPackageList(state.ddomPackages);
   configureCoordinationLineageSelectors();
   if (state.selectedDdomPackageId) await loadDdomPackageDetail(state.selectedDdomPackageId);
@@ -3328,6 +3350,11 @@ async function loadDdomPackageDetail(packageId) {
     fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}`, { headers: { Accept: "application/json" } }),
     fetch(`/api/ddom-change-packages/${encodeURIComponent(packageId)}/audit`, { headers: { Accept: "application/json" } }),
   ]);
+  if (detailResponse.status === 404 || auditResponse.status === 404) {
+    state.selectedDdomPackageId = null;
+    renderDdomPackageDetail(null);
+    return;
+  }
   if (!detailResponse.ok || !auditResponse.ok) throw new Error("DDOM 变更包详情接口失败。");
   renderDdomPackageDetail(await detailResponse.json(), await auditResponse.json());
 }
@@ -3835,7 +3862,6 @@ function renderCurrentMasterSettings(settings) {
 
 function renderMasterSettingProposals() {
   const proposals = state.masterSettingProposals || [];
-  byId("save-master-setting-change").disabled = !proposals.some(item => item.sourceBaselineId);
   masterSettingControls.proposalBody.innerHTML = proposals.length
     ? proposals.map((item, index) => row([
       `<button class="link-button" type="button" data-master-proposal-index="${index}"><strong>${escapeHtml(masterSettingTypeLabel(item.settingType))}</strong></button>`,
@@ -3845,7 +3871,7 @@ function renderMasterSettingProposals() {
       `<span class="${statusClass(item.riskLevel)}">${statusLabel(item.riskLevel)}</span>`,
       `${percent(item.serviceImpact)} / ${money(item.cashImpact)}`,
     ])).join("")
-    : emptyRow("运行预览后点击“生成主设置变更建议”", 6);
+    : emptyRow("历史提案只读保留；场景派生变更请使用 DDOM 变更包", 6);
 }
 
 function renderMasterSettingChanges(changes) {
@@ -3909,10 +3935,7 @@ function renderMasterSettingDetail(detail, auditEvents, sourceScenario = null, c
   state.currentMasterSettingDetail = detail;
   const summary = detail.summary;
   const proposal = detail.proposal;
-  const nextStatus = nextMasterSettingStatus(summary.status);
   masterSettingControls.detailTitle.textContent = `${summary.changeNumber} 主设置变更详情`;
-  byId("advance-master-setting-status").disabled = !nextStatus;
-  byId("advance-master-setting-status").textContent = nextStatus ? `推进为${masterSettingStatusLabel(nextStatus)}` : "已到终态";
   masterSettingControls.detail.innerHTML = [
     ["编号", summary.changeNumber],
     ["类型", masterSettingTypeLabel(summary.settingType)],
@@ -4041,35 +4064,6 @@ async function generateMasterSettingProposalsFromComparison() {
   useMasterSettingProposalResponse(result, "冻结比较治理建议已生成，可人工保存");
 }
 
-async function saveSelectedMasterSettingChange() {
-  const proposal = state.masterSettingProposals[state.selectedMasterProposalIndex];
-  if (!proposal) {
-    masterSettingControls.status.className = "status-chip is-warning";
-    masterSettingControls.status.textContent = "请选择待保存建议";
-    return;
-  }
-  if (!proposal.sourceBaselineId) {
-    throw new Error("实时预览建议没有冻结基线来源；请从 DDOM 配置区的冻结场景比较生成治理建议。");
-  }
-
-  masterSettingControls.status.className = "status-chip is-warning";
-  masterSettingControls.status.textContent = "正在保存变更";
-  const response = await fetch("/api/master-settings/changes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ createdBy: "计划员", change: proposal }),
-  });
-  if (!response.ok) {
-    throw new Error(`保存主设置变更接口失败：${response.status}`);
-  }
-
-  const saved = await response.json();
-  state.selectedMasterChangeId = saved.changeId;
-  masterSettingControls.status.className = "status-chip is-valid";
-  masterSettingControls.status.textContent = `已保存：${saved.changeNumber}`;
-  await loadMasterSettingsWorkspace();
-}
-
 async function loadMasterSettingChangeDetail(changeId) {
   state.selectedMasterChangeId = changeId;
   const [detailResponse, auditResponse] = await Promise.all([
@@ -4097,24 +4091,6 @@ async function loadMasterSettingChangeDetail(changeId) {
   }
   const sourceScenario = sourceScenarioResponse?.ok ? await sourceScenarioResponse.json() : null;
   renderMasterSettingDetail(detail, auditEvents, sourceScenario, await coordinationResponse.json());
-}
-
-async function advanceMasterSettingStatus() {
-  const detail = state.currentMasterSettingDetail;
-  const nextStatus = nextMasterSettingStatus(detail?.summary?.status);
-  if (!detail || !nextStatus) {
-    return;
-  }
-
-  const response = await fetch(`/api/master-settings/changes/${encodeURIComponent(detail.summary.changeId)}/status`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ status: nextStatus, updatedBy: "计划员", note: "工作台状态流转" }),
-  });
-  if (!response.ok) {
-    throw new Error(`主设置状态流转接口失败：${response.status}`);
-  }
-  await loadMasterSettingsWorkspace();
 }
 
 function renderTrace(data) {
@@ -6559,7 +6535,7 @@ function renderCoordinationDetail(item, audit) {
 }
 
 async function renderCoordinationLineage(item) {
-  if (!item.relatedScenarioRunId && !item.relatedMasterSettingChangeId) {
+  if (!item.relatedScenarioRunId && !item.relatedMasterSettingChangeId && !item.relatedDdomPackageId) {
     byId("coordination-lineage-list").innerHTML = `<div class="diagnostic-item"><strong>只读反查</strong><span>当前事项未关联场景或配置变更</span></div>`;
     return;
   }
@@ -6594,9 +6570,13 @@ async function renderCoordinationLineage(item) {
   const changeLink = item.relatedMasterSettingChangeId
     ? `<button class="link-button" type="button" data-lineage-master-change-id="${escapeHtml(item.relatedMasterSettingChangeId)}"><strong>${escapeHtml(changeSummary?.changeNumber || item.relatedMasterSettingChangeId)}</strong><small>${escapeHtml(changeSummary ? masterSettingDisplayValue(changeSummary.changeId, "target", changeSummary.target) : "变更详情证据缺失")}</small></button>`
     : "未关联主设置变更";
+  const package = (state.ddomPackages || []).find(candidate => candidate.packageId === item.relatedDdomPackageId);
+  const packageLink = item.relatedDdomPackageId
+    ? `<button class="link-button" type="button" data-lineage-ddom-package-id="${escapeHtml(item.relatedDdomPackageId)}"><strong>${escapeHtml(package?.packageNumber || item.relatedDdomPackageId)}</strong><small>${escapeHtml(package?.name || "DDOM 变更包详情待加载")}</small></button>`
+    : "未关联 DDOM 变更包";
   byId("coordination-lineage-list").innerHTML = `
     <div class="diagnostic-item"><strong>03 关联场景</strong><span>${scenarioLink}</span></div>
-    <div class="diagnostic-item"><strong>04 关联变更</strong><span>${changeLink}</span></div>
+    <div class="diagnostic-item"><strong>04 关联变更</strong><span>${packageLink !== "未关联 DDOM 变更包" ? packageLink : changeLink}</span></div>
     <div class="diagnostic-item"><strong>只读反查</strong><span>同一场景或变更下共有 ${number(relatedCount)} 条行动事项</span></div>`;
 }
 
@@ -6619,6 +6599,11 @@ async function openScenarioLineageDetail(runId) {
 async function openMasterSettingLineageDetail(changeId) {
   navigateWorkspace("ddom-decision-panel", "change-records", false);
   await loadMasterSettingChangeDetail(changeId);
+}
+
+async function openDdomPackageLineageDetail(packageId) {
+  navigateWorkspace("ddom-decision-panel", "parameter-decision", false);
+  await loadDdomPackageDetail(packageId);
 }
 
 async function openCoordinationLineageDetail(itemId) {
@@ -7212,6 +7197,12 @@ byId("save-scenario").addEventListener("click", () => {
     saveControls.status.textContent = "保存失败";
     showWorkspaceError(error);
   });
+});
+
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-lineage-ddom-package-id]");
+  if (!button) return;
+  openDdomPackageLineageDetail(button.dataset.lineageDdomPackageId).catch(showWorkspaceError);
 });
 
 document.addEventListener("click", event => {
