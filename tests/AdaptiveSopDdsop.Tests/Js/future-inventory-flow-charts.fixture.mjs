@@ -810,6 +810,7 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
       physicalDeltaEvidenceStatus: "EvidenceMissing",
     },
   };
+  missingInventoryUi.feasibility = null;
   runtime.context.__missingInventoryUi = missingInventoryUi;
   vm.runInContext(`
     state.preview = __missingInventoryUi;
@@ -837,9 +838,9 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   assert.equal(runtime.elements.get("selector:#save-scenario").disabled, true,
     "missing physical inventory evidence must disable scenario saving");
   assert.deepEqual(readVm(runtime, "__missingInventoryAdoption.status"), "Red",
-    "missing physical inventory evidence must block adoption instead of passing a zero budget");
-  assert.ok(readVm(runtime, "__missingInventoryAdoption.message").includes("物理库存证据不完整"),
-    "adoption blocker must explain the missing physical inventory evidence");
+    "missing backend feasibility must block adoption instead of falling back to local evidence rules");
+  assert.ok(readVm(runtime, "__missingInventoryAdoption.message").includes("后端可行性结果缺失"),
+    "adoption blocker must explain the missing backend feasibility assessment");
 
   const poisonedSaveEvidence = structuredClone(preview);
   poisonedSaveEvidence.request = { horizonWeeks: 4, templateId: null };
@@ -853,6 +854,7 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     budgetInventoryVariance: 1000,
   }];
   poisonedSaveEvidence.scenario.inventoryFlow.points = poisonedSaveEvidence.scenario.inventoryFlow.points.slice(1);
+  poisonedSaveEvidence.feasibility = null;
   runtime.context.__poisonedSaveEvidence = poisonedSaveEvidence;
   vm.runInContext(`
     state.preview = __poisonedSaveEvidence;
@@ -866,6 +868,7 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
 
   poisonedSaveEvidence.scenario.inventoryFlow.points = structuredClone(preview.scenario.inventoryFlow.points);
   poisonedSaveEvidence.baseline.inventoryFlow.points = poisonedSaveEvidence.baseline.inventoryFlow.points.slice(1);
+  poisonedSaveEvidence.feasibility = null;
   runtime.context.__poisonedSaveEvidence = poisonedSaveEvidence;
   vm.runInContext(`
     showScenarioSavePanel(__poisonedSaveEvidence);

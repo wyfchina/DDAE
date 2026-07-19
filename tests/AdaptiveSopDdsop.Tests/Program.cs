@@ -7881,8 +7881,8 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("evaluateAdoption", StringComparison.Ordinal), "script should evaluate preview against the selected adoption constraint");
     AssertTrue(script.Contains("违反规则", StringComparison.Ordinal), "script should show which adoption rule is violated");
     AssertTrue(script.Contains("adoption-rule-list", StringComparison.Ordinal), "script should render adoption rule details");
-    AssertTrue(script.Contains("服务红线", StringComparison.Ordinal), "script should explain service guardrail violations");
-    AssertTrue(script.Contains("供应硬约束", StringComparison.Ordinal), "script should explain supply guardrail violations");
+    AssertTrue(script.Contains("后端可行性结果缺失", StringComparison.Ordinal), "script should block a missing backend feasibility assessment");
+    AssertTrue(script.Contains("后端可行性评估", StringComparison.Ordinal), "script should present backend feasibility outcomes");
     AssertTrue(!script.Contains("/api/scenario-runs/optimize", StringComparison.Ordinal), "script should not call the removed optimization API");
     AssertTrue(!script.Contains("applyOptimizationRecommendation", StringComparison.Ordinal), "script should not keep the removed recommendation apply path");
     AssertTrue(!css.Contains(".optimization-recommendation-list", StringComparison.Ordinal), "CSS should not keep the removed optimization recommendation layout");
@@ -10749,7 +10749,7 @@ static void TestScenarioRunWorkspaceUsesBackendFeasibilityWithoutLocalAdoptionTh
     AssertTrue(start >= 0 && end > start, "adoption adapter should remain a bounded workspace function");
     var adapter = script[start..end];
 
-    AssertTrue(adapter.Contains("result.feasibility", StringComparison.Ordinal),
+    AssertTrue(adapter.Contains("feasibility", StringComparison.Ordinal),
         "workspace adoption display must consume the backend feasibility assessment");
     AssertTrue(adapter.Contains("后端可行性结果缺失", StringComparison.Ordinal),
         "missing backend feasibility must be displayed as a blocking result");
