@@ -258,6 +258,7 @@ var tests = new (string Name, Action Run)[]
     ("Baseline references expose runs changes and actions", TestBaselineReferencesExposeRunsChangesAndActions),
     ("Baseline references return all links beyond public page limit", TestBaselineReferencesReturnAllLinksBeyondPublicPageLimit),
     ("Lineage filters use indexable parameterized equality predicates", TestLineageFiltersUseIndexableParameterizedEqualityPredicates),
+    ("DDOM package action lineage is additive and queryable", TestDdomPackageActionLineageIsAdditiveAndQueryable),
     ("Coordination outcome does not advance governance status", TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus),
     ("Frozen comparison governance rejects reused run ID with different normalized request", TestFrozenComparisonGovernanceRejectsReusedRunIdWithDifferentRequest),
     ("Lineage endpoints expose read-only filters and validate saved comparison runs", TestLineageEndpointsExposeReadOnlyFiltersAndValidateSavedComparisonRuns),
@@ -12126,6 +12127,124 @@ static void TestLineageFiltersUseIndexableParameterizedEqualityPredicates()
                 $"{testCase.FileName} must not interpolate user-controlled filter values into SQL");
         }
     }
+}
+
+static void TestDdomPackageActionLineageIsAdditiveAndQueryable()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var coordinationPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "CoordinationLedgerService.cs");
+    var baselinePath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Domain", "BaselineLineageQueryService.cs");
+    var programPath = Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs");
+    var coordinationSource = File.ReadAllText(coordinationPath);
+    var baseline = File.ReadAllText(baselinePath);
+    var program = File.ReadAllText(programPath);
+
+    AssertTrue(coordinationSource.Contains("RelatedDdomPackageId", StringComparison.Ordinal),
+        "coordination create and item DTOs must preserve an optional DDOM package link");
+    AssertTrue(coordinationSource.Contains("related_ddom_package_id = $related_ddom_package_id", StringComparison.Ordinal)
+        && coordinationSource.Contains("AddWithValue(\"$related_ddom_package_id\", ddomPackageFilter)", StringComparison.Ordinal),
+        "DDOM package lineage filter must use a parameterized equality predicate");
+    AssertTrue(coordinationSource.Contains("ALTER TABLE coordination_items ADD COLUMN related_ddom_package_id TEXT NULL", StringComparison.Ordinal)
+        && coordinationSource.Contains("ix_coordination_items_ddom_package", StringComparison.Ordinal),
+        "coordination schema migration must add an indexed DDOM package link");
+    AssertTrue(baseline.Contains("IReadOnlyList<DdomChangePackageSummary> DdomChangePackages", StringComparison.Ordinal)
+        && baseline.Contains("ListByBaseline", StringComparison.Ordinal),
+        "baseline lineage must expose every linked DDOM package through an unpaginated baseline query");
+    AssertTrue(program.Contains("string? relatedDdomPackageId", StringComparison.Ordinal)
+        && program.Contains("DdomChangePackageService", StringComparison.Ordinal),
+        "coordination API must expose the additive package filter and package verifier");
+
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-ddom-action-lineage-{Guid.NewGuid():N}.db");
+    try
+    {
+        var data = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(data);
+        var preview = new ScenarioRunPreviewService(source);
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(data), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "DDOM 行动血缘测试"));
+        var comparisons = new ScenarioComparisonService(baselineService, preview, new SeedScenarioAssumptionSource());
+        var runs = new ScenarioRunPersistenceService(preview, comparisons, databasePath);
+        var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
+        var packages = new DdomChangePackageService(baselineService, governance, runs, databasePath);
+        SeedDdomPackages(databasePath, frozen.SnapshotId, 201);
+        var coordination = new CoordinationLedgerService(databasePath, packages);
+        var packageId = "DDOM-LINEAGE-0001";
+        AssertTrue(packages.List(500).Any(candidate => candidate.PackageId == packageId), "seeded DDOM package is visible to package service");
+        AssertTrue(packages.Exists(packageId), "seeded DDOM package passes direct existence check");
+        var item = coordination.Create(new CoordinationItemCreateRequest(
+            "关联 DDOM 包的行动", new[] { "能力保护" }, null, null,
+            "服务影响 +1pp", "库存影响可控", 100_000m, "Yellow", "需人工确认", "运营经理",
+            "2026-07-31", "L1", "2026-08-07", "DDS&OP 计划员", packageId));
+
+        AssertEqual(packageId, item.RelatedDdomPackageId, "coordination item preserves package link");
+        AssertEqual(1, coordination.List(50, null, null, packageId).Count, "package filter returns linked action");
+        var missingPackageRejected = false;
+        try
+        {
+            coordination.Create(new CoordinationItemCreateRequest(
+                "无效 DDOM 包关联", new[] { "能力保护" }, null, null,
+                "服务影响 +1pp", "库存影响可控", 100_000m, "Yellow", "需人工确认", "运营经理",
+                "2026-07-31", "L1", "2026-08-07", "DDS&OP 计划员", "DDOM-NOT-FOUND"));
+        }
+        catch (KeyNotFoundException)
+        {
+            missingPackageRejected = true;
+        }
+        AssertTrue(missingPackageRejected, "coordination creation rejects a missing DDOM package");
+
+        var packageStatus = packages.List(500).Single(candidate => candidate.PackageId == packageId).Status;
+        coordination.UpdateStatus(item.ItemId, new CoordinationStatusUpdateRequest("InProgress", "运营经理", "开始执行"));
+        coordination.RecordDecision(item.ItemId, new CoordinationDecisionUpdateRequest("继续跟踪", "等待下轮复核", "运营经理"));
+        coordination.RecordOutcome(item.ItemId, new CoordinationOutcomeUpdateRequest("服务改善待确认", "运营经理"));
+        AssertEqual(packageStatus, packages.List(500).Single(candidate => candidate.PackageId == packageId).Status,
+            "action status, decision and outcome updates must not alter package status");
+
+        var lineage = new BaselineLineageQueryService(runs, governance, coordination, packages).Get(frozen.SnapshotId);
+        AssertEqual(201, lineage.DdomChangePackages.Count, "baseline lineage returns every linked package beyond public limit");
+        AssertTrue(lineage.CoordinationItems.Any(candidate => candidate.ItemId == item.ItemId),
+            "baseline lineage includes actions linked directly to a DDOM package");
+        AssertEqual(200, packages.List(500).Count, "public package list remains bounded at 200");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void SeedDdomPackages(string databasePath, string baselineSnapshotId, int count)
+{
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var transaction = connection.BeginTransaction();
+    using var command = connection.CreateCommand();
+    command.Transaction = transaction;
+    command.CommandText = """
+        INSERT INTO ddom_change_packages (
+            package_id, package_number, name, description, source_baseline_id, source_scenario_run_id,
+            external_scenario_id, response_id, status, validation_status, feasibility_status,
+            final_request_json, final_parameters_json, input_fingerprint, governance_context_json,
+            owner, approver, effective_from, effective_through, review_on, expected_effect, rollback_condition,
+            created_by, created_at_utc, validated_at_utc)
+        VALUES (
+            $package_id, $package_number, $name, NULL, $source_baseline_id, 'RUN-DDOM-LINEAGE',
+            'EXT-DDOM-LINEAGE', 'RESP-DDOM-LINEAGE', 'Draft', 'NotRun', 'Reconcile',
+            '{}', '{}', 'fixture', '{}', '运营经理', '执行委员会', NULL, NULL, NULL, NULL, NULL,
+            'DDS&OP 计划员', $created_at_utc, NULL);
+        """;
+    command.Parameters.AddWithValue("$package_id", string.Empty);
+    command.Parameters.AddWithValue("$package_number", string.Empty);
+    command.Parameters.AddWithValue("$name", string.Empty);
+    command.Parameters.AddWithValue("$source_baseline_id", baselineSnapshotId);
+    command.Parameters.AddWithValue("$created_at_utc", "2026-07-20T00:00:00.0000000+00:00");
+    for (var index = 1; index <= count; index++)
+    {
+        command.Parameters["$package_id"].Value = $"DDOM-LINEAGE-{index:0000}";
+        command.Parameters["$package_number"].Value = $"DDOM-CLONE-{index:0000}";
+        command.Parameters["$name"].Value = $"DDOM 血缘包 {index:0000}";
+        command.ExecuteNonQuery();
+    }
+    transaction.Commit();
 }
 
 static void TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus()

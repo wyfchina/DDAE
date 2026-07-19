@@ -134,6 +134,39 @@ public sealed class DdomChangePackageService
         return results;
     }
 
+    public bool Exists(string packageId)
+    {
+        if (string.IsNullOrWhiteSpace(packageId)) return false;
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT package_id FROM ddom_change_packages WHERE package_id = $package_id LIMIT 1;";
+        command.Parameters.AddWithValue("$package_id", packageId.Trim());
+        return command.ExecuteScalar() is not null;
+    }
+
+    internal IReadOnlyList<DdomChangePackageSummary> ListByBaseline(string baselineSnapshotId)
+    {
+        if (string.IsNullOrWhiteSpace(baselineSnapshotId))
+        {
+            throw new ArgumentException("冻结基线标识不能为空。", nameof(baselineSnapshotId));
+        }
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT package_id, package_number, name, source_baseline_id, source_scenario_run_id, external_scenario_id, response_id,
+                   status, validation_status, feasibility_status, owner, approver, created_by, created_at_utc, validated_at_utc
+            FROM ddom_change_packages
+            WHERE source_baseline_id = $source_baseline_id
+            ORDER BY created_at_utc DESC, package_id DESC;
+            """;
+        command.Parameters.AddWithValue("$source_baseline_id", baselineSnapshotId.Trim());
+        using var reader = command.ExecuteReader();
+        var results = new List<DdomChangePackageSummary>();
+        while (reader.Read()) results.Add(ReadSummary(reader));
+        return results;
+    }
+
     public DdomChangePackageDetail? GetDetail(string packageId)
     {
         using var connection = OpenConnection();

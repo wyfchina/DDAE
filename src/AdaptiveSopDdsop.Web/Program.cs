@@ -55,7 +55,7 @@ builder.Services.AddSingleton(sp =>
 {
     var environment = sp.GetRequiredService<IWebHostEnvironment>();
     var databasePath = Path.Combine(environment.ContentRootPath, "data", "ddae-scenario-runs.db");
-    return new CoordinationLedgerService(databasePath);
+    return new CoordinationLedgerService(databasePath, sp.GetRequiredService<DdomChangePackageService>());
 });
 builder.Services.AddSingleton(sp =>
 {
@@ -687,9 +687,10 @@ app.MapGet("/api/coordination-items", (
     int? limit,
     string? relatedScenarioRunId,
     string? relatedMasterSettingChangeId,
+    string? relatedDdomPackageId,
     CoordinationLedgerService service) =>
 {
-    return Results.Ok(service.List(limit.GetValueOrDefault(50), relatedScenarioRunId, relatedMasterSettingChangeId));
+    return Results.Ok(service.List(limit.GetValueOrDefault(50), relatedScenarioRunId, relatedMasterSettingChangeId, relatedDdomPackageId));
 });
 
 app.MapGet("/api/coordination-items/{itemId}", (string itemId, CoordinationLedgerService service) =>

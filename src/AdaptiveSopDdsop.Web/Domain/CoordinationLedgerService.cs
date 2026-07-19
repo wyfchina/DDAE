@@ -17,7 +17,8 @@ public sealed record CoordinationItemCreateRequest(
     string DueDate,
     string EscalationLevel,
     string NextReviewDate,
-    string CreatedBy);
+    string CreatedBy,
+    string? RelatedDdomPackageId = null);
 
 public sealed record CoordinationStatusUpdateRequest(string Status, string UpdatedBy, string? Note);
 
@@ -47,7 +48,8 @@ public sealed record CoordinationItem(
     string? ActualOutcome,
     string CreatedBy,
     string CreatedAtUtc,
-    string UpdatedAtUtc);
+    string UpdatedAtUtc,
+    string? RelatedDdomPackageId = null);
 
 public sealed record CoordinationAuditEvent(
     string EventId,
@@ -71,10 +73,12 @@ public sealed class CoordinationLedgerService
         };
 
     private readonly string _databasePath;
+    private readonly DdomChangePackageService? _ddomChangePackages;
 
-    public CoordinationLedgerService(string databasePath)
+    public CoordinationLedgerService(string databasePath, DdomChangePackageService? ddomChangePackages = null)
     {
         _databasePath = databasePath;
+        _ddomChangePackages = ddomChangePackages;
         EnsureSchema();
     }
 
@@ -84,6 +88,18 @@ public sealed class CoordinationLedgerService
         ValidateRequired(request.Owner, "负责人");
         ValidateRequired(request.CreatedBy, "创建人");
         ValidateRequired(request.DecisionRequired, "决策要求");
+        var relatedDdomPackageId = Normalize(request.RelatedDdomPackageId);
+        if (relatedDdomPackageId is not null)
+        {
+            if (_ddomChangePackages is null)
+            {
+                throw new InvalidOperationException("DDOM 变更包验证服务不可用。");
+            }
+            if (!_ddomChangePackages.Exists(relatedDdomPackageId))
+            {
+                throw new KeyNotFoundException($"关联的 DDOM 变更包不存在：{relatedDdomPackageId}。");
+            }
+        }
 
         var now = DateTimeOffset.UtcNow.ToString("O");
         var itemId = Guid.NewGuid().ToString("N");
@@ -112,7 +128,8 @@ public sealed class CoordinationLedgerService
             null,
             request.CreatedBy.Trim(),
             now,
-            now);
+            now,
+            relatedDdomPackageId);
 
         using (var command = connection.CreateCommand())
         {
@@ -120,12 +137,12 @@ public sealed class CoordinationLedgerService
             command.CommandText = """
                 INSERT INTO coordination_items (
                     item_id, item_number, title, impact_objects_json, related_scenario_run_id,
-                    related_master_setting_change_id, service_impact, inventory_impact, cash_impact,
+                    related_master_setting_change_id, related_ddom_package_id, service_impact, inventory_impact, cash_impact,
                     risk_impact, decision_required, owner, due_date, escalation_level, next_review_date,
                     status, decision, decision_rationale, actual_outcome, created_by, created_at_utc, updated_at_utc)
                 VALUES (
                     $item_id, $item_number, $title, $impact_objects_json, $related_scenario_run_id,
-                    $related_master_setting_change_id, $service_impact, $inventory_impact, $cash_impact,
+                    $related_master_setting_change_id, $related_ddom_package_id, $service_impact, $inventory_impact, $cash_impact,
                     $risk_impact, $decision_required, $owner, $due_date, $escalation_level, $next_review_date,
                     $status, NULL, NULL, NULL, $created_by, $created_at_utc, $updated_at_utc);
                 """;
@@ -140,26 +157,31 @@ public sealed class CoordinationLedgerService
     public IReadOnlyList<CoordinationItem> List(
         int limit,
         string? relatedScenarioRunId = null,
-        string? relatedMasterSettingChangeId = null)
+        string? relatedMasterSettingChangeId = null,
+        string? relatedDdomPackageId = null)
     {
         return QueryList(
             Math.Clamp(limit, 1, 200),
             relatedScenarioRunId,
-            relatedMasterSettingChangeId);
+            relatedMasterSettingChangeId,
+            relatedDdomPackageId);
     }
 
     internal IReadOnlyList<CoordinationItem> ListByLineage(
         string? relatedScenarioRunId = null,
-        string? relatedMasterSettingChangeId = null) =>
-        QueryList(null, relatedScenarioRunId, relatedMasterSettingChangeId);
+        string? relatedMasterSettingChangeId = null,
+        string? relatedDdomPackageId = null) =>
+        QueryList(null, relatedScenarioRunId, relatedMasterSettingChangeId, relatedDdomPackageId);
 
     private IReadOnlyList<CoordinationItem> QueryList(
         int? limit,
         string? relatedScenarioRunId,
-        string? relatedMasterSettingChangeId)
+        string? relatedMasterSettingChangeId,
+        string? relatedDdomPackageId)
     {
         var scenarioRunFilter = Normalize(relatedScenarioRunId);
         var masterSettingChangeFilter = Normalize(relatedMasterSettingChangeId);
+        var ddomPackageFilter = Normalize(relatedDdomPackageId);
         var predicates = new List<string>();
         if (scenarioRunFilter is not null)
         {
@@ -168,6 +190,10 @@ public sealed class CoordinationLedgerService
         if (masterSettingChangeFilter is not null)
         {
             predicates.Add("related_master_setting_change_id = $related_master_setting_change_id");
+        }
+        if (ddomPackageFilter is not null)
+        {
+            predicates.Add("related_ddom_package_id = $related_ddom_package_id");
         }
 
         using var connection = OpenConnection();
@@ -189,6 +215,10 @@ public sealed class CoordinationLedgerService
         if (masterSettingChangeFilter is not null)
         {
             command.Parameters.AddWithValue("$related_master_setting_change_id", masterSettingChangeFilter);
+        }
+        if (ddomPackageFilter is not null)
+        {
+            command.Parameters.AddWithValue("$related_ddom_package_id", ddomPackageFilter);
         }
         if (limit.HasValue)
         {
@@ -383,6 +413,10 @@ public sealed class CoordinationLedgerService
             CREATE INDEX IF NOT EXISTS ix_coordination_audit_sequence ON coordination_item_audit_events(item_id, sequence);
             """;
         command.ExecuteNonQuery();
+        EnsureDdomPackageColumn(connection);
+        using var indexCommand = connection.CreateCommand();
+        indexCommand.CommandText = "CREATE INDEX IF NOT EXISTS ix_coordination_items_ddom_package ON coordination_items(related_ddom_package_id);";
+        indexCommand.ExecuteNonQuery();
     }
 
     private SqliteConnection OpenConnection()
@@ -448,6 +482,7 @@ public sealed class CoordinationLedgerService
         command.Parameters.AddWithValue("$impact_objects_json", JsonSerializer.Serialize(item.ImpactObjects, JsonOptions));
         command.Parameters.AddWithValue("$related_scenario_run_id", (object?)item.RelatedScenarioRunId ?? DBNull.Value);
         command.Parameters.AddWithValue("$related_master_setting_change_id", (object?)item.RelatedMasterSettingChangeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$related_ddom_package_id", (object?)item.RelatedDdomPackageId ?? DBNull.Value);
         command.Parameters.AddWithValue("$service_impact", item.ServiceImpact);
         command.Parameters.AddWithValue("$inventory_impact", item.InventoryImpact);
         command.Parameters.AddWithValue("$cash_impact", (object?)item.CashImpact ?? DBNull.Value);
@@ -472,31 +507,42 @@ public sealed class CoordinationLedgerService
             JsonSerializer.Deserialize<List<string>>(reader.GetString(3), JsonOptions) ?? new(),
             reader.IsDBNull(4) ? null : reader.GetString(4),
             reader.IsDBNull(5) ? null : reader.GetString(5),
-            reader.GetString(6),
             reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetDecimal(8),
-            reader.GetString(9),
+            reader.GetString(8),
+            reader.IsDBNull(9) ? null : reader.GetDecimal(9),
             reader.GetString(10),
             reader.GetString(11),
             reader.GetString(12),
             reader.GetString(13),
             reader.GetString(14),
             reader.GetString(15),
-            reader.IsDBNull(16) ? null : reader.GetString(16),
+            reader.GetString(16),
             reader.IsDBNull(17) ? null : reader.GetString(17),
             reader.IsDBNull(18) ? null : reader.GetString(18),
-            reader.GetString(19),
+            reader.IsDBNull(19) ? null : reader.GetString(19),
             reader.GetString(20),
-            reader.GetString(21));
+            reader.GetString(21),
+            reader.GetString(22),
+            reader.IsDBNull(6) ? null : reader.GetString(6));
     }
 
     private const string SelectItemSql = """
         SELECT item_id, item_number, title, impact_objects_json, related_scenario_run_id,
-               related_master_setting_change_id, service_impact, inventory_impact, cash_impact,
+               related_master_setting_change_id, related_ddom_package_id, service_impact, inventory_impact, cash_impact,
                risk_impact, decision_required, owner, due_date, escalation_level, next_review_date,
                status, decision, decision_rationale, actual_outcome, created_by, created_at_utc, updated_at_utc
         FROM coordination_items
         """;
+
+    private static void EnsureDdomPackageColumn(SqliteConnection connection)
+    {
+        using var existsCommand = connection.CreateCommand();
+        existsCommand.CommandText = "SELECT COUNT(*) FROM pragma_table_info('coordination_items') WHERE name = 'related_ddom_package_id';";
+        if (Convert.ToInt32(existsCommand.ExecuteScalar()) != 0) return;
+        using var alterCommand = connection.CreateCommand();
+        alterCommand.CommandText = "ALTER TABLE coordination_items ADD COLUMN related_ddom_package_id TEXT NULL;";
+        alterCommand.ExecuteNonQuery();
+    }
 
     private static void ValidateRequired(string? value, string label)
     {
