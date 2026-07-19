@@ -49,7 +49,7 @@ Add test registrations and implementations named:
 ("Demo inventory budget derives from frozen stock facts", TestDemoInventoryBudgetUsesFrozenFacts),
 ```
 
-The first test creates one order for quantity `100`, one routing with `CapacityPerUnit=1`, one resource with weekly capacity `100`, and a four-week horizon. Assert required workload is `25` in weeks 1–4 and totals `100`.
+The first test creates two isolated cases for quantity `100`, one routing with `CapacityPerUnit=1`, one resource with weekly capacity `100`, and a twelve-week horizon. For an order anchored in week 1, assert required workload is `25` in weeks 1–4 and totals `100`. For an order anchored in week 12, assert required workload is `25` in weeks 9–12 and totals `100`. These two assertions prevent both start-edge concentration and end-edge truncation.
 
 The seed test asserts these exact MOQs:
 
@@ -82,18 +82,21 @@ Set the twelve MOQs and four capacities to the exact values in Step 1. Keep curr
 Implement workload allocation as:
 
 ```csharp
-var bucketCount = Math.Min(workWindowWeeks, horizonWeeks - order.Week + 1);
-if (bucketCount <= 0) return Array.Empty<(int Week, decimal Required)>();
+if (order.Week < 1 || order.Week > horizonWeeks || workWindowWeeks <= 0)
+    return Array.Empty<(int Week, decimal Required)>();
+var bucketCount = Math.Min(workWindowWeeks, horizonWeeks);
+var latestStart = horizonWeeks - bucketCount + 1;
+var startWeek = Math.Clamp(order.Week - bucketCount + 1, 1, latestStart);
 var total = order.Quantity * routing.CapacityPerUnit;
 var baseShare = decimal.Round(total / bucketCount, 4);
 return Enumerable.Range(0, bucketCount)
     .Select(offset => (
-        order.Week + offset,
+        startWeek + offset,
         offset == bucketCount - 1 ? total - baseShare * (bucketCount - 1) : baseShare))
     .ToList();
 ```
 
-Aggregate these rows by resource/week before dividing by available capacity. Do not change buffer ordering or create operation start dates.
+Aggregate these rows by resource/week before dividing by available capacity. The order week anchors a full aggregate window that ends at the order week when possible and shifts inside the horizon at the left edge. This is a rough-capacity bucket only: do not change buffer ordering or create operation start dates.
 
 Change budget basis to:
 
