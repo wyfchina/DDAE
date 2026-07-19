@@ -114,6 +114,7 @@ var tests = new (string Name, Action Run)[]
     ("Time-buffer baseline rejects structurally inconsistent evidence before freezing", TestTimeBufferBaselineRejectsStructurallyInconsistentEvidence),
     ("Mixed time-buffer progress reports the actual missing evidence week", TestMixedTimeBufferProgressReportsActualMissingWeek),
     ("Current baseline freezes complete demo evidence as an immutable audited snapshot", TestCurrentBaselineFreezesCompleteEvidence),
+    ("Seed baseline supplier commitments preserve frozen planning supply keys", TestSeedBaselineSupplierCommitmentsPreserveFrozenPlanningKeys),
     ("Current baseline rejects missing critical evidence", TestCurrentBaselineRejectsMissingCriticalEvidence),
     ("Current baseline incrementally migrates legacy audit payload evidence", TestCurrentBaselineMigratesLegacyAuditPayloadColumn),
     ("Scenario assumption source provides only manual and demo inputs", TestScenarioAssumptionSourceProvidesOnlyManualAndDemoInputs),
@@ -10660,6 +10661,57 @@ static void TestScenarioFeasibilityPolicyEnforcesSharedHardLimitsAndThresholdBou
         "four consecutive red weeks must be red");
 }
 
+static void TestSeedBaselineSupplierCommitmentsPreserveFrozenPlanningKeys()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-seed-supplier-keys-{Guid.NewGuid():N}.db");
+    try
+    {
+        var seed = SeedData.Create();
+        var candidate = new SeedCurrentBaselineDataSource(seed).GetCandidate();
+        var planningInputs = candidate.Payload.PlanningInputs!;
+        var expectedGroups = planningInputs.SupplierCapacityWindows
+            .GroupBy(item => (item.Supplier, item.MaterialFamily, item.LeadTimeDays))
+            .ToDictionary(group => group.Key, group => group.ToList());
+        var actual = candidate.Payload.SupplierCommitments
+            .ToDictionary(item => (item.Supplier, item.MaterialFamily, item.LeadTimeDays));
+
+        AssertTrue(expectedGroups.Keys.ToHashSet().SetEquals(actual.Keys),
+            "candidate supplier commitments must exactly cover the frozen planning supplier, material-family and lead-time keys");
+        foreach (var (key, windows) in expectedGroups)
+        {
+            AssertEqual(windows.Min(item => item.CommittedCapacity), actual[key].Quantity,
+                $"{key.Supplier}/{key.MaterialFamily} commitment must retain its restrictive frozen capacity");
+            AssertEqual(
+                windows.OrderByDescending(item => SupplierRiskRank(item.RiskStatus)).First().RiskStatus,
+                actual[key].RiskStatus,
+                $"{key.Supplier}/{key.MaterialFamily} commitment must retain its highest frozen risk");
+        }
+
+        var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(candidate), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("计划员", "供应键映射回归"));
+        var previewService = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(seed));
+        var defaultPreview = previewService.PreviewAgainstFrozenBaseline(new ScenarioRunPreviewRequest(12), frozen);
+        var reviewablePreview = previewService.PreviewAgainstFrozenBaseline(new ScenarioRunPreviewRequest(12, "TPL-ORDER-POLICY"), frozen);
+        AssertTrue(defaultPreview.Feasibility!.Checks.Single(item => item.Code == "Supply").Status != "Red",
+            "default frozen preview supply must not be red because of a missing commitment key");
+        AssertTrue(reviewablePreview.Feasibility!.Checks.Single(item => item.Code == "Supply").Status != "Red",
+            "reviewable frozen preview supply must not be red because of a missing commitment key");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static int SupplierRiskRank(string riskStatus) => riskStatus switch
+{
+    "Red" => 3,
+    "Yellow" => 2,
+    "Green" => 1,
+    _ => 0
+};
+
 static void TestScenarioFeasibilityPolicyBlocksMissingEvidenceAndAttachesToPreview()
 {
     var (data, preview) = CreateScenarioFeasibilityFixture();
@@ -13619,24 +13671,28 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
         var previewService = new ScenarioRunPreviewService(source);
         var candidate = new SeedCurrentBaselineDataSource(SeedData.Create()).GetCandidate();
+        const decimal testCommittedCapacity = 1_000_000m;
         var highSupplyCandidate = candidate with
         {
             Payload = candidate.Payload with
             {
                 SupplierCommitments = candidate.Payload.PlanningInputs!.SupplierCapacityWindows
                     .GroupBy(item => new { item.Supplier, item.MaterialFamily, item.LeadTimeDays })
-                    .Select(group => new BaselineSupplierCommitment(group.Key.Supplier, group.Key.MaterialFamily, 1_000_000m, group.Key.LeadTimeDays, "Green"))
+                    .Select(group => new BaselineSupplierCommitment(group.Key.Supplier, group.Key.MaterialFamily, testCommittedCapacity, group.Key.LeadTimeDays, "Green"))
                     .ToList(),
                 PlanningInputs = candidate.Payload.PlanningInputs! with
                 {
                     SupplierCapacityWindows = candidate.Payload.PlanningInputs!.SupplierCapacityWindows
-                        .Select(item => item with { CommittedCapacity = item.CommittedCapacity * 100m })
+                        .Select(item => item with { CommittedCapacity = testCommittedCapacity })
                         .ToList()
                 }
             }
         };
         var baselineService = new CurrentBaselineService(new FixedCurrentBaselineDataSource(highSupplyCandidate), databasePath);
         var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("计划员", "DDOM 变更包测试基线"));
+        var highSupplyPreview = previewService.PreviewAgainstFrozenBaseline(new ScenarioRunPreviewRequest(12, "TPL-ORDER-POLICY"), frozen);
+        AssertTrue(highSupplyPreview.Feasibility!.Checks.Single(item => item.Code == "Supply").Status != "Red",
+            "high-supply DDOM fixture must keep frozen supply non-red with matching commitment keys");
         var context = new GovernanceDecisionContext(
             frozen.SnapshotId, null, "运营经理", "执行委员会", "2026-08-01", "2026-08-31", "2026-08-15",
             "降低约束资源红区", "服务未改善或现金占用超过上限时人工回滚");

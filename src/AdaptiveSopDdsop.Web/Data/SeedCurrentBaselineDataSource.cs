@@ -64,8 +64,18 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
             .OrderBy(item => item.Sku, StringComparer.Ordinal)
             .ToList();
         var wip = AllocateWorkInProcess(facts.BaselineWorkInProcessUnits, _data.ResourceRoutings);
-        var supplier = _data.SupplierConstraints.Select(item => new BaselineSupplierCommitment(
-            item.Supplier, item.MaterialFamily, item.MonthlyCapacity, item.LeadTimeDays, item.RiskStatus)).ToList();
+        var supplier = planningInputs.SupplierCapacityWindows
+            .GroupBy(item => (item.Supplier, item.MaterialFamily, item.LeadTimeDays))
+            .Select(group => new BaselineSupplierCommitment(
+                group.Key.Supplier,
+                group.Key.MaterialFamily,
+                group.Min(item => item.CommittedCapacity),
+                group.Key.LeadTimeDays,
+                group.OrderByDescending(item => SupplierRiskRank(item.RiskStatus)).First().RiskStatus))
+            .OrderBy(item => item.Supplier, StringComparer.Ordinal)
+            .ThenBy(item => item.MaterialFamily, StringComparer.Ordinal)
+            .ThenBy(item => item.LeadTimeDays)
+            .ToList();
         var resources = planningInputs.Resources.Select(item => new BaselineResourceAvailability(item.Code, item.Name, item.WeeklyAvailableUnits, "StandardCalendar")).ToList();
         var adjustments = _data.KnownEvents.Where(item => item.Status != "Closed").Select(item => new BaselineTemporaryAdjustment(
             item.EventId, item.Name, item.Window, item.AppliesTo, item.Status)).ToList();
@@ -179,6 +189,14 @@ public sealed class SeedCurrentBaselineDataSource : ICurrentBaselineDataSource
 
         return allocated;
     }
+
+    private static int SupplierRiskRank(string riskStatus) => riskStatus switch
+    {
+        "Red" => 3,
+        "Yellow" => 2,
+        "Green" => 1,
+        _ => 0
+    };
 
     private static BaselineEvidenceSection ReconciliationSection(
         string asOf,
