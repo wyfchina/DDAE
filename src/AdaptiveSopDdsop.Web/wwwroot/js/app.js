@@ -943,6 +943,7 @@ function traceStageLabel(stage) {
     Data: "数据",
     Scenario: "场景",
     Engine: "白盒引擎",
+    Validation: "验证",
     Result: "结果",
     Persistence: "保存状态",
     Demand: "不受限需求",
@@ -6540,7 +6541,7 @@ async function renderCoordinationLineage(item) {
     return;
   }
 
-  const [scenarioDetailResponse, changeDetailResponse, scenarioItemsResponse, changeItemsResponse] = await Promise.all([
+  const [scenarioDetailResponse, changeDetailResponse, scenarioItemsResponse, changeItemsResponse, packageItemsResponse] = await Promise.all([
     item.relatedScenarioRunId
       ? fetch(`/api/scenario-runs/${encodeURIComponent(item.relatedScenarioRunId)}`, { headers: { Accept: "application/json" } })
       : Promise.resolve(null),
@@ -6553,12 +6554,15 @@ async function renderCoordinationLineage(item) {
     item.relatedMasterSettingChangeId
       ? fetch(`/api/coordination-items?limit=50&relatedMasterSettingChangeId=${encodeURIComponent(item.relatedMasterSettingChangeId)}`, { headers: { Accept: "application/json" } })
       : Promise.resolve(null),
+    item.relatedDdomPackageId
+      ? fetch(`/api/coordination-items?limit=50&relatedDdomPackageId=${encodeURIComponent(item.relatedDdomPackageId)}`, { headers: { Accept: "application/json" } })
+      : Promise.resolve(null),
   ]);
-  const responses = [scenarioDetailResponse, changeDetailResponse, scenarioItemsResponse, changeItemsResponse].filter(Boolean);
+  const responses = [scenarioDetailResponse, changeDetailResponse, scenarioItemsResponse, changeItemsResponse, packageItemsResponse].filter(Boolean);
   if (responses.some(response => !response.ok && response.status !== 404)) throw new Error("协调事项只读反查失败。");
   const scenarioDetail = scenarioDetailResponse?.ok ? await scenarioDetailResponse.json() : null;
   const changeDetail = changeDetailResponse?.ok ? await changeDetailResponse.json() : null;
-  const relatedGroups = await Promise.all([scenarioItemsResponse, changeItemsResponse]
+  const relatedGroups = await Promise.all([scenarioItemsResponse, changeItemsResponse, packageItemsResponse]
     .filter(response => response?.ok)
     .map(response => response.json()));
   const relatedCount = new Set(relatedGroups.flat().map(related => related.itemId)).size;
@@ -6577,7 +6581,7 @@ async function renderCoordinationLineage(item) {
   byId("coordination-lineage-list").innerHTML = `
     <div class="diagnostic-item"><strong>03 关联场景</strong><span>${scenarioLink}</span></div>
     <div class="diagnostic-item"><strong>04 关联变更</strong><span>${packageLink !== "未关联 DDOM 变更包" ? packageLink : changeLink}</span></div>
-    <div class="diagnostic-item"><strong>只读反查</strong><span>同一场景或变更下共有 ${number(relatedCount)} 条行动事项</span></div>`;
+    <div class="diagnostic-item"><strong>只读反查</strong><span>同一关联对象下共有 ${number(relatedCount)} 条行动事项</span></div>`;
 }
 
 async function loadCoordinationDetail(itemId) {

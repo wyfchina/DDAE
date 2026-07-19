@@ -72,7 +72,7 @@ expect(packageDetail.includes("detail.latestValidation") && packageDetail.includ
 for (const key of ["PackageCreated", "PackageSubmitted", "WhiteBoxRecalculated", "ValidationPassed", "ValidationFailed", "PackageReviewed", "PackageApproved", "PackageEffective", "PackageExpired"]) {
   expect(body("auditEventLabel", "baselineAuditMessage").includes(key), `audit event should be localized: ${key}`);
 }
-expect(body("traceStageLabel", "adoptionConstraintLabel").includes('Engine: "白盒引擎"') && body("traceStageLabel", "adoptionConstraintLabel").includes('Governance: "治理"'),
+expect(body("traceStageLabel", "adoptionConstraintLabel").includes('Engine: "白盒引擎"') && body("traceStageLabel", "adoptionConstraintLabel").includes('Governance: "治理"') && body("traceStageLabel", "adoptionConstraintLabel").includes('Validation: "验证"'),
   "DDOM audit stage labels must not leak ordinary English codes");
 
 const packageLoad = body("loadDdomPackages", "loadDdomPackageDetail");
@@ -83,8 +83,8 @@ expect(packageLoad.includes("state.ddomPackages.some") && packageDetailLoad.incl
   "empty and stale persisted selections must clear to a safe empty detail state");
 
 const coordinationLineage = body("renderCoordinationLineage", "loadCoordinationDetail");
-expect(coordinationLineage.includes("relatedDdomPackageId") && coordinationLineage.includes("data-lineage-ddom-package-id"),
-  "package-only coordination lineage must display and navigate to its DDOM package");
+expect(coordinationLineage.includes("relatedDdomPackageId") && coordinationLineage.includes("data-lineage-ddom-package-id") && coordinationLineage.includes("relatedDdomPackageId=${encodeURIComponent(item.relatedDdomPackageId)}") && coordinationLineage.includes("同一关联对象下共有"),
+  "package-only coordination lineage must query its package filter and use accurate count wording");
 
 const outcome = body("recordCoordinationOutcome", "loadWorkspace");
 expect(!outcome.includes("/api/ddom-change-packages") && !outcome.includes("ddomPackageAction"),
