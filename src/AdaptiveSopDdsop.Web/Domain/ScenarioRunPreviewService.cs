@@ -419,7 +419,12 @@ public sealed class ScenarioRunPreviewService
             {
                 if (action.ActionType == "Prebuild" && !prebuild.Any(item => item.Sku == action.Target && item.BuildWeek == action.StartWeek))
                 {
-                    prebuild.Add(new PrebuildCampaign($"TPL-{template.TemplateId}", action.Target, action.StartWeek, action.StartWeek, action.EndWeek, action.Value));
+                    var protectFromWeek = template.Actions
+                        .Where(item => item.ActionType == "DemandEvent")
+                        .Select(item => item.StartWeek)
+                        .DefaultIfEmpty(action.StartWeek)
+                        .Min();
+                    prebuild.Add(new PrebuildCampaign($"TPL-{template.TemplateId}", action.Target, action.StartWeek, protectFromWeek, action.EndWeek, action.Value));
                 }
 
                 if (action.ActionType == "CapacityMultiplier" && !capacity.Any(item => item.ResourceCode == action.Target && item.Week >= action.StartWeek && item.Week <= action.EndWeek))
@@ -606,7 +611,7 @@ public sealed class ScenarioRunPreviewService
             : data.HistoricalDemand.Count == 0
                 ? 0m
                 : decimal.Round(data.HistoricalDemand.Average(item => item.ServiceLevelPercent), 1);
-        var healthyProjectionCount = projections.Count(item => item.BufferStatus is "Green" or "OverTopOfGreen");
+        var healthyProjectionCount = projections.Count(item => item.BufferStatus != "Red");
         var bufferHealth = projections.Count == 0 ? 0m : decimal.Round(healthyProjectionCount * 100m / projections.Count, 1);
         decimal? averageInventory = physicalComplete
             ? inventoryFlow!.Summary!.AverageInventoryValue

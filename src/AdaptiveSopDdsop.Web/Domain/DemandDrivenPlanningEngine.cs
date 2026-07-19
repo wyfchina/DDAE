@@ -106,19 +106,24 @@ public static class DemandDrivenPlanningEngine
     {
         var projections = new List<CapacityLoadProjection>();
         capacityAdjustments ??= Array.Empty<ResourceCapacityAdjustment>();
+        var requiredByResourceWeek = orders
+            .SelectMany(order => routings
+                .Where(routing => routing.Sku == order.Sku)
+                .SelectMany(routing => AllocateRccpWorkload(order, routing, horizonWeeks)
+                    .Select(allocation => new
+                    {
+                        routing.ResourceCode,
+                        allocation.Week,
+                        allocation.Required
+                    })))
+            .GroupBy(item => (item.ResourceCode, item.Week))
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.Required));
 
         for (var week = 1; week <= horizonWeeks; week++)
         {
             foreach (var resource in resources)
             {
-                var required = orders
-                    .Where(order => order.Week == week)
-                    .Join(
-                        routings.Where(routing => routing.ResourceCode == resource.Code),
-                        order => order.Sku,
-                        routing => routing.Sku,
-                        (order, routing) => order.Quantity * routing.CapacityPerUnit)
-                    .Sum();
+                var required = requiredByResourceWeek.GetValueOrDefault((resource.Code, week));
                 var capacityMultiplier = capacityAdjustments
                     .Where(item => item.ResourceCode == resource.Code && item.Week == week)
                     .Select(item => item.CapacityMultiplier)
@@ -140,6 +145,35 @@ public static class DemandDrivenPlanningEngine
         }
 
         return projections;
+    }
+
+    internal static IReadOnlyList<(int Week, decimal Required)> AllocateRccpWorkload(
+        ProjectedReplenishmentOrder order,
+        ResourceRouting routing,
+        int horizonWeeks,
+        int workWindowWeeks = 4)
+    {
+        // Internal RCCP aggregate only; this does not create an external or executable production schedule.
+        if (order.Week < 1 || order.Week > horizonWeeks)
+        {
+            return Array.Empty<(int Week, decimal Required)>();
+        }
+
+        var bucketCount = Math.Min(workWindowWeeks, horizonWeeks);
+        if (bucketCount <= 0)
+        {
+            return Array.Empty<(int Week, decimal Required)>();
+        }
+
+        var latestStart = horizonWeeks - bucketCount + 1;
+        var startWeek = Math.Clamp(order.Week, 1, latestStart);
+        var total = order.Quantity * routing.CapacityPerUnit;
+        var baseShare = decimal.Round(total / bucketCount, 4);
+        return Enumerable.Range(0, bucketCount)
+            .Select(offset => (
+                Week: startWeek + offset,
+                Required: offset == bucketCount - 1 ? total - baseShare * (bucketCount - 1) : baseShare))
+            .ToList();
     }
 
     public static IReadOnlyList<ProjectedSupplyRequirement> ProjectSupplyRequirements(

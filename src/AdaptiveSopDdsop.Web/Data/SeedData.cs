@@ -16,17 +16,17 @@ public static class SeedData
 
         var skus = new List<SkuBufferSetting>
         {
-            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 0.20m, 8, 0.35m, 4, 80, 820_000m, 210),
-            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 0.12m, 10, 0.40m, 5, 60, 1_180_000m, 160),
-            new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 0.30m, 4, 90, 260_000m, 260),
-            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 0.55m, 6, 45, 1_960_000m, 120),
-            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 0.60m, 6, 35, 2_850_000m, 90),
+            new("SAT-BUS-001", "标准小卫星平台", "卫星平台", 0.20m, 8, 0.35m, 4, 2, 820_000m, 210),
+            new("SAT-BUS-002", "高机动卫星平台", "卫星平台", 0.12m, 10, 0.40m, 5, 2, 1_180_000m, 160),
+            new("SAT-PROP-003", "电推进模块", "卫星平台", 0.80m, 7, 0.30m, 4, 6, 260_000m, 260),
+            new("PAY-EO-101", "高分辨率光学载荷", "有效载荷", 0.10m, 12, 0.55m, 6, 2, 1_960_000m, 120),
+            new("PAY-SAR-102", "合成孔径雷达载荷", "有效载荷", 0.08m, 14, 0.60m, 6, 2, 2_850_000m, 90),
             new("AV-COM-201", "星载通信机", "星载电子", 1.20m, 6, 0.40m, 4, 12, 180_000m, 520),
-            new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 0.50m, 5, 120, 320_000m, 360),
+            new("AV-OBC-202", "星务计算机", "星载电子", 0.80m, 8, 0.50m, 5, 8, 320_000m, 360),
             new("AV-FPGA-203", "进口空间级 FPGA 板", "星载电子", 0.18m, 16, 0.65m, 6, 5, 540_000m, 180),
-            new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 0.35m, 4, 260, 42_000m, 760),
-            new("TC-RAD-302", "蜂窝散热板", "热控结构", 2.50m, 6, 0.40m, 4, 220, 86_000m, 620),
-            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 0.60m, 11, 0.55m, 5, 100, 420_000m, 240),
+            new("TC-MLI-301", "多层隔热组件", "热控结构", 4.00m, 5, 0.35m, 4, 30, 42_000m, 760),
+            new("TC-RAD-302", "蜂窝散热板", "热控结构", 2.50m, 6, 0.40m, 4, 20, 86_000m, 620),
+            new("MECH-DEP-401", "太阳翼展开机构", "热控结构", 0.60m, 11, 0.55m, 5, 8, 420_000m, 240),
             new("CBL-HAR-402", "星上电缆束套件", "星载电子", 5.00m, 4, 0.30m, 3, 30, 38_000m, 980),
         }.Select(ApplyDdmrpParameterProfile).ToList();
 
@@ -63,10 +63,11 @@ public static class SeedData
 
         var resources = new List<CapacityResource>
         {
-            new("RES-AIT", "AIT 总装集成大厅", 160, 1.00m),
-            new("RES-TVAC", "热真空试验舱", 96, 1.00m),
+            // DemoFixture aggregate weekly capacity only; it is not an external or actual factory capacity record.
+            new("RES-AIT", "AIT 总装集成大厅", 370, 1.00m),
+            new("RES-TVAC", "热真空试验舱", 185, 1.00m),
             new("RES-CLEAN", "洁净载荷装配间", 120, 1.00m),
-            new("RES-HARNESS", "星上电缆束工位", 180, 1.00m),
+            new("RES-HARNESS", "星上电缆束工位", 460, 1.00m),
         };
 
         var resourceRoutings = skus.SelectMany(sku => sku.Sku switch

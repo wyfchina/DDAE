@@ -560,10 +560,13 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   "scenario detail should expose a compound key from its actual plan trace");
 
   const negative = structuredClone(preview);
-  negative.scenario.bufferTrend.skuDetails[0].series[1].endNetFlowBeforeReplenishment = -12;
+  const negativeSku = negative.scenario.bufferTrend.selectedSku
+    ?? negative.scenario.bufferTrend.skuDetails[0].sku;
+  const negativeDetail = negative.scenario.bufferTrend.skuDetails.find(item => item.sku === negativeSku);
+  negativeDetail.series[1].endNetFlowBeforeReplenishment = -1000;
   const negativeSeriesItem = negative.scenario.bufferTrend.series.find(item =>
-    item.sku === negative.scenario.bufferTrend.skuDetails[0].sku && item.week === 2);
-  negativeSeriesItem.endNetFlowBeforeReplenishment = -12;
+    item.sku === negativeSku && item.week === 2);
+  negativeSeriesItem.endNetFlowBeforeReplenishment = -1000;
   runPreview(runtime, negative);
   const negativeMarkup = runtime.elements.get("buffer-trend-chart").innerHTML;
   const zeroAxisY = Number(negativeMarkup.match(/<line class="axis-line"[^>]*y1="([^"]+)"/)?.[1]);
@@ -630,12 +633,12 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
       `${id} should redraw from the registered SKU click handler`);
   }
 
-  const firstFamilyDetail = preview.scenario.bufferTrend.skuDetails.find(item => item.sku === selectedSku)
-    ?? preview.scenario.bufferTrend.skuDetails[0];
+  const firstFilteredFamilyDetail = readVm(runtime,
+    "filterBufferTrendWorkspace(state.bufferTrend).skuDetails[0]");
   const familyButton = runtime.createElement();
-  familyButton.dataset.bufferFamily = firstFamilyDetail.family;
+  familyButton.dataset.bufferFamily = firstFilteredFamilyDetail.family;
   runtime.document.dispatchEvent({ type: "click", target: familyButton });
-  assert.equal(readVm(runtime, "state.futureInventorySelection.sku"), firstFamilyDetail.sku,
+  assert.equal(readVm(runtime, "state.futureInventorySelection.sku"), firstFilteredFamilyDetail.sku,
     "the registered family click handler should select the first filtered family SKU");
 
   const caseSelect = runtime.elements.get("buffer-case-select");
@@ -654,8 +657,8 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
   const whiteBoxMarkup = runtime.elements.get("buffer-trace-list").innerHTML;
   const whiteBoxRecordKey = whiteBoxMarkup.match(/data-white-box-record="([^"]+)"/)?.[1];
   assert.ok(whiteBoxRecordKey
-    && whiteBoxRecordKey.includes(`|${firstFamilyDetail.sku}|`)
-    && !whiteBoxRecordKey.includes(`baseline:${firstFamilyDetail.sku}`),
+    && whiteBoxRecordKey.includes(`|${firstFilteredFamilyDetail.sku}|`)
+    && !whiteBoxRecordKey.includes(`baseline:${firstFilteredFamilyDetail.sku}`),
   "selected detail should link to a compound key built from an actual baseline plan trace");
   const whiteBoxLink = runtime.createElement();
   whiteBoxLink.dataset.whiteBoxRecord = whiteBoxRecordKey;

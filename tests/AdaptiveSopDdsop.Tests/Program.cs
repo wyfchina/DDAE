@@ -14,6 +14,12 @@ var tests = new (string Name, Action Run)[]
     ("Internal demo operating facts leave target NFP empty without parameter evidence", TestInternalDemoOperatingFactsDoNotRelabelActualNfpAsTarget),
     ("Scenario workspace exposes shared fact-set lineage", TestScenarioWorkspaceExposesSharedFactSetLineage),
     ("FPGA MOQ is five in master and scenario data", TestFpgaMoqIsFiveInMasterAndScenario),
+    ("RCCP spreads projected order workload across four aggregate weeks", TestRccpSpreadsOrderWorkloadAcrossFourWeeks),
+    ("RCCP keeps a middle required-week workload in the following four-week window", TestRccpKeepsMiddleWorkloadInForwardWindow),
+    ("RCCP keeps terminal required-week workload in a complete four-week window", TestRccpKeepsTerminalWorkloadInCompleteWindow),
+    ("Demo scenario baseline is inside credible feasibility ranges", TestDemoScenarioBaselineFeasibilityRanges),
+    ("Demo scenario templates include reviewable and blocked candidates", TestDemoScenarioTemplatesCoverFeasibilityOutcomes),
+    ("Demo inventory budget derives from frozen stock facts", TestDemoInventoryBudgetUsesFrozenFacts),
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
     ("Standard DDMRP reference is calculated by an internal backend service", TestDdmrpStandardReferenceIsBackendCalculated),
     ("History review no longer owns the standard DDMRP reference", TestHistoryReviewNoLongerOwnsStandardDdmrpReference),
@@ -443,6 +449,130 @@ static void TestFpgaMoqIsFiveInMasterAndScenario()
     AssertEqual(5m, scenario.Skus.Single(item => item.Sku == "AV-FPGA-203").MinimumOrderQuantity, "scenario FPGA MOQ");
 }
 
+static void TestRccpSpreadsOrderWorkloadAcrossFourWeeks()
+{
+    var projections = DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
+        new[] { new ProjectedReplenishmentOrder("SKU-TEST", 1, 100m, 0m, "test") },
+        new[] { new ResourceRouting("SKU-TEST", "RES-TEST", 1m) },
+        new[] { new CapacityResource("RES-TEST", "测试资源", 100m, 1m) },
+        4);
+
+    AssertEqual(4, projections.Count, "four-week RCCP projection count");
+    foreach (var projection in projections)
+    {
+        AssertEqual(25m, projection.RequiredCapacity, $"week {projection.Week} required workload");
+    }
+    AssertEqual(100m, projections.Sum(item => item.RequiredCapacity), "total allocated workload");
+}
+
+static void TestRccpKeepsTerminalWorkloadInCompleteWindow()
+{
+    var projections = DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
+        new[] { new ProjectedReplenishmentOrder("SKU-TEST", 12, 100m, 0m, "test") },
+        new[] { new ResourceRouting("SKU-TEST", "RES-TEST", 1m) },
+        new[] { new CapacityResource("RES-TEST", "测试资源", 100m, 1m) },
+        12);
+
+    AssertEqual(12, projections.Count, "twelve-week RCCP projection count");
+    foreach (var projection in projections.Where(item => item.Week is >= 9 and <= 12))
+    {
+        AssertEqual(25m, projection.RequiredCapacity, $"week {projection.Week} terminal required workload");
+    }
+    AssertEqual(100m, projections.Sum(item => item.RequiredCapacity), "terminal total allocated workload");
+}
+
+static void TestRccpKeepsMiddleWorkloadInForwardWindow()
+{
+    var projections = DemandDrivenPlanningEngine.ProjectRoughCutCapacity(
+        new[] { new ProjectedReplenishmentOrder("SKU-TEST", 6, 100m, 0m, "test") },
+        new[] { new ResourceRouting("SKU-TEST", "RES-TEST", 1m) },
+        new[] { new CapacityResource("RES-TEST", "测试资源", 100m, 1m) },
+        12);
+
+    foreach (var projection in projections.Where(item => item.Week is >= 6 and <= 9))
+    {
+        AssertEqual(25m, projection.RequiredCapacity, $"week {projection.Week} middle required workload");
+    }
+    AssertEqual(100m, projections.Sum(item => item.RequiredCapacity), "middle total allocated workload");
+}
+
+static void TestDemoScenarioBaselineFeasibilityRanges()
+{
+    var data = SeedData.Create();
+    var expectedMoqs = new Dictionary<string, decimal>(StringComparer.Ordinal)
+    {
+        ["SAT-BUS-001"] = 2m, ["SAT-BUS-002"] = 2m, ["SAT-PROP-003"] = 6m,
+        ["PAY-EO-101"] = 2m, ["PAY-SAR-102"] = 2m, ["AV-COM-201"] = 12m,
+        ["AV-OBC-202"] = 8m, ["AV-FPGA-203"] = 5m, ["TC-MLI-301"] = 30m,
+        ["TC-RAD-302"] = 20m, ["MECH-DEP-401"] = 8m, ["CBL-HAR-402"] = 30m
+    };
+    var expectedCapacities = new Dictionary<string, decimal>(StringComparer.Ordinal)
+    {
+        ["RES-AIT"] = 370m,
+        ["RES-TVAC"] = 185m,
+        ["RES-CLEAN"] = 120m,
+        ["RES-HARNESS"] = 460m
+    };
+
+    foreach (var (sku, expectedMoq) in expectedMoqs)
+    {
+        AssertEqual(expectedMoq, data.Skus.Single(item => item.Sku == sku).MinimumOrderQuantity, $"{sku} MOQ");
+    }
+    foreach (var (resourceCode, expectedCapacity) in expectedCapacities)
+    {
+        AssertEqual(expectedCapacity, data.Resources.Single(item => item.Code == resourceCode).WeeklyAvailableUnits, $"{resourceCode} weekly capacity");
+    }
+
+    var preview = new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(data))
+        .Preview(new ScenarioRunPreviewRequest(12));
+    var baseline = preview.Baseline.Metrics;
+    var peakLoad = preview.Baseline.Plan.CapacityLoads.MaxBy(item => item.LoadPercent)!;
+    AssertTrue(baseline.PeakLoadPercent <= 100m,
+        $"baseline peak load must be feasible, got {baseline.PeakLoadPercent:0.0}% at {peakLoad.ResourceCode} week {peakLoad.Week} ({peakLoad.RequiredCapacity:0.####}/{peakLoad.AvailableCapacity:0.####})");
+    AssertTrue(baseline.AverageLoadPercent is >= 30m and <= 85m, $"baseline average load must be credible, got {baseline.AverageLoadPercent:0.0}%");
+    AssertTrue(baseline.FlowIndex >= 87m, $"baseline flow must remain healthy, got {baseline.FlowIndex:0.0}%");
+    AssertTrue(baseline.AverageInventoryValue.HasValue, "baseline average inventory should be present");
+}
+
+static void TestDemoScenarioTemplatesCoverFeasibilityOutcomes()
+{
+    var data = SeedData.Create();
+    var source = new SeedScenarioWorkspaceDataSource(data);
+    var templates = source.Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1))).ScenarioTemplates;
+    var service = new ScenarioRunPreviewService(source);
+    var outcomes = templates.ToDictionary(
+        item => item.TemplateId,
+        item => service.Preview(new ScenarioRunPreviewRequest(12, item.TemplateId)).Scenario.Metrics,
+        StringComparer.Ordinal);
+
+    AssertTrue(outcomes.Values.Any(item => item.PeakLoadPercent <= 100m), "at least one built-in template should remain reviewable");
+    var constrained = outcomes["TPL-CONSTRAINED"];
+    AssertTrue(constrained.PeakLoadPercent > 100m || constrained.SupplyGap > 0m,
+        "constrained template should remain an explicit blocked candidate");
+}
+
+static void TestDemoInventoryBudgetUsesFrozenFacts()
+{
+    var data = SeedData.Create();
+    var workspace = new SeedScenarioWorkspaceDataSource(data)
+        .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+    var skuByCode = data.Skus.ToDictionary(item => item.Sku, StringComparer.Ordinal);
+    var expectedByFamily = data.Skus
+        .GroupBy(item => item.Family)
+        .ToDictionary(
+            group => group.Key,
+            group => decimal.Round(workspace.Inventory
+                .Where(item => group.Any(sku => sku.Sku == item.Sku))
+                .Sum(item => (item.OnHand + item.OpenSupply) * skuByCode[item.Sku].UnitCost) * 1.10m, 0),
+            StringComparer.Ordinal);
+
+    foreach (var benchmark in workspace.BudgetBenchmarks)
+    {
+        AssertEqual(expectedByFamily[benchmark.Family], benchmark.BudgetInventoryValue,
+            $"{benchmark.Family} week {benchmark.Week} frozen-inventory budget");
+    }
+}
+
 static void TestStandardDdmrpSizingReturns80_120_70()
 {
     var sku = new SkuBufferSetting(
@@ -774,10 +904,10 @@ static void TestSeedScaleMatchesSatelliteManufacturingDemo()
 
     var expectedWeeklyHours = new Dictionary<string, decimal>(StringComparer.Ordinal)
     {
-        ["RES-AIT"] = 160m,
-        ["RES-TVAC"] = 96m,
+        ["RES-AIT"] = 370m,
+        ["RES-TVAC"] = 185m,
         ["RES-CLEAN"] = 120m,
-        ["RES-HARNESS"] = 180m,
+        ["RES-HARNESS"] = 460m,
     };
     AssertEqual(expectedWeeklyHours.Count, data.Resources.Count, "standard-hour resource count");
     foreach (var resource in data.Resources)
@@ -797,16 +927,16 @@ static void TestSeedScaleMatchesSatelliteManufacturingDemo()
     var harnessLoad = BaselineLoadPercent("RES-HARNESS");
     var aitLoad = BaselineLoadPercent("RES-AIT");
     var tvacLoad = BaselineLoadPercent("RES-TVAC");
-    AssertTrue(harnessLoad is >= 95m and <= 105m, $"HARNESS baseline load should be 95%-105%, got {harnessLoad:0.0}%");
-    AssertTrue(aitLoad is > 80m and <= 100m, $"AIT baseline load should be above its 80% protection start and at most 100%, got {aitLoad:0.0}%");
-    AssertTrue(tvacLoad < 90m, $"TVAC baseline load should remain below 90%, got {tvacLoad:0.0}%");
+    AssertTrue(harnessLoad is >= 30m and <= 45m, $"HARNESS baseline load should be 30%-45%, got {harnessLoad:0.0}%");
+    AssertTrue(aitLoad is >= 30m and <= 45m, $"AIT baseline load should be 30%-45%, got {aitLoad:0.0}%");
+    AssertTrue(tvacLoad is >= 35m and <= 40m, $"TVAC baseline load should be 35%-40%, got {tvacLoad:0.0}%");
 
     var workspace = new SeedScenarioWorkspaceDataSource(data)
         .Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
     var tvacLossMultiplier = workspace.ResourceCalendar
         .Where(item => item.ResourceCode == "RES-TVAC")
         .Min(item => item.CapacityMultiplier);
-    AssertTrue(tvacLoad / tvacLossMultiplier > 100m, "TVAC should exceed 100% only in the built-in capacity-loss scenario");
+    AssertTrue(tvacLoad / tvacLossMultiplier < 100m, "TVAC should remain below 100% after the built-in capacity-loss calibration");
 }
 
 static void TestFpgaBelongsOnlyToIndependentInventoryControlPoint()

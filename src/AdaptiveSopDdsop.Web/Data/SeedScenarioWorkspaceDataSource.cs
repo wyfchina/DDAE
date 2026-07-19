@@ -68,7 +68,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
             facts.HistoricalDemand
                 .Where(item => skuCodes.Contains(item.Sku) && Math.Abs(item.WeekOffset) <= historyWeeks)
                 .ToList(),
-            BuildBudgetBenchmarks(scopedSkus, horizonWeeks),
+            BuildBudgetBenchmarks(scopedSkus, inventory, horizonWeeks),
             BuildResourceCalendar(resources, horizonWeeks),
             BuildSupplierCapacityWindows(sources, 52),
             BuildScenarioTemplates(scopedSkus, resources),
@@ -335,6 +335,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
 
     private static IReadOnlyList<BudgetBenchmark> BuildBudgetBenchmarks(
         IReadOnlyList<SkuBufferSetting> skus,
+        IReadOnlyList<InventoryPosition> inventory,
         int horizonWeeks)
     {
         return skus
@@ -344,7 +345,10 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                 var weeklyRevenue = group.Sum(sku => sku.Adu * 5m * sku.UnitCost * 1.35m);
                 var budgetRevenue = decimal.Round(weeklyRevenue * (1 + week * 0.006m), 0);
                 var lastYearRevenue = decimal.Round(budgetRevenue * 0.91m, 0);
-                var budgetInventory = decimal.Round(group.Sum(sku => sku.Adu * sku.DecoupledLeadTimeDays * sku.UnitCost * 1.4m), 0);
+                var frozenInventoryValue = group.Sum(sku =>
+                    inventory.Where(item => item.Sku == sku.Sku)
+                        .Sum(item => (item.OnHand + item.OpenSupply) * sku.UnitCost));
+                var budgetInventory = decimal.Round(frozenInventoryValue * 1.10m, 0);
                 var lastYearInventory = decimal.Round(budgetInventory * 0.96m, 0);
                 return new BudgetBenchmark(group.Key, week, budgetRevenue, lastYearRevenue, budgetInventory, lastYearInventory);
             }))
@@ -406,9 +410,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
         }
 
         var peakSku = skus.FirstOrDefault(item => item.Family == "星载电子") ?? skus.First();
-        var resource = resources.FirstOrDefault(item => item.Code == "RES-TVAC")
-            ?? resources.FirstOrDefault()
-            ?? new CapacityResource("RES-DEFAULT", "默认资源", 1, 1);
+        var obcSku = skus.FirstOrDefault(item => item.Sku == "AV-OBC-202") ?? peakSku;
 
         return new List<ScenarioTemplate>
         {
@@ -418,7 +420,7 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                 "用淡季库存吸收未来需求峰值，验证削峰填谷效果。",
                 new[]
                 {
-                    new ScenarioTemplateAction("Prebuild", peakSku.Sku, 2, 2, peakSku.MinimumOrderQuantity, "units"),
+                    new ScenarioTemplateAction("Prebuild", peakSku.Sku, 3, 8, peakSku.MinimumOrderQuantity, "units"),
                     new ScenarioTemplateAction("DemandEvent", peakSku.Family, 6, 8, 1.18m, "factor")
                 }),
             new(
@@ -427,7 +429,9 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                 "验证加班、增班或外协是否足以消除 RCCP 红区。",
                 new[]
                 {
-                    new ScenarioTemplateAction("CapacityMultiplier", resource.Code, 6, 8, 1.25m, "factor")
+                    new ScenarioTemplateAction("CapacityMultiplier", "RES-AIT", 4, 8, 1.20m, "factor"),
+                    new ScenarioTemplateAction("CapacityMultiplier", "RES-TVAC", 4, 8, 1.20m, "factor"),
+                    new ScenarioTemplateAction("CapacityMultiplier", "RES-HARNESS", 4, 8, 1.20m, "factor")
                 }),
             new(
                 "TPL-ORDER-POLICY",
@@ -435,8 +439,8 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                 "比较订单频率、平均库存和服务风险之间的取舍。",
                 new[]
                 {
-                    new ScenarioTemplateAction("MoqOverride", peakSku.Sku, 1, 12, peakSku.MinimumOrderQuantity * 1.2m, "units"),
-                    new ScenarioTemplateAction("OrderCycleOverride", peakSku.Sku, 1, 12, 7m, "days")
+                    new ScenarioTemplateAction("MoqOverride", obcSku.Sku, 1, 12, 5m, "units"),
+                    new ScenarioTemplateAction("OrderCycleOverride", obcSku.Sku, 1, 12, 4m, "days")
                 }),
             new(
                 "TPL-CONSTRAINED",
@@ -444,8 +448,8 @@ public sealed class SeedScenarioWorkspaceDataSource : IScenarioWorkspaceDataSour
                 "在供应和资源约束下验证业务计划能否达成。",
                 new[]
                 {
-                    new ScenarioTemplateAction("SupplierCapacityLimit", "进口空间级 FPGA", 6, 8, 1280m, "units/week"),
-                    new ScenarioTemplateAction("CapacityMultiplier", resource.Code, 5, 5, 0.55m, "factor")
+                    new ScenarioTemplateAction("SupplierCapacityLimit", "进口空间级 FPGA", 6, 8, 1m, "units/week"),
+                    new ScenarioTemplateAction("CapacityMultiplier", "RES-TVAC", 5, 5, 0.55m, "factor")
                 })
         };
     }
