@@ -291,3 +291,11 @@ FPGA 的 MOQ=5 继续作为统一内部主数据。
 - 行动结果不会自动批准、生效或修改冻结基线。
 - 完整测试通过；`dotnet build AdaptiveSopDdsop.sln --no-restore -m:1` 为 0 warning、0 error。
 - 最终差异和保护脚本证明 SDBR、CONTRACT、Network、白盒追踪与公开演示闭环未变化。
+
+## 16. Windows 非管理员启动日志
+
+- DDAE 桌面工作台在 `Development` 与 `Production` 环境都不得依赖需要管理员权限的 Windows Event Log 写入。
+- 将 `Logging.EventLog.LogLevel.Default = None` 放入基础 `appsettings.json`，让所有环境继承；保留控制台日志，环境文件只负责详细错误和级别覆盖。
+- 不通过固定 `Development` 环境掩盖问题：新增真实子进程冒烟测试，以 `ASPNETCORE_ENVIRONMENT=Production` 启动已构建 Web DLL、等待动态回环地址、请求首页并要求 HTTP 200，最后可靠终止子进程。
+- 端口占用仍按 `runme.md` 选择备用端口处理，不改变应用业务逻辑或接口。
+- 不修改 SDBR、Network、CONTRACT、白盒追踪或公开演示闭环。

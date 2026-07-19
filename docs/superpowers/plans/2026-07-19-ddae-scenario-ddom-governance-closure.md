@@ -573,3 +573,44 @@ Use `superpowers:finishing-a-development-branch` and report the branch, worktree
 - [ ] Actions can reference packages without changing governance automatically.
 - [ ] Existing external contracts, Network, public demo, and white-box tracking are unchanged.
 - [ ] Tests pass, build has zero warnings/errors, browser acceptance passes, and Git diff contains only intended DDAE changes.
+
+---
+
+### Task 8: Harden non-admin Production startup
+
+**Files:**
+- Modify: `src/AdaptiveSopDdsop.Web/appsettings.json`
+- Modify: `src/AdaptiveSopDdsop.Web/appsettings.Development.json`
+- Modify: `tests/AdaptiveSopDdsop.Tests/Program.cs`
+- Modify: `runme.md`
+
+**Interfaces:**
+- Consumes: the existing Web DLL and the base ASP.NET Core logging configuration.
+- Produces: an environment-independent `EventLog=None` setting and a process-level Production startup regression test.
+
+- [ ] **Step 1: Write failing configuration and process smoke tests.**
+
+Require the base `appsettings.json` to disable EventLog, then start `AdaptiveSopDdsop.Web.dll` with `ASPNETCORE_ENVIRONMENT=Production`, `ASPNETCORE_URLS=http://127.0.0.1:0`, parse the bound address, request `/`, and assert HTTP 200 without Event Log permission errors.
+
+- [ ] **Step 2: Run the focused test and confirm RED.**
+
+```powershell
+dotnet run --project tests\AdaptiveSopDdsop.Tests\AdaptiveSopDdsop.Tests.csproj --no-restore
+```
+
+Expected before the fix: failure because the base configuration does not disable the Windows Event Log provider; on a non-admin Windows account, the Production process also records the permission failure.
+
+- [ ] **Step 3: Move the EventLog filter to base configuration.**
+
+Add `Logging.EventLog.LogLevel.Default = None` to `appsettings.json`; remove the duplicate environment-only block from `appsettings.Development.json`. Do not clear console logging and do not modify request handling.
+
+- [ ] **Step 4: Verify GREEN and update startup documentation.**
+
+Run the focused/full runner, build, Production process smoke, protected-boundary script, and `git diff --check`. Update `runme.md` to state that both source Development startup and published Production startup require no Windows Event Log permission.
+
+- [ ] **Step 5: Commit the isolated startup fix.**
+
+```powershell
+git add src/AdaptiveSopDdsop.Web/appsettings.json src/AdaptiveSopDdsop.Web/appsettings.Development.json tests/AdaptiveSopDdsop.Tests/Program.cs runme.md
+git commit -m "fix: remove privileged event log startup dependency"
+```
