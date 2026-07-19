@@ -629,6 +629,10 @@ app.MapPost("/api/master-settings/changes", (MasterSettingChangeSaveRequest requ
     {
         return Results.BadRequest(new { message = ex.Message });
     }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
+    }
 });
 
 app.MapGet("/api/master-settings/changes", (
@@ -660,6 +664,10 @@ app.MapPost("/api/master-settings/changes/{changeId}/status", (string changeId, 
     catch (ArgumentException ex)
     {
         return Results.BadRequest(new { message = ex.Message });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(new { message = ex.Message });
     }
 });
 

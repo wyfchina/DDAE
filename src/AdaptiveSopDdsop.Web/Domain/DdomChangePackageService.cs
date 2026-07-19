@@ -51,13 +51,17 @@ public sealed class DdomChangePackageService
             SourceBaselineId = baseline.SnapshotId,
             SourceScenarioRunId = run.RunId
         };
+        if (string.IsNullOrWhiteSpace(context.Approver))
+        {
+            throw new InvalidOperationException("DDOM 变更包必须在创建时指定审批人。");
+        }
         var generated = _governanceService.ProposeFromSavedRun(run.RunId, baseline, context);
         var now = DateTimeOffset.UtcNow;
         var packageId = Guid.NewGuid().ToString("N");
         var packageNumber = $"DDOM-{now:yyyyMMdd}-{NextPackageSequence():0000}";
         var createdBy = NormalizeActor(request.CreatedBy);
         var owner = string.IsNullOrWhiteSpace(context.Owner) ? createdBy : context.Owner.Trim();
-        var approver = string.IsNullOrWhiteSpace(context.Approver) ? string.Empty : context.Approver.Trim();
+        var approver = context.Approver.Trim();
         var finalRequestJson = Serialize(generated.Request);
         var finalParametersJson = Serialize(generated.Request.Parameters);
         var contextJson = Serialize(context);
@@ -109,7 +113,7 @@ public sealed class DdomChangePackageService
             command.Parameters.AddWithValue("$proposal_json", Serialize(proposal));
             command.ExecuteNonQuery();
         }
-        InsertAudit(connection, transaction, packageId, "PackageCreated", "Governance", "Information", "DDOM 变更包已创建为 Draft。", Serialize(new { runId = run.RunId, fingerprint }), now);
+        InsertAudit(connection, transaction, packageId, "PackageCreated", "Governance", "Information", "DDOM 变更包已创建为 Draft。", Serialize(new { actor = createdBy, note = NormalizeNote(request.Description), description = request.Description, runId = run.RunId, fingerprint }), now);
         transaction.Commit();
         return summary;
     }
@@ -189,7 +193,9 @@ public sealed class DdomChangePackageService
         var reasons = feasibility.Checks.Where(item => item.Status == "Red").Select(item => item.Message).ToList();
         if (reasons.Count == 0 && validationStatus == "Failed") reasons.Add("白盒可行性验证未通过。");
         var now = DateTimeOffset.UtcNow;
-        var validation = new DdomChangePackageValidation(Guid.NewGuid().ToString("N"), packageId, validationStatus, feasibility.Status, header.Fingerprint, reasons, NormalizeActor(request.UpdatedBy), now.ToString("O"));
+        var actor = NormalizeActor(request.UpdatedBy);
+        var note = NormalizeNote(request.Note);
+        var validation = new DdomChangePackageValidation(Guid.NewGuid().ToString("N"), packageId, validationStatus, feasibility.Status, header.Fingerprint, reasons, actor, now.ToString("O"));
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
         using (var command = connection.CreateCommand())
@@ -225,8 +231,8 @@ public sealed class DdomChangePackageService
             command.Parameters.AddWithValue("$package_id", packageId);
             command.ExecuteNonQuery();
         }
-        InsertAudit(connection, transaction, packageId, "WhiteBoxRecalculated", "Engine", "Information", "已从冻结基线和保存 run 白盒复算。", Serialize(new { validation.ValidationId }), now);
-        InsertAudit(connection, transaction, packageId, validationStatus == "Passed" ? "ValidationPassed" : "ValidationFailed", "Validation", validationStatus == "Passed" ? "Information" : "Warning", validationStatus == "Passed" ? "白盒验证通过，等待人工评审。" : "白盒验证失败，包保持 Submitted。", Serialize(validation), now);
+        InsertAudit(connection, transaction, packageId, "WhiteBoxRecalculated", "Engine", "Information", "已从冻结基线和保存 run 白盒复算。", Serialize(new { actor, note, validation.ValidationId }), now);
+        InsertAudit(connection, transaction, packageId, validationStatus == "Passed" ? "ValidationPassed" : "ValidationFailed", "Validation", validationStatus == "Passed" ? "Information" : "Warning", validationStatus == "Passed" ? "白盒验证通过，等待人工评审。" : "白盒验证失败，包保持 Submitted。", Serialize(new { actor, note, validation }), now);
         transaction.Commit();
         return validation;
     }
@@ -240,7 +246,9 @@ public sealed class DdomChangePackageService
             throw new InvalidOperationException($"状态只能从 {header.Summary.Status} 流转到 {allowed ?? "终态"}。");
         if (target is "Reviewed" or "Approved" or "Effective") EnsureValidationGate(header);
         var actor = NormalizeActor(request.UpdatedBy, requireExplicit: target == "Approved");
-        if (target == "Approved" && !string.IsNullOrWhiteSpace(header.Summary.Approver) && !string.Equals(actor, header.Summary.Approver, StringComparison.Ordinal))
+        if (target == "Approved" && string.IsNullOrWhiteSpace(header.Summary.Approver))
+            throw new InvalidOperationException("DDOM 变更包缺少配置审批人，不能批准。");
+        if (target == "Approved" && !string.Equals(actor, header.Summary.Approver, StringComparison.Ordinal))
             throw new InvalidOperationException($"批准人必须是配置的审批人：{header.Summary.Approver}。");
         if (target == "Effective") EnsureEffectiveMetadata(header.Context);
         var eventType = target switch
@@ -274,6 +282,7 @@ public sealed class DdomChangePackageService
     private DdomChangePackageSummary UpdateHeaderStatus(Header header, string status, string actor, string? note, string eventType, string message)
     {
         var now = DateTimeOffset.UtcNow;
+        var normalizedNote = NormalizeNote(note);
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
         using (var command = connection.CreateCommand())
@@ -284,7 +293,7 @@ public sealed class DdomChangePackageService
             command.Parameters.AddWithValue("$package_id", header.Summary.PackageId);
             command.ExecuteNonQuery();
         }
-        InsertAudit(connection, transaction, header.Summary.PackageId, eventType, "Governance", "Information", $"{message}。操作者：{actor}。{note ?? string.Empty}".Trim(), Serialize(new { actor, note, status }), now);
+        InsertAudit(connection, transaction, header.Summary.PackageId, eventType, "Governance", "Information", $"{message}。操作者：{actor}。{normalizedNote ?? string.Empty}".Trim(), Serialize(new { actor, note = normalizedNote, status }), now);
         transaction.Commit();
         return header.Summary with { Status = status };
     }
@@ -327,6 +336,8 @@ public sealed class DdomChangePackageService
         }
         return actor.Trim();
     }
+
+    private static string? NormalizeNote(string? note) => string.IsNullOrWhiteSpace(note) ? null : note.Trim();
 
     private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonOptions);
     private static T? Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, JsonOptions);

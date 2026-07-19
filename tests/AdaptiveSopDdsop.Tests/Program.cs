@@ -250,8 +250,9 @@ var tests = new (string Name, Action Run)[]
     ("DDOM change packages regenerate selected runs and enforce white-box governance gates", TestDdomChangePackagesEnforceWhiteBoxGovernanceGates),
     ("DDOM change package APIs stay internal and map package errors strictly", TestDdomChangePackageApiUsesStrictStatusMapping),
     ("Manual governance change requires baseline and allows no scenario", TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario),
-    ("Manual governance change with scenario requires validated saved run", TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun),
-    ("Scenario-derived governance change requires baseline and scenario", TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario),
+    ("Scenario-derived master-setting persistence is denied in favor of DDOM packages", TestScenarioDerivedMasterSettingPersistenceIsDeniedInFavorOfDdomPackages),
+    ("Manual governance change with scenario is denied in favor of DDOM packages", TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun),
+    ("Scenario-derived governance change is denied in favor of DDOM packages", TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario),
     ("Unlinked historical records remain explicitly unlinked", TestUnlinkedHistoricalRecordsRemainExplicitlyUnlinked),
     ("Scenario change and coordination links are queryable both directions", TestScenarioChangeAndCoordinationLinksAreQueryableBothDirections),
     ("Baseline references expose runs changes and actions", TestBaselineReferencesExposeRunsChangesAndActions),
@@ -11633,6 +11634,10 @@ static void TestManualGovernanceChangeRequiresBaselineAndAllowsNoScenario()
 
         AssertEqual("Proposed", saved.Status, "manual governance change initial status");
         AssertTrue(saved.Summary.SourceScenarioRunId is null, "manual governance change may omit scenario lineage");
+        AssertEqual(
+            "Reviewed",
+            service.UpdateStatus(saved.ChangeId, new MasterSettingStatusUpdateRequest("Reviewed", "评审人", "legacy 手工评审")).Status,
+            "manual governance change without scenario lineage remains compatible with status progress");
     }
     finally
     {
@@ -11674,23 +11679,90 @@ static void TestManualGovernanceChangeWithScenarioRequiresValidatedSavedRun()
             SourceScenarioRunId = runId
         };
 
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual("RUN-MANUAL-MISSING"))),
             "manual change with unknown run");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(unsavedRun.RunId))),
             "manual change with non-saved run");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(mismatchedBaselineRun.RunId))),
             "manual change with mismatched run baseline");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(missingResponseRun.RunId))),
             "manual change with run missing frozen-comparison response");
 
-        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(validRun.RunId)));
-        AssertEqual("Manual", saved.Summary.CreationMethod, "validated manual change creation method");
-        AssertEqual(validRun.RunId, saved.Summary.SourceScenarioRunId, "validated manual change run lineage");
-        AssertEqual(validRun.BaselineSnapshotId, saved.Summary.SourceBaselineId, "validated manual change baseline lineage");
+        AssertRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Manual(validRun.RunId))),
+            "manual change with a valid saved scenario run must use a DDOM package");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestScenarioDerivedMasterSettingPersistenceIsDeniedInFavorOfDdomPackages()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-master-setting-package-gate-{Guid.NewGuid():N}.db");
+    try
+    {
+        var run = new ScenarioRunSummary(
+            "RUN-PACKAGE-GATE", "SR-20260720-0001", "DDOM 来源", null, "计划员", "Saved", "NotSubmitted",
+            "2026-07-20T08:00:00Z", 12, null, null, 98m, 1m, 1_000_000m, 90m, 0m, 0, 1,
+            "BASELINE-PACKAGE-GATE", "EXT-PACKAGE-GATE", "RESP-PACKAGE-GATE");
+        var source = new SeedScenarioWorkspaceDataSource(SeedData.Create());
+        var service = new MasterSettingsGovernanceService(
+            source,
+            new ScenarioRunPreviewService(source),
+            new FixedScenarioRunLineageReader(run),
+            databasePath);
+        var proposal = service.ProposeFromPreview(new ScenarioRunPreviewRequest(12)).Proposals.First();
+
+        AssertRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("计划员", proposal with
+            {
+                CreationMethod = "Manual",
+                SourceBaselineId = run.BaselineSnapshotId,
+                SourceScenarioRunId = run.RunId
+            })),
+            "new single master-setting change with scenario lineage must be rejected by the service");
+
+        var manual = service.SaveChange(new MasterSettingChangeSaveRequest("计划员", proposal with
+        {
+            CreationMethod = "Manual",
+            SourceBaselineId = "BASELINE-MANUAL-COMPATIBLE",
+            SourceScenarioRunId = null
+        }));
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE master_setting_changes SET source_scenario_run_id = $run_id WHERE change_id = $change_id;";
+            command.Parameters.AddWithValue("$run_id", "RUN-LEGACY-SCENARIO");
+            command.Parameters.AddWithValue("$change_id", manual.ChangeId);
+            command.ExecuteNonQuery();
+        }
+        AssertRejected(
+            () => service.UpdateStatus(manual.ChangeId, new MasterSettingStatusUpdateRequest("Reviewed", "评审人", "旧 UI 尝试推进")),
+            "legacy single master-setting record with scenario lineage must not advance");
+        AssertTrue(service.GetDetail(manual.ChangeId) is not null, "legacy scenario-linked record remains readable");
+
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var program = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Program.cs"));
+        var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+        var saveRoute = program.IndexOf("app.MapPost(\"/api/master-settings/changes\"", StringComparison.Ordinal);
+        var statusRoute = program.IndexOf("app.MapPost(\"/api/master-settings/changes/{changeId}/status\"", StringComparison.Ordinal);
+        AssertTrue(saveRoute >= 0 && statusRoute > saveRoute &&
+                   program[saveRoute..statusRoute].Contains("catch (InvalidOperationException", StringComparison.Ordinal) &&
+                   program[saveRoute..statusRoute].Contains("Results.Conflict", StringComparison.Ordinal),
+            "master-setting create API must map the service package gate to 409");
+        AssertTrue(statusRoute >= 0 && program[statusRoute..].Contains("catch (InvalidOperationException", StringComparison.Ordinal) &&
+                   program[statusRoute..].Contains("Results.Conflict", StringComparison.Ordinal),
+            "master-setting status API must map the legacy package gate to 409");
+        AssertTrue(script.Contains("/api/master-settings/changes", StringComparison.Ordinal),
+            "even the legacy UI path still reaches the server-side master-setting package gate");
     }
     finally
     {
@@ -11730,22 +11802,22 @@ static void TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario()
             Status = "Effective"
         };
 
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived(null, validRun.RunId))),
             "scenario-derived change without baseline");
         AssertArgumentRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", null))),
             "scenario-derived change without run");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", "RUN-MISSING"))),
             "scenario-derived change with unknown run");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", mismatchedBaselineRun.RunId))),
             "scenario-derived change with mismatched baseline");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", missingResponseRun.RunId))),
             "scenario-derived change with unsaved comparison response");
-        AssertArgumentRejected(
+        AssertRejected(
             () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", Derived("BASELINE-001", unsavedRun.RunId))),
             "scenario-derived change with a non-saved run");
         AssertArgumentRejected(
@@ -11759,18 +11831,11 @@ static void TestScenarioDerivedGovernanceChangeRequiresBaselineAndScenario()
                 proposal with { CreationMethod = "Imported", SourceBaselineId = "BASELINE-001" })),
             "unsupported governance creation method");
 
-        var saved = service.SaveChange(new MasterSettingChangeSaveRequest(
-            "DDS&OP 计划员",
-            Derived("BASELINE-001", validRun.RunId)));
-        var detail = service.GetDetail(saved.ChangeId)!;
-
-        AssertEqual("Proposed", saved.Status, "scenario-derived change must always start proposed");
-        AssertEqual("BASELINE-001", saved.Summary.SourceBaselineId, "scenario-derived summary baseline lineage");
-        AssertEqual(validRun.RunId, saved.Summary.SourceScenarioRunId, "scenario-derived summary run lineage");
-        AssertEqual("ScenarioDerived", saved.Summary.CreationMethod, "scenario-derived summary creation method");
-        AssertEqual("BASELINE-001", detail.Summary.SourceBaselineId, "persisted scenario-derived baseline lineage");
-        AssertEqual("ScenarioDerived", detail.Summary.CreationMethod, "persisted scenario-derived creation method");
-        AssertEqual("Proposed", detail.Proposal.Status, "persisted proposal must remain proposed");
+        AssertRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest(
+                "DDS&OP 计划员",
+                Derived("BASELINE-001", validRun.RunId))),
+            "scenario-derived change must use a DDOM package");
     }
     finally
     {
@@ -11886,8 +11951,8 @@ static void TestScenarioChangeAndCoordinationLinksAreQueryableBothDirections()
         var runB = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
             comparisonRequest, "RESP-LINEAGE-B", "血缘响应 B", null, "DDS&OP 计划员"));
         var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
-        var changeA = SaveScenarioDerivedChange(governance, frozen.SnapshotId, runA.RunId, "能力保护 A");
-        var changeB = SaveScenarioDerivedChange(governance, frozen.SnapshotId, runA.RunId, "能力保护 B");
+        var changeA = SaveHistoricalScenarioLinkedChange(governance, databasePath, frozen.SnapshotId, runA.RunId, "能力保护 A");
+        var changeB = SaveHistoricalScenarioLinkedChange(governance, databasePath, frozen.SnapshotId, runA.RunId, "能力保护 B");
         var coordination = new CoordinationLedgerService(databasePath);
         var itemA = CreateLineageCoordinationItem(coordination, "行动 A", runA.RunId, changeA.ChangeId);
         var itemB = CreateLineageCoordinationItem(coordination, "行动 B", runA.RunId, changeA.ChangeId);
@@ -11936,7 +12001,7 @@ static void TestBaselineReferencesExposeRunsChangesAndActions()
         var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
             comparisonRequest, "RESP-LINEAGE-A", "基线引用响应", null, "DDS&OP 计划员"));
         var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
-        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "基线引用变更");
+        var change = SaveHistoricalScenarioLinkedChange(governance, databasePath, frozen.SnapshotId, savedRun.RunId, "基线引用变更");
         var coordination = new CoordinationLedgerService(databasePath);
         var linkedByBoth = CreateLineageCoordinationItem(coordination, "同时关联 run 与 change", savedRun.RunId, change.ChangeId);
         var linkedByRun = CreateLineageCoordinationItem(coordination, "仅关联 run", savedRun.RunId, null);
@@ -11990,7 +12055,7 @@ static void TestBaselineReferencesReturnAllLinksBeyondPublicPageLimit()
         var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
             comparisonRequest, "RESP-LINEAGE-A", "完整血缘模板 run", null, "DDS&OP 计划员"));
         var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
-        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "完整血缘模板 change");
+        var change = SaveHistoricalScenarioLinkedChange(governance, databasePath, frozen.SnapshotId, savedRun.RunId, "完整血缘模板 change");
         var coordination = new CoordinationLedgerService(databasePath);
         var item = CreateLineageCoordinationItem(coordination, "完整血缘模板 item", savedRun.RunId, change.ChangeId);
         CloneLineageRows(databasePath, savedRun.RunId, change.ChangeId, item.ItemId, 200);
@@ -12079,7 +12144,7 @@ static void TestCoordinationOutcomeDoesNotAdvanceGovernanceStatus()
         var savedRun = runs.SaveFrozenComparison(new ScenarioComparisonSaveRequest(
             comparisonRequest, "RESP-LINEAGE-A", "非自动化响应", null, "DDS&OP 计划员"));
         var governance = new MasterSettingsGovernanceService(source, preview, runs, databasePath);
-        var change = SaveScenarioDerivedChange(governance, frozen.SnapshotId, savedRun.RunId, "非自动化变更");
+        var change = SaveHistoricalScenarioLinkedChange(governance, databasePath, frozen.SnapshotId, savedRun.RunId, "非自动化变更");
         var coordination = new CoordinationLedgerService(databasePath);
         var item = CreateLineageCoordinationItem(coordination, "记录实际效果", savedRun.RunId, change.ChangeId);
         var baselineBefore = JsonSerializer.Serialize(baselineService.GetDetail(frozen.SnapshotId));
@@ -12308,16 +12373,17 @@ static ScenarioComparisonRequest CreateLineageComparisonRequest(string baselineS
         6);
 }
 
-static MasterSettingChangeSaveResponse SaveScenarioDerivedChange(
+static MasterSettingChangeSaveResponse SaveHistoricalScenarioLinkedChange(
     MasterSettingsGovernanceService service,
+    string databasePath,
     string baselineSnapshotId,
     string runId,
     string target)
 {
-    return service.SaveChange(new MasterSettingChangeSaveRequest(
+    var saved = service.SaveChange(new MasterSettingChangeSaveRequest(
         "DDS&OP 计划员",
         new MasterSettingChangeRequest(
-            SourceScenarioRunId: runId,
+            SourceScenarioRunId: null,
             SourceTemplateId: null,
             SettingType: "Capacity Buffer",
             Target: target,
@@ -12331,7 +12397,16 @@ static MasterSettingChangeSaveResponse SaveScenarioDerivedChange(
             RiskLevel: "Yellow",
             Rationale: new[] { "基于已保存的冻结比较 run" },
             SourceBaselineId: baselineSnapshotId,
-            CreationMethod: "ScenarioDerived")));
+            CreationMethod: "Manual")));
+
+    using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+    connection.Open();
+    using var command = connection.CreateCommand();
+    command.CommandText = "UPDATE master_setting_changes SET source_scenario_run_id = $run_id, creation_method = 'ScenarioDerived' WHERE change_id = $change_id;";
+    command.Parameters.AddWithValue("$run_id", runId);
+    command.Parameters.AddWithValue("$change_id", saved.ChangeId);
+    command.ExecuteNonQuery();
+    return saved;
 }
 
 static CoordinationItem CreateLineageCoordinationItem(
@@ -13645,16 +13720,9 @@ static void TestMasterSettingsGovernancePreservesDecisionPackageMetadata()
         AssertEqual("执行委员会", generated.Approver, "generated proposal approver");
         AssertEqual("2026-08-16", generated.EffectiveThrough, "generated proposal expiry");
 
-        var saved = service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", generated));
-        var detail = service.GetDetail(saved.ChangeId)!;
-
-        AssertEqual("TemporaryAdjustment", detail.Proposal.ChangeCategory, "governance change category");
-        AssertEqual(frozen.SnapshotId, detail.Proposal.SourceBaselineId, "governance source baseline");
-        AssertEqual(savedRun.RunId, detail.Proposal.SourceScenarioRunId, "governance source scenario");
-        AssertEqual("运营经理", detail.Proposal.Owner, "governance owner");
-        AssertEqual("执行委员会", detail.Proposal.Approver, "governance approver");
-        AssertEqual("Proposed", saved.Status, "saved decision package must remain proposed");
-        AssertTrue(service.GetAuditEvents(saved.ChangeId).All(item => item.EventType != "StatusChanged"), "saving must not auto approve or auto effect the package");
+        AssertRejected(
+            () => service.SaveChange(new MasterSettingChangeSaveRequest("DDS&OP 计划员", generated)),
+            "generated scenario proposal must be persisted through a DDOM package");
     }
     finally
     {
@@ -13725,6 +13793,11 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         var governance = new MasterSettingsGovernanceService(source, previewService, lineage, databasePath);
         var packages = new DdomChangePackageService(baselineService, governance, lineage, databasePath);
 
+        AssertRejected(
+            () => packages.Create(new DdomChangePackageCreateRequest(
+                reviewable.Summary.RunId, "缺少审批人包", null, "计划员", context with { Approver = null })),
+            "DDOM package creation requires a configured approver");
+
         var created = packages.Create(new DdomChangePackageCreateRequest(
             reviewable.Summary.RunId, "约束资源缓解包", "浏览器不得提交建议行", "计划员", context));
         AssertEqual("Draft", created.Status, "package create status");
@@ -13754,6 +13827,25 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
         AssertRejected(
             () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "非配置审批人", "审批人不匹配")),
             "configured approver gate");
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ddom_change_packages SET approver = '' WHERE package_id = $package_id;";
+            command.Parameters.AddWithValue("$package_id", created.PackageId);
+            command.ExecuteNonQuery();
+        }
+        AssertRejected(
+            () => packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "空审批人不能批准")),
+            "reviewed package with an empty approver cannot approve");
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE ddom_change_packages SET approver = '执行委员会' WHERE package_id = $package_id;";
+            command.Parameters.AddWithValue("$package_id", created.PackageId);
+            command.ExecuteNonQuery();
+        }
         AssertEqual("Approved", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Approved", "执行委员会", "人工批准")).Status, "explicit approval");
         AssertEqual("Effective", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Effective", "生效责任人", "人工生效")).Status, "explicit effect after required metadata and matching fingerprint");
         AssertEqual("Expired", packages.UpdateStatus(created.PackageId, new DdomPackageStatusRequest("Expired", "生效责任人", "人工失效")).Status, "explicit expiry");
@@ -13761,6 +13853,20 @@ static void TestDdomChangePackagesEnforceWhiteBoxGovernanceGates()
             packages.GetAuditEvents(created.PackageId).Select(item => item.EventType).SequenceEqual(
                 new[] { "PackageCreated", "PackageSubmitted", "WhiteBoxRecalculated", "ValidationPassed", "PackageReviewed", "PackageApproved", "PackageEffective", "PackageExpired" }),
             "package audit event sequence only records explicit actions");
+        foreach (var (eventType, actor, note) in new[]
+        {
+            ("PackageCreated", "计划员", "浏览器不得提交建议行"),
+            ("PackageSubmitted", "提交人", "提交评审"),
+            ("WhiteBoxRecalculated", "验证人", "服务端白盒重算"),
+            ("ValidationPassed", "验证人", "服务端白盒重算"),
+            ("PackageReviewed", "评审人", "人工评审"),
+            ("PackageApproved", "执行委员会", "人工批准"),
+            ("PackageEffective", "生效责任人", "人工生效"),
+            ("PackageExpired", "生效责任人", "人工失效")
+        })
+        {
+            AssertDdomAuditActorAndNote(packages.GetAuditEvents(created.PackageId).Single(item => item.EventType == eventType), actor, note);
+        }
 
         var blockedCreated = packages.Create(new DdomChangePackageCreateRequest(
             blocked.Summary.RunId, "阻断包", null, "计划员", context));
@@ -13850,6 +13956,15 @@ static void AssertRejected(Action action, string label)
     }
 
     throw new InvalidOperationException($"{label} should be rejected");
+}
+
+static void AssertDdomAuditActorAndNote(DdomChangePackageAuditEvent audit, string actor, string note)
+{
+    AssertTrue(!string.IsNullOrWhiteSpace(audit.PayloadJson), $"{audit.EventType} audit payload must be retained");
+    using var document = JsonDocument.Parse(audit.PayloadJson!);
+    var root = document.RootElement;
+    AssertEqual(actor, root.GetProperty("actor").GetString(), $"{audit.EventType} audit actor");
+    AssertEqual(note, root.GetProperty("note").GetString(), $"{audit.EventType} audit note");
 }
 
 internal sealed record LegacyScenarioSource(ValidationData Data);

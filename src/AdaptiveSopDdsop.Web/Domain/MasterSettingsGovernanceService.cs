@@ -372,6 +372,10 @@ public sealed class MasterSettingsGovernanceService
     public MasterSettingChangeSummary UpdateStatus(string changeId, MasterSettingStatusUpdateRequest request)
     {
         var detail = GetDetail(changeId) ?? throw new ArgumentException("主设置变更不存在。", nameof(changeId));
+        if (!string.IsNullOrWhiteSpace(detail.Summary.SourceScenarioRunId))
+        {
+            throw new InvalidOperationException("场景派生变更必须通过 DDOM 变更包治理，不能推进单条主设置记录。");
+        }
         var currentStatus = detail.Summary.Status;
         if (!AllowedTransitions.TryGetValue(currentStatus, out var allowedNext) || request.Status != allowedNext)
         {
@@ -770,6 +774,10 @@ public sealed class MasterSettingsGovernanceService
 
     private MasterSettingChangeRequest ValidateCreationMetadata(MasterSettingChangeRequest change)
     {
+        if (!string.IsNullOrWhiteSpace(change.SourceScenarioRunId))
+        {
+            throw new InvalidOperationException("场景派生变更必须通过 DDOM 变更包，不能新建单条主设置记录。");
+        }
         if (change.CreationMethod is not ("Manual" or "ScenarioDerived"))
         {
             throw new ArgumentException("创建方式只能为 Manual 或 ScenarioDerived；Legacy 仅用于读取历史记录。", nameof(change));
@@ -787,36 +795,12 @@ public sealed class MasterSettingsGovernanceService
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(change.SourceScenarioRunId))
-        {
-            ValidateLinkedScenarioRun(change);
-        }
-
         return change with
         {
             SourceBaselineId = change.SourceBaselineId.Trim(),
             SourceScenarioRunId = string.IsNullOrWhiteSpace(change.SourceScenarioRunId) ? null : change.SourceScenarioRunId.Trim(),
             Status = "Proposed"
         };
-    }
-
-    private void ValidateLinkedScenarioRun(MasterSettingChangeRequest change)
-    {
-        var run = _scenarioRunLineageReader?.GetSummary(change.SourceScenarioRunId!.Trim())
-            ?? throw new ArgumentException("主设置变更关联的 run 不存在。", nameof(change));
-        if (!string.Equals(run.Status, "Saved", StringComparison.Ordinal))
-        {
-            throw new ArgumentException("主设置变更必须关联已保存的 run。", nameof(change));
-        }
-        if (string.IsNullOrWhiteSpace(run.BaselineSnapshotId)
-            || !string.Equals(run.BaselineSnapshotId, change.SourceBaselineId!.Trim(), StringComparison.Ordinal))
-        {
-            throw new ArgumentException("主设置变更的基线必须与已保存 run 一致。", nameof(change));
-        }
-        if (string.IsNullOrWhiteSpace(run.ResponseId))
-        {
-            throw new ArgumentException("主设置变更关联的 run 必须来自已保存的冻结比较响应。", nameof(change));
-        }
     }
 
     private ScenarioRunDetail RequireFrozenComparisonRun(
