@@ -19,6 +19,7 @@ var tests = new (string Name, Action Run)[]
     ("RCCP keeps terminal required-week workload in a complete four-week window", TestRccpKeepsTerminalWorkloadInCompleteWindow),
     ("Demo scenario baseline is inside credible feasibility ranges", TestDemoScenarioBaselineFeasibilityRanges),
     ("Demo scenario templates include reviewable and blocked candidates", TestDemoScenarioTemplatesCoverFeasibilityOutcomes),
+    ("Default page frozen comparison offers a reviewable candidate", TestDefaultPageFrozenComparisonOffersReviewableCandidate),
     ("Demo inventory budget derives from frozen stock facts", TestDemoInventoryBudgetUsesFrozenFacts),
     ("Standard DDMRP sizing returns 80 120 70 with an explainable green driver", TestStandardDdmrpSizingReturns80_120_70),
     ("Standard DDMRP reference is calculated by an internal backend service", TestDdmrpStandardReferenceIsBackendCalculated),
@@ -565,6 +566,131 @@ static void TestDemoScenarioTemplatesCoverFeasibilityOutcomes()
     var constrained = outcomes["TPL-CONSTRAINED"];
     AssertTrue(constrained.PeakLoadPercent > 100m || constrained.SupplyGap > 0m,
         "constrained template should remain an explicit blocked candidate");
+}
+
+static void TestDefaultPageFrozenComparisonOffersReviewableCandidate()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-default-page-comparison-{Guid.NewGuid():N}.db");
+    try
+    {
+        var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var page = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml"));
+        var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+
+        decimal PageNumber(string id)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                page,
+                $"id=\"{System.Text.RegularExpressions.Regex.Escape(id)}\"[^>]*value=\"(?<value>[0-9.]+)\"",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            if (!match.Success) throw new InvalidOperationException($"page default value missing for {id}");
+            return decimal.Parse(match.Groups["value"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var responseMultiplierMatch = System.Text.RegularExpressions.Regex.Match(
+            script,
+            "capacityMultiplier:\\s*(?<value>[0-9.]+),\\s*reason:\\s*\"临时能力响应\"",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        AssertTrue(responseMultiplierMatch.Success, "page response builder must expose the temporary-capacity demo multiplier");
+        var temporaryCapacityMultiplier = decimal.Parse(
+            responseMultiplierMatch.Groups["value"].Value,
+            System.Globalization.CultureInfo.InvariantCulture);
+        foreach (var checkedResponseId in new[] { "response-temporary-capacity", "response-policy-cover", "response-supply-recovery" })
+        {
+            AssertTrue(page.Contains($"id=\"{checkedResponseId}\" type=\"checkbox\" checked", StringComparison.Ordinal),
+                $"default page response {checkedResponseId} must be checked");
+        }
+        AssertTrue(script.Contains("[3, 4, 5, 6, 7, 8, 9].map(week", StringComparison.Ordinal)
+            && page.Contains("在风险与恢复窗口增加受影响资源能力", StringComparison.Ordinal),
+            "default temporary capacity must cover the risk window and its replenishment recovery tail");
+
+        var validationData = SeedData.Create();
+        var source = new SeedScenarioWorkspaceDataSource(validationData);
+        var workspace = source.Load(new ScenarioWorkspaceDataRequest(12, new DateOnly(2026, 6, 1)));
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(validationData), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("页面默认计划员", "页面默认冻结比较端到端测试"));
+        var resourceCode = workspace.Resources.First().Code;
+        var supplierRisk = workspace.SupplierCapacityWindows
+            .Select(item => new { item.Supplier, item.MaterialFamily })
+            .Distinct()
+            .OrderBy(item => $"{item.Supplier}|{item.MaterialFamily}", StringComparer.Ordinal)
+            .First();
+        var sku = workspace.Skus.First();
+        var externalScenario = new ExternalScenarioDefinition(
+            "EXT-DEFAULT-PAGE",
+            "页面默认外部风险场景",
+            DemandChanges: new[]
+            {
+                new ExternalDemandChange(null, null, 2, 8, PageNumber("external-demand-multiplier"), "外部需求变化")
+            },
+            SupplyRisks: new[]
+            {
+                new ExternalSupplyRisk(supplierRisk.Supplier, supplierRisk.MaterialFamily, 3, 8, PageNumber("external-supply-multiplier"), "供应能力风险")
+            },
+            CapacityLosses: new[]
+            {
+                new ExternalCapacityLoss(resourceCode, 3, 6, PageNumber("external-capacity-multiplier"), "已知能力损失")
+            },
+            KnownEvents: new[] { new ExternalKnownEvent("EVENT-UI-001", "已知业务窗口", 2, 8) },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual", null, null, "页面默认计划员", "2026-07-20T08:00:00Z",
+                "2026-07-20", "2026-09-30", "页面默认人工场景", "人工录入：页面默认人工场景"));
+        var frozenSupplyWindows = frozen.Payload.PlanningInputs!.SupplierCapacityWindows;
+        var responses = new[]
+        {
+            new ResponseConfiguration(
+                "RESP-TEMP-CAPACITY",
+                "临时能力",
+                new ScenarioRunParameterSet(CapacityAdjustments: Enumerable.Range(3, 7)
+                    .Select(week => new ResourceCapacityAdjustment(resourceCode, week, temporaryCapacityMultiplier, "临时能力响应"))
+                    .ToList())),
+            new ResponseConfiguration(
+                "RESP-POLICY-COVER",
+                "MOQ / 订货周期覆盖",
+                new ScenarioRunParameterSet(SkuPolicyOverrides: new[]
+                {
+                    new SkuPolicyOverride(sku.Sku, Math.Max(1m, sku.MinimumOrderQuantity * 0.8m), Math.Max(1, sku.OrderCycleDays - 2))
+                })),
+            new ResponseConfiguration(
+                "RESP-SUPPLY-RECOVERY",
+                "供应响应",
+                new ScenarioRunParameterSet(SupplierCapacityLimits: frozenSupplyWindows
+                    .Where(item => item.Supplier == supplierRisk.Supplier
+                        && item.MaterialFamily == supplierRisk.MaterialFamily
+                        && item.Week is >= 3 and <= 8)
+                    .Select(item => new SupplierCapacityLimit(item.Supplier, item.MaterialFamily, item.Week, item.Week, item.CommittedCapacity))
+                    .ToList()))
+        };
+        var previewService = new ScenarioRunPreviewService(source);
+        var comparisonService = new ScenarioComparisonService(
+            baselineService,
+            previewService,
+            new SeedScenarioAssumptionSource());
+        var comparison = comparisonService.Compare(new ScenarioComparisonRequest(frozen.SnapshotId, externalScenario, responses, 12));
+
+        AssertEqual(4, comparison.AllCases.Count, "default page compares no response and its three checked response configurations");
+        AssertTrue(comparison.AllCases.All(item => item.Preview.Feasibility!.Checks.Single(check => check.Code == "Evidence").Status == "Green"),
+            "every default page comparison case must retain complete physical inventory evidence");
+        var reviewable = comparison.AllCases
+            .Where(item => item.Preview.Feasibility!.Status != "Blocked" && item.Preview.Scenario.Metrics.PeakLoadPercent <= 100m)
+            .ToList();
+        var diagnostics = string.Join("；", comparison.AllCases.Select(item =>
+        {
+            var peak = item.Preview.Scenario.Plan.CapacityLoads.MaxBy(load => load.LoadPercent)!;
+            var red = string.Join("/", item.Preview.Feasibility!.Checks.Where(check => check.Status == "Red").Select(check => check.Code));
+            return $"{item.ResponseId}={item.Preview.Feasibility.Status},峰值{item.Preview.Scenario.Metrics.PeakLoadPercent:0.0}%({peak.ResourceCode}/第{peak.Week}周),红项{red}";
+        }));
+        AssertTrue(reviewable.Count > 0,
+            $"default page must offer at least one evidence-complete reviewable candidate without relaxing the 100% hard capacity gate: {diagnostics}");
+        var persistence = new ScenarioRunPersistenceService(previewService, comparisonService, databasePath);
+        AssertEqual(0, persistence.List(50).Count,
+            "running the default comparison must not automatically save or select a candidate");
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
 }
 
 static void TestDemoInventoryBudgetUsesFrozenFacts()

@@ -164,6 +164,92 @@ async function executableDdomCreateHasInFlightGate() {
   expect(loaded.length === 1 && loaded[0] === "PKG-001", "created package must reload once");
 }
 
+async function executableFailurePrefillClearsStaleMasterSettingChange() {
+  const elements = new Map([
+    ["coordination-related-scenario", {
+      value: "",
+      options: [{ value: "" }, { value: "RUN-BLOCKED" }],
+    }],
+    ["coordination-related-ddom-package", {
+      value: "",
+      options: [{ value: "" }, { value: "PKG-FAILED" }],
+    }],
+    ["coordination-related-change", { value: "MSC-STALE" }],
+    ["coordination-title", { value: "" }],
+    ["coordination-impact-objects", { value: "" }],
+    ["coordination-decision-required", { value: "" }],
+  ]);
+  const context = vm.createContext({
+    console,
+    state: {
+      currentDdomPackageDetail: {
+        summary: { packageId: "PKG-FAILED", sourceScenarioRunId: "RUN-BLOCKED" },
+        latestValidation: { failureReasons: ["服务门槛未通过"] },
+      },
+    },
+    byId: id => elements.get(id),
+    valueOr: (value, fallback) => value ?? fallback,
+    configureCoordinationLineageSelectors() {},
+    navigateWorkspace() {},
+    fetch: async () => jsonResponse({
+      result: { feasibility: { checks: [{ status: "Red", message: "产能门槛未通过" }] } },
+    }),
+  });
+  const prefillSource = body("prefillCoordinationFailure", "openScenarioCoordination").replace(/\s*async\s*$/, "");
+  vm.runInContext(`${prefillSource}\n${functionSource("openScenarioCoordination")}\n${functionSource("openDdomValidationCoordination")}\nglobalThis.__openScenarioCoordination = openScenarioCoordination;\nglobalThis.__openDdomValidationCoordination = openDdomValidationCoordination;`, context);
+
+  await context.__openScenarioCoordination("RUN-BLOCKED");
+  expect(elements.get("coordination-related-change").value === "",
+    "scenario failure prefill must clear a stale master-setting change link");
+
+  elements.get("coordination-related-change").value = "MSC-STALE-AGAIN";
+  await context.__openDdomValidationCoordination("PKG-FAILED");
+  expect(elements.get("coordination-related-change").value === "",
+    "DDOM validation failure prefill must clear a stale master-setting change link");
+}
+
+async function executableOnlyCandidateRunsExposeDdomSelection() {
+  const context = vm.createContext({
+    console,
+    state: { savedScenarioRuns: [], selectedScenarioRunId: null },
+    saveControls: { listBody: { innerHTML: "" } },
+    valueOr: (value, fallback) => value ?? fallback,
+    escapeHtml: value => String(value),
+    statusClass: () => "status-chip",
+    statusLabel: value => value,
+    percent: value => String(value),
+    number: value => String(value),
+    emptyRow: message => message,
+    configureCoordinationLineageSelectors() {},
+  });
+  vm.runInContext(`${functionSource("renderSavedScenarioRuns")}\nglobalThis.__renderSavedScenarioRuns = renderSavedScenarioRuns;`, context);
+  const common = {
+    feasibilityStatus: "Adoptable",
+    baselineSnapshotId: "BASE-001",
+    externalScenarioId: "EXT-001",
+    responseId: "RESP-001",
+    createdAtUtc: "2026-07-20T00:00:00Z",
+    name: "候选状态回归",
+    createdBy: "计划员",
+    serviceLevelPercent: 98,
+    peakLoadPercent: 90,
+    supplyGap: 0,
+  };
+  context.__renderSavedScenarioRuns([
+    { ...common, runId: "RUN-CANDIDATE", runNumber: "SR-001", candidateStatus: "Candidate" },
+    { ...common, runId: "RUN-SUPERSEDED", runNumber: "SR-002", candidateStatus: "Superseded" },
+    { ...common, runId: "RUN-WITHDRAWN", runNumber: "SR-003", candidateStatus: "Withdrawn" },
+  ]);
+
+  const html = context.saveControls.listBody.innerHTML;
+  const selectionButtons = html.match(/data-select-ddom-run-id=/g) || [];
+  expect(selectionButtons.length === 1 && html.includes('data-select-ddom-run-id="RUN-CANDIDATE"'),
+    "only Candidate runs may expose the DDOM selection action");
+  expect(!html.includes('data-select-ddom-run-id="RUN-SUPERSEDED"')
+    && !html.includes('data-select-ddom-run-id="RUN-WITHDRAWN"'),
+    "Superseded and Withdrawn runs must never expose DDOM selection");
+}
+
 for (const id of new Set([...script.matchAll(/byId\("([^"]+)"\)/g)].map(match => match[1]))) {
   expect(page.includes(`id="${id}"`), `static byId target is missing from Index.cshtml: ${id}`);
 }
@@ -317,4 +403,6 @@ expect(!outcome.includes("/api/ddom-change-packages") && !outcome.includes("ddom
 await executableNestedSaveResponseUsesSummary();
 await executableScenarioDetailDropsOutOfOrder404();
 await executableDdomCreateHasInFlightGate();
+await executableOnlyCandidateRunsExposeDdomSelection();
+await executableFailurePrefillClearsStaleMasterSettingChange();
 console.log("task-6 persisted UI fixture passed");

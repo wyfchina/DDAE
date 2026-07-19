@@ -3137,6 +3137,8 @@ function renderSavedScenarioRuns(runs) {
         ? `<button class="button secondary compact-button" type="button" data-enter-ddom-run-id="${escapeHtml(item.runId)}">进入 DDOM 配置决策</button>`
         : item.feasibilityStatus === "Blocked"
           ? `<button class="button secondary compact-button" type="button" data-revise-blocked-run-id="${escapeHtml(item.runId)}">创建协调事项并修订方案</button>`
+          : item.candidateStatus !== "Candidate"
+            ? `<span class="muted-note">${escapeHtml(statusLabel(item.candidateStatus || "Candidate"))}，不可选定</span>`
           : isReviewable && hasCompleteFrozenLineage
             ? `<button class="button primary compact-button" type="button" data-select-ddom-run-id="${escapeHtml(item.runId)}">选定为 DDOM 候选</button>`
             : isReviewable
@@ -6208,7 +6210,7 @@ function buildResponseConfigurations(resourceCode, supplyRisk) {
   const frozenSupplyWindows = state.futureComparisonBaseline?.payload?.planningInputs?.supplierCapacityWindows || [];
   const responseOptions = [];
   if (byId("response-temporary-capacity").checked && resourceCode) {
-    responseOptions.push({ responseId: "RESP-TEMP-CAPACITY", name: "临时能力", parameters: { capacityAdjustments: [3, 4, 5, 6].map(week => ({ resourceCode, week, capacityMultiplier: 1.35, reason: "临时能力响应" })) } });
+    responseOptions.push({ responseId: "RESP-TEMP-CAPACITY", name: "临时能力", parameters: { capacityAdjustments: [3, 4, 5, 6, 7, 8, 9].map(week => ({ resourceCode, week, capacityMultiplier: 1.35, reason: "临时能力响应" })) } });
   }
   if (byId("response-policy-cover").checked && sku) {
     responseOptions.push({ responseId: "RESP-POLICY-COVER", name: "MOQ / 订货周期覆盖", parameters: { skuPolicyOverrides: [{ sku: sku.sku, minimumOrderQuantity: Math.max(1, Number(sku.minimumOrderQuantity) * 0.8), orderCycleDays: Math.max(1, Number(sku.orderCycleDays) - 2) }] } });
@@ -6713,8 +6715,10 @@ function prefillCoordinationFailure({ scenarioRunId = null, ddomPackageId = null
   const reasonText = valueOr(failureReasons, []).filter(Boolean).join("；") || "需要跨部门复核阻断原因并修订方案";
   const scenarioSelect = byId("coordination-related-scenario");
   const packageSelect = byId("coordination-related-ddom-package");
+  const changeSelect = byId("coordination-related-change");
   scenarioSelect.value = "";
   packageSelect.value = "";
+  changeSelect.value = "";
   if (scenarioRunId && [...scenarioSelect.options].some(option => option.value === scenarioRunId)) scenarioSelect.value = scenarioRunId;
   if (ddomPackageId && [...packageSelect.options].some(option => option.value === ddomPackageId)) packageSelect.value = ddomPackageId;
   byId("coordination-title").value = `${sourceLabel}需协调修订`;
