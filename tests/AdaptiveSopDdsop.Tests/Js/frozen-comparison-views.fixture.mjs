@@ -61,7 +61,12 @@ function createRuntime(source, scriptPath) {
       },
       querySelector: () => null,
       querySelectorAll: () => [],
-      closest: () => null,
+      closest(selector) {
+        const dataMatch = selector.match(/^\[data-([a-z0-9-]+)\]$/i);
+        if (!dataMatch) return null;
+        const datasetKey = dataMatch[1].replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+        return element.dataset[datasetKey] === undefined ? null : element;
+      },
       contains: () => false,
       getBoundingClientRect: () => ({ top: 0, left: 0, width: 100, height: 20, bottom: 20, right: 100 }),
     };
@@ -79,6 +84,13 @@ function createRuntime(source, scriptPath) {
     documentElement: createElement("fixture-html"),
     addEventListener(type, handler) { documentListeners.set(type, [...(documentListeners.get(type) || []), handler]); },
     removeEventListener() {},
+    dispatchEvent(event) {
+      event.target ??= document;
+      event.currentTarget = document;
+      event.preventDefault ??= () => { event.defaultPrevented = true; };
+      for (const handler of documentListeners.get(event.type) || []) handler(event);
+      return !event.defaultPrevented;
+    },
   };
   const window = {
     document,
@@ -106,7 +118,7 @@ function createRuntime(source, scriptPath) {
   });
   context.globalThis = context;
   new vm.Script(source, { filename: scriptPath }).runInContext(context);
-  return { context, elements, element: createElement, fetchCalls };
+  return { context, document, elements, element: createElement, fetchCalls };
 }
 
 function readVm(runtime, expression) {
@@ -147,6 +159,14 @@ function addDisplaySentinels(comparison) {
       scopeType: "CapacityBuffer", target: `${marker}-BREACH`, evidenceStatus: "Complete",
       isBreached: true, earliestRedWeek: 1, consecutiveRiskWeeks: 1, isUnrecovered: false,
       recoveryWeek: 2, affectedProducts: [marker], primaryCause: marker,
+    }, {
+      scopeType: "TimeBuffer", target: `${marker}-TIME`, evidenceStatus: "Complete",
+      isBreached: true, earliestRedWeek: 1, consecutiveRiskWeeks: 1, isUnrecovered: false,
+      recoveryWeek: 2, affectedProducts: [marker], primaryCause: `${marker}-TIME`,
+    }];
+    item.timeBufferProjection = [{
+      bufferId: `${marker}-TIME`, controlPoint: marker, week: 1, evidenceStatus: "Complete",
+      status: "Green", penetrationPercent: 1, cause: marker,
     }];
   });
   return comparison;
@@ -166,13 +186,16 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
   const page = await readFile(defaultPagePath, "utf8");
   const comparison = addDisplaySentinels(structuredClone(payload.comparison));
   const runtime = createRuntime(source, scriptPath);
-  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-ccr-utilization-body", "future-capacity-utilization-distribution", "future-breach-body"]
+  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-ccr-utilization-body", "future-capacity-utilization-distribution", "future-breach-body", "future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]
     .forEach(id => runtime.element(id));
   const failures = [];
   const expectedResponseIds = comparison.allCases.map(item => item.responseId);
   const selectedCase = comparison.allCases.find(item => item.responseId === comparison.responseCases[1].responseId);
   assert.ok(selectedCase, "fixture must resolve the selected response from comparison.allCases");
   const unselectedCases = comparison.allCases.filter(item => item.responseId !== selectedCase.responseId);
+  const selectedTimeBreach = selectedCase.breaches.find(item => item.scopeType === "TimeBuffer");
+  selectedTimeBreach.evidenceStatus = "EvidenceMissing";
+  selectedCase.timeBufferProjection[0].evidenceStatus = "EvidenceMissing";
 
   runtime.context.__comparisonFixture = comparison;
   vm.runInContext("renderFutureComparison(__comparisonFixture);", runtime.context);
@@ -244,6 +267,30 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
     assert.equal(runtime.fetchCalls.length, fetchCallCount, "viewing a frozen response must not fetch, save, select, approve, publish, or make it effective");
     assert.deepEqual(readVm(runtime, "({ savedFutureComparisons: state.savedFutureComparisons, savedScenarioRuns: state.savedScenarioRuns, selectedScenarioRunId: state.selectedScenarioRunId, ddomPackages: state.ddomPackages, selectedDdomPackageId: state.selectedDdomPackageId, currentDdomPackageDetail: state.currentDdomPackageDetail, currentMasterSettingDetail: state.currentMasterSettingDetail, selectedMasterChangeId: state.selectedMasterChangeId })"), workflowBefore,
       "viewing a frozen response must not mutate save/select/approve/publish/effective workflow state");
+  });
+
+  collect(failures, "delegated result selectors", () => {
+    const selectorIds = ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"];
+    const selectors = selectorIds.map(id => runtime.element(id));
+    selectors.forEach(control => { control.dataset.futureResultCaseSelect = ""; });
+    const switchedResponseId = comparison.responseCases[0].responseId;
+    selectors[2].value = switchedResponseId;
+    runtime.document.dispatchEvent({ type: "change", target: selectors[2] });
+    const optionIds = selectors.map(control => [...control.innerHTML.matchAll(/<option value="([^"]+)"/g)].map(match => match[1]));
+    optionIds.forEach(ids => assert.deepEqual(ids, expectedResponseIds,
+      "every selector must expose the identical frozen response IDs"));
+    selectors.forEach(control => assert.equal(control.value, switchedResponseId,
+      "delegated selection must synchronize every result selector"));
+  });
+
+  collect(failures, "selected time-buffer evidence isolation", () => {
+    vm.runInContext("selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    const markup = ["time-buffer-breach-select", "time-buffer-breach-summary", "time-buffer-breach-weekly-grid"]
+      .map(id => runtime.elements.get(id).innerHTML).join("\n");
+    assert.ok(markup.includes(selectedCase.name), "selected missing-evidence case must remain visible in time-buffer detail");
+    assert.ok(markup.includes("证据缺失"), "selected missing evidence must remain missing");
+    unselectedCases.forEach(item => assert.ok(!markup.includes(item.name),
+      `time-buffer detail must not retain ${item.responseId} evidence after switching`));
   });
 
   for (const id of ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]) {

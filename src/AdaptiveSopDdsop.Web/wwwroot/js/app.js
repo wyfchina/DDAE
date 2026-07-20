@@ -6372,7 +6372,13 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
     weeklyGrid.innerHTML = `<div class="table-empty"><strong>运行冻结基线比较后显示时间缓冲证据</strong></div>`;
     return;
   }
-  const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
+  const allCases = futureComparisonCases(result);
+  const selectedResponseId = result === state.futureComparison
+    ? state.futureComparisonSelection.responseId
+    : null;
+  const cases = selectedResponseId
+    ? allCases.filter(item => item.responseId === selectedResponseId)
+    : allCases;
   const planningInputs = baselineDetail?.payload?.planningInputs;
   const definitions = planningInputs && planningInputs.timeBuffers ? planningInputs.timeBuffers : [];
   const timeBufferResults = cases.flatMap(item => (item.breaches || [])
