@@ -655,6 +655,7 @@
                 <section id="multi-scenario-comparison-panel" class="budget-panel">
                     <div class="panel-heading compact-heading">
                         <div><span class="panel-kicker">多方案比较</span><h2>候选组合 KPI 对比</h2></div>
+                        <label class="inline-select"><span>查看方案</span><select id="future-result-case-select" data-future-result-case-select><option value="">请先运行比较</option></select></label>
                     </div>
                     <div class="table-scroll">
                         <table class="data-table">
@@ -819,7 +820,7 @@
                                 <aside id="buffer-inventory-options" class="buffer-inventory-options" aria-label="库存选项"></aside>
                                 <div class="buffer-chart-area">
                                     <div class="buffer-evidence-selection" aria-label="库存证据选择">
-                                        <label><span>方案</span><select id="buffer-case-select"><option value="scenario">响应方案</option><option value="baseline">基准方案</option></select></label>
+                                        <label><span>方案</span><select id="buffer-case-select" data-future-result-case-select><option value="scenario">响应方案</option><option value="baseline">基准方案</option></select></label>
                                         <label><span>周段</span><select id="buffer-week-range-select"><option value="1-12">第 1 至 12 周</option></select></label>
                                         <small>同一选择同步更新三项证据</small>
                                     </div>
@@ -908,6 +909,7 @@
                     <div class="panel-heading">
                         <div><span class="panel-kicker">需求驱动 RCCP</span><h2>产品级资源负荷工作台</h2></div>
                         <span id="rccp-case-chip" class="status-chip neutral">基准方案</span>
+                        <label class="inline-select"><span>查看方案</span><select id="rccp-case-select" data-future-result-case-select><option value="">请先运行比较</option></select></label>
                     </div>
                     <div id="rccp-kpis" class="rccp-kpis" aria-label="RCCP 关键指标"></div>
                     <p class="muted-note rccp-load-note">RCCP 负荷按预计补货订单在释放周折算；补货订单释放周压力，不等于设备持续利用率。</p>
@@ -963,7 +965,7 @@
                 </section>
 
                 <section id="projected-supply-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/supply-risk" hidden>
-                    <div class="panel-heading"><div><span class="panel-kicker">预计供应需求</span><h2>供应商需求钻取</h2></div></div>
+                    <div class="panel-heading"><div><span class="panel-kicker">预计供应需求</span><h2>供应商需求钻取</h2></div><label class="inline-select"><span>查看方案</span><select id="supplier-case-select" data-future-result-case-select><option value="">请先运行比较</option></select></label></div>
                     <div id="supplier-collaboration-kpis" class="rccp-kpis" aria-label="供应商需求钻取关键指标"></div>
                     <div class="rccp-workbench">
                         <section class="rccp-block">
@@ -993,6 +995,7 @@
                 <section id="variance-panel" class="schedule-panel workspace-section workspace-route-view" data-workspace-route="#future-scenario-panel/breach-analysis" hidden>
                     <div class="panel-heading">
                         <div><span class="panel-kicker">异常分析</span><h2>异常列表驱动场景</h2></div>
+                        <label class="inline-select"><span>查看方案</span><select id="breach-case-select" data-future-result-case-select><option value="">请先运行比较</option></select></label>
                         <button id="apply-exception-to-scenario" class="button primary" type="button">带入场景</button>
                     </div>
                     <section class="stage-card">

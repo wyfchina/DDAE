@@ -8359,8 +8359,10 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("state.data?.ddmrpParameters", StringComparison.Ordinal), "DDMRP drawer should read from state data");
     AssertTrue(script.Contains("state.data?.guardrails", StringComparison.Ordinal), "guardrail drawer should read from state data");
     AssertTrue(script.Contains("renderMultiScenarioComparison", StringComparison.Ordinal), "script should render multi-scenario comparison");
-    AssertTrue(script.Contains("candidateImpactMatrix", StringComparison.Ordinal), "script should consume candidate impact matrix");
-    AssertTrue(script.Contains("管理取舍", StringComparison.Ordinal), "script should expose management trade-off labels");
+    AssertTrue(script.Contains("futureComparisonCases", StringComparison.Ordinal)
+        && script.Contains("data-future-result-case-select", StringComparison.Ordinal),
+        "script should consume frozen comparison cases through unified result selectors");
+    AssertTrue(script.Contains("后端可行性缺失", StringComparison.Ordinal), "script should preserve backend feasibility evidence labels");
     AssertTrue(css.Contains("width: calc(100vw - 48px)", StringComparison.Ordinal), "focused panel should use the available viewport width");
     AssertTrue(!script.Contains("cloneNode", StringComparison.Ordinal), "focused panel should move existing DOM rather than clone stable nodes");
     AssertTrue(script.Contains("initializeCollapsiblePanels", StringComparison.Ordinal), "script should initialize collapsible workspace panels");

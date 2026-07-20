@@ -48,6 +48,9 @@ const state = {
   currentBaselines: [],
   scenarioAssumptionTemplates: [],
   futureComparison: null,
+  futureComparisonSelection: {
+    responseId: null,
+  },
   futureComparisonRequest: null,
   futureComparisonBaseline: null,
   selectedTimeBufferBreachKey: null,
@@ -1835,7 +1838,7 @@ function renderScenarioComparison(data) {
       </div>
     </div>
   `).join("");
-  renderMultiScenarioComparison(null);
+  if (!state.futureComparison) renderMultiScenarioComparison(null);
 }
 
 function renderPreviewKpis(result) {
@@ -1902,40 +1905,63 @@ function renderMultiScenarioComparison(result) {
     return;
   }
 
-  const comparisons = valueOr(result?.combinationComparisons, []);
-  comparisonBody.innerHTML = comparisons.length
-    ? comparisons.map(item => row([
-      `<strong>${escapeHtml(item.profileName)}</strong><br><small>${escapeHtml(item.profileId)}</small>`,
-      `${number(item.serviceLevelDelta)}pp`,
-      `${number(item.flowIndexDelta)}pp`,
-      metricOrEvidenceMissing(item.averageInventoryValueDelta, money),
-      `${number(item.peakLoadPercentDelta)}pp`,
-      number(item.redSkuCountDelta),
-      number(item.supplyGapDelta),
-      number(item.replenishmentOrderCountDelta),
-      money(item.estimatedActionCost),
-      `<span class="${item.managementDecision === "需要管理取舍" ? "status-chip is-invalid" : item.managementDecision.includes("复核") || item.managementDecision.includes("评审") ? "status-chip is-warning" : "status-chip is-valid"}">${escapeHtml(item.managementDecision)}</span>`,
+  const cases = futureComparisonCases(result);
+  const baselineMetrics = result?.noResponse?.preview?.scenario?.metrics;
+  const delta = (item, metric) => {
+    const value = item?.preview?.scenario?.metrics?.[metric];
+    const baseline = baselineMetrics?.[metric];
+    return value === null || value === undefined || baseline === null || baseline === undefined
+      ? null
+      : Number(value) - Number(baseline);
+  };
+  const points = value => value === null || value === undefined ? "证据缺失" : `${number(value)}pp`;
+  const count = value => value === null || value === undefined ? "证据缺失" : number(value);
+  comparisonBody.innerHTML = cases.length
+    ? cases.map(item => row([
+      `<strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(item.responseId)}</small>`,
+      points(delta(item, "serviceLevelPercent")),
+      points(delta(item, "flowIndex")),
+      metricOrEvidenceMissing(delta(item, "averageInventoryValue"), money),
+      points(delta(item, "peakLoadPercent")),
+      count(delta(item, "redSkuCount")),
+      count(delta(item, "supplyGap")),
+      count(delta(item, "replenishmentOrderCount")),
+      "证据缺失",
+      `<span class="status-chip ${item.preview?.feasibility?.status === "Blocked" || item.preview?.feasibility?.isBlocked ? "is-invalid" : item.preview?.feasibility?.status === "Adoptable" ? "is-valid" : "is-warning"}">${escapeHtml(item.preview?.feasibility?.label || "后端可行性缺失")}</span>`,
     ])).join("")
     : emptyRow("选择候选组合后显示多方案 KPI、库存、服务和订单变化。", 10);
 
-  const matrix = valueOr(result?.candidateImpactMatrix, []);
-  matrixBody.innerHTML = matrix.length
-    ? matrix.map(item => row([
-      `<strong>${escapeHtml(item.actionType)}</strong><br><small>${escapeHtml(item.candidateId)}</small>`,
-      escapeHtml(item.target),
-      `${number(item.serviceImpactPercent)}pp`,
-      metricOrEvidenceMissing(item.inventoryImpactValue, money),
-      `${number(item.peakLoadImpactPercent)}pp`,
-      number(item.supplyGapImpact),
-      number(item.replenishmentOrderImpact),
-      `<strong>${money(item.estimatedCost)}</strong><br><small>${escapeHtml(item.costBasis)}</small>`,
-      escapeHtml(item.constraintNote),
-      `<span class="${item.feasibilityStatus === "需要管理取舍" ? "status-chip is-invalid" : item.feasibilityStatus.includes("复核") ? "status-chip is-warning" : "status-chip is-valid"}">${escapeHtml(item.feasibilityStatus)}</span>`,
-    ])).join("")
+  const responseCases = cases.filter(item => item.responseId !== "NO_RESPONSE");
+  matrixBody.innerHTML = responseCases.length
+    ? responseCases.map(item => {
+      const feasibility = item.preview?.feasibility || {};
+      const constraints = valueOr(feasibility.violations, feasibility.constraintMode || "后端约束证据缺失");
+      return row([
+        `<strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(item.responseId)}</small>`,
+        escapeHtml(item.externalScenarioId || "外部场景"),
+        points(delta(item, "serviceLevelPercent")),
+        metricOrEvidenceMissing(delta(item, "averageInventoryValue"), money),
+        points(delta(item, "peakLoadPercent")),
+        count(delta(item, "supplyGap")),
+        count(delta(item, "replenishmentOrderCount")),
+        "证据缺失",
+        escapeHtml(Array.isArray(constraints) ? constraints.join("；") || "无后端约束" : constraints),
+        `<span class="status-chip ${feasibility.status === "Blocked" || feasibility.isBlocked ? "is-invalid" : feasibility.status === "Adoptable" ? "is-valid" : "is-warning"}">${escapeHtml(feasibility.label || "后端可行性缺失")}</span>`,
+      ]);
+    }).join("")
     : emptyRow("候选动作影响矩阵将在候选组合选择后显示。", 10);
 }
 
 function futureInventoryCases(fallbackTrend = null) {
+  const frozenCases = futureComparisonCases();
+  if (frozenCases.length) return frozenCases.map(item => ({
+    caseId: item.responseId,
+    responseId: item.responseId,
+    name: item.name,
+    bufferTrend: item.preview?.scenario?.bufferTrend,
+    inventoryFlow: item.preview?.scenario?.inventoryFlow,
+    scenarioMetricEvidence: item.preview?.scenario?.scenarioMetricEvidence,
+  })).filter(item => item.bufferTrend);
   const previewCases = [state.preview?.baseline, state.preview?.scenario]
     .filter(item => item?.bufferTrend);
   const fallbackBelongsToPreview = fallbackTrend && previewCases.some(item => item.bufferTrend === fallbackTrend);
@@ -2051,9 +2077,13 @@ function scopedFutureBufferDetailForCharts(detail) {
 function renderFutureInventorySelectionControls(selection) {
   const caseSelect = byId("buffer-case-select");
   const weekSelect = byId("buffer-week-range-select");
-  caseSelect.innerHTML = selection.cases.map(item =>
-    `<option value="${escapeHtml(item.caseId)}">${escapeHtml(caseLabel(item.name))}</option>`).join("");
-  caseSelect.value = selection.caseId;
+  if (state.futureComparison) {
+    renderFutureComparisonSelectors();
+  } else {
+    caseSelect.innerHTML = selection.cases.map(item =>
+      `<option value="${escapeHtml(item.caseId)}">${escapeHtml(caseLabel(item.name))}</option>`).join("");
+    caseSelect.value = selection.caseId;
+  }
 
   const ranges = [{ from: selection.minimumWeek, through: selection.maximumWeek }];
   for (let from = selection.minimumWeek; from <= selection.maximumWeek; from += 4) {
@@ -4943,7 +4973,7 @@ function renderCapacityBandDistribution(hostId, observations) {
     const share = counts[band] * 100 / total;
     return `<span class="capacity-distribution-segment ${capacityUtilizationBandClass(band)}" style="width:${share}%" title="${escapeHtml(capacityUtilizationBandLabel(band))} · ${number(counts[band])} 个观测"></span>`;
   }).join("");
-  const legend = bands.map(band => `<span><i class="${capacityUtilizationBandClass(band)}"></i>${escapeHtml(capacityUtilizationBandLabel(band))}<strong>${number(counts[band])}</strong></span>`).join("");
+  const legend = bands.map(band => `<span><i class="${capacityUtilizationBandClass(band)}"></i>${capacityUtilizationBandLabel(band)}<strong>${number(counts[band])}</strong></span>`).join("");
   host.innerHTML = `<div class="capacity-distribution-bar">${segments}</div><div class="capacity-distribution-legend">${legend}</div>`;
 }
 
@@ -6479,7 +6509,9 @@ function renderTimeBufferBreachEvidence(result, baselineDetail) {
 }
 
 function renderFutureCapacityProtection(result) {
-  const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
+  const availableCases = futureComparisonCases(result);
+  const selectedCase = availableCases.find(item => item.responseId === state.futureComparisonSelection.responseId);
+  const cases = selectedCase ? [selectedCase] : availableCases;
   const projectionRows = cases.flatMap(item => (item.capacityProtectionProjection || []).map(point => ({ caseName: item.name, ...point })));
   byId("future-capacity-protection-body").innerHTML = projectionRows.length
     ? projectionRows.map(item => {
@@ -6536,22 +6568,100 @@ function preferredFutureComparisonCase(cases) {
     || null;
 }
 
+function futureComparisonCases(result = state.futureComparison) {
+  if (!result) return [];
+  const allCases = Array.isArray(result.allCases) && result.allCases.length
+    ? result.allCases
+    : [result.noResponse, ...(result.responseCases || [])];
+  return allCases.filter(Boolean);
+}
+
+function selectedFutureComparisonCase() {
+  const cases = futureComparisonCases();
+  return cases.find(item => item.responseId === state.futureComparisonSelection.responseId)
+    || preferredFutureComparisonCase(cases)
+    || cases[0]
+    || null;
+}
+
+function renderFutureComparisonSelectors(cases = futureComparisonCases()) {
+  const selectedCase = selectedFutureComparisonCase();
+  const optionHtml = cases.map(item => {
+    const feasibility = item.preview?.feasibility || { label: "后端可行性缺失" };
+    return `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)} · ${escapeHtml(feasibility.label)}</option>`;
+  }).join("");
+  ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]
+    .forEach(id => {
+      const select = byId(id);
+      select.innerHTML = optionHtml;
+      select.value = selectedCase?.responseId || "";
+    });
+  const saveResponseSelect = byId("future-comparison-save-response-id");
+  saveResponseSelect.innerHTML = optionHtml;
+  saveResponseSelect.value = selectedCase?.responseId || "";
+}
+
+function renderFutureBreachWorkspace(result) {
+  const availableCases = futureComparisonCases(result);
+  const selectedCase = availableCases.find(item => item.responseId === state.futureComparisonSelection.responseId);
+  const cases = selectedCase ? [selectedCase] : availableCases;
+  const breachRows = cases.flatMap(item => valueOr(item.breaches, []).map(breach => ({ caseName: item.name, ...breach })));
+  byId("future-breach-body").innerHTML = breachRows.length
+    ? breachRows.map(item => {
+      const breachEvidenceAvailable = item.evidenceStatus === "Complete";
+      const unavailableEvidence = item.evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
+      return row([
+        escapeHtml(item.caseName),
+        escapeHtml(breachScopeLabel(item.scopeType)),
+        escapeHtml(item.target),
+        !breachEvidenceAvailable ? unavailableEvidence : item.isBreached ? `第 ${number(item.earliestRedWeek)} 周` : "未击穿",
+        !breachEvidenceAvailable ? unavailableEvidence : item.isBreached ? `${number(item.consecutiveRiskWeeks)} 周` : "不适用",
+        !breachEvidenceAvailable ? unavailableEvidence : !item.isBreached ? "不适用" : item.isUnrecovered ? `<span class="status-chip is-invalid">展望期未恢复</span>` : metricOrEvidenceMissing(item.recoveryWeek, value => `第 ${number(value)} 周`),
+        !breachEvidenceAvailable ? unavailableEvidence : escapeHtml((item.affectedProducts || []).join("、") || "不适用"),
+        !breachEvidenceAvailable ? unavailableEvidence : escapeHtml(businessEvidenceLabel(item.primaryCause)),
+      ]);
+    }).join("")
+    : emptyRow("没有可计算的保护击穿证据", 8);
+}
+
+function selectFutureComparisonCase(responseId, result = state.futureComparison) {
+  const cases = futureComparisonCases();
+  const selectedCase = cases.find(item => item.responseId === responseId)
+    || preferredFutureComparisonCase(cases)
+    || cases[0];
+  if (!selectedCase) return;
+  state.futureComparisonSelection.responseId = selectedCase.responseId;
+  state.bufferTrend = selectedCase.preview?.scenario?.bufferTrend || null;
+  state.rccp = selectedCase.preview?.scenario?.rccp || null;
+  state.constraints = selectedCase.preview?.scenario?.constraints || null;
+  state.supplierCollaboration = selectedCase.preview?.scenario?.supplierCollaboration || null;
+  state.futureInventorySelection.caseId = selectedCase.responseId;
+  state.futureInventorySelection.weekFrom = 1;
+  state.futureInventorySelection.weekThrough = null;
+  renderFutureComparisonSelectors(cases);
+  renderMultiScenarioComparison(state.futureComparison);
+  renderBufferTrendWorkspace(state.bufferTrend);
+  renderProductRccp(state.rccp, selectedCase.name);
+  renderConstraintWorkspace(state.constraints);
+  renderSupplierCollaborationWorkspace(state.supplierCollaboration);
+  renderFutureCapacityProtection(state.futureComparison);
+  renderFutureBreachWorkspace(state.futureComparison);
+  renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline);
+}
+
 function renderFutureComparison(result) {
   state.futureComparison = result;
-  const cases = result.allCases || [result.noResponse, ...(result.responseCases || [])];
+  const cases = futureComparisonCases(result);
   const preferredCase = preferredFutureComparisonCase(cases);
-  const optionHtml = cases.map(item => {
-    const feasibility = item.preview?.feasibility || { status: "Blocked", label: "后端可行性缺失", isBlocked: true };
-    const blockedSuffix = feasibility.status === "Blocked" || feasibility.isBlocked ? "（不可选定）" : "";
-    return `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)} · ${escapeHtml(feasibility.label)}${blockedSuffix}</option>`;
-  }).join("");
+  const retainedCase = cases.find(item => item.responseId === state.futureComparisonSelection.responseId);
+  const selectedCase = retainedCase || preferredCase;
   const governanceResponseSelect = byId("governance-response-id");
+  governanceResponseSelect.innerHTML = cases.map(item => `<option value="${escapeHtml(item.responseId)}">${escapeHtml(item.name)}</option>`).join("");
   const saveResponseSelect = byId("future-comparison-save-response-id");
-  governanceResponseSelect.innerHTML = optionHtml;
-  saveResponseSelect.innerHTML = optionHtml;
-  if (preferredCase) {
-    governanceResponseSelect.value = preferredCase.responseId;
-    saveResponseSelect.value = preferredCase.responseId;
+  if (selectedCase) {
+    governanceResponseSelect.value = selectedCase.responseId;
+    state.futureComparisonSelection.responseId = selectedCase.responseId;
+    if (!retainedCase) saveResponseSelect.value = preferredCase.responseId;
   }
   byId("governance-baseline-id").value = result.baselineSnapshotId;
   byId("save-future-comparison").disabled = false;
@@ -6581,25 +6691,7 @@ function renderFutureComparison(result) {
     const breachCountLabel = !breachEvidenceComplete ? "证据缺失" : allBreachEvidenceNotApplicable ? "不适用" : number(breached);
     return `<div class="${cardClasses}"><div class="comparison-case-heading"><h3>${escapeHtml(item.name)}</h3><span class="status-chip ${feasibilityClass}">${escapeHtml(feasibility.label)}${isBlocked ? " · 不可选定" : isPreferred ? " · 默认保存项" : ""}</span></div><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
   }).join("");
-  const breachRows = cases.flatMap(item => item.breaches.map(breach => ({ caseName: item.name, ...breach })));
-  byId("future-breach-body").innerHTML = breachRows.length
-    ? breachRows.map(item => {
-      const breachEvidenceAvailable = item.evidenceStatus === "Complete";
-      const unavailableEvidence = item.evidenceStatus === "NotApplicable" ? "不适用" : "证据缺失";
-      return row([
-        escapeHtml(item.caseName),
-        escapeHtml(breachScopeLabel(item.scopeType)),
-        escapeHtml(item.target),
-        !breachEvidenceAvailable ? unavailableEvidence : item.isBreached ? `第 ${number(item.earliestRedWeek)} 周` : "未击穿",
-        !breachEvidenceAvailable ? unavailableEvidence : item.isBreached ? `${number(item.consecutiveRiskWeeks)} 周` : "不适用",
-        !breachEvidenceAvailable ? unavailableEvidence : !item.isBreached ? "不适用" : item.isUnrecovered ? `<span class="status-chip is-invalid">展望期未恢复</span>` : metricOrEvidenceMissing(item.recoveryWeek, value => `第 ${number(value)} 周`),
-        !breachEvidenceAvailable ? unavailableEvidence : escapeHtml((item.affectedProducts || []).join("、") || "不适用"),
-        !breachEvidenceAvailable ? unavailableEvidence : escapeHtml(businessEvidenceLabel(item.primaryCause)),
-      ]);
-    }).join("")
-    : emptyRow("没有可计算的保护击穿证据", 8);
-  renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline);
-  renderFutureCapacityProtection(result);
+  selectFutureComparisonCase(selectedCase?.responseId, result);
 }
 
 async function saveFutureComparison() {
@@ -7249,8 +7341,15 @@ document.addEventListener("click", event => {
   focusWhiteBoxTraceRecord(link.dataset.whiteBoxRecord);
 });
 
-byId("buffer-case-select").addEventListener("change", event => {
-  state.futureInventorySelection.caseId = event.target.value;
+document.addEventListener("change", event => {
+  const select = event.target.closest("[data-future-result-case-select]");
+  if (!select) return;
+  if (state.futureComparison) {
+    selectFutureComparisonCase(select.value);
+    return;
+  }
+  if (select.id !== "buffer-case-select") return;
+  state.futureInventorySelection.caseId = select.value;
   state.futureInventorySelection.weekFrom = 1;
   state.futureInventorySelection.weekThrough = null;
   renderSelectedFutureInventoryWorkspace();
