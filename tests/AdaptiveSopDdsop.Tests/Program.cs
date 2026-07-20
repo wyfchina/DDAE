@@ -107,6 +107,7 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline blocks incomplete DDMRP sizing evidence", TestCurrentBaselineBlocksIncompleteDdmrpSizingEvidence),
     ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
+    ("Future scenario baseline selector defaults to latest frozen snapshot", TestFutureScenarioBaselineSelectorDefaultsToLatestFrozenSnapshot),
     ("Current baseline UI shows typed planning evidence without zero backfill", TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill),
     ("Current baseline UI exposes one immutable history reconciliation card", TestCurrentBaselineUiExposesHistoryReconciliation),
     ("Current baseline executable fixture preserves blockers and explicit zero evidence", TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence),
@@ -128,6 +129,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario demo template supply disturbance changes backend results", TestScenarioDemoTemplateSupplyDisturbanceChangesBackendResults),
     ("Scenario demo template capacity disturbance changes backend results", TestScenarioDemoTemplateCapacityDisturbanceChangesBackendResults),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
+    ("Frozen comparison drives every future result workspace", TestFrozenComparisonDrivesEveryFutureResultWorkspace),
     ("Scenario supply response restores internal committed supply without external input", TestScenarioSupplyResponseRestoresCommittedSupply),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
@@ -3993,6 +3995,20 @@ static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
         "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
 }
 
+static void TestFutureScenarioBaselineSelectorDefaultsToLatestFrozenSnapshot()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var configureRule = SourceFunctionBody(script, "configureFutureBaselineSelect");
+
+    AssertTrue(
+        configureRule.Contains("state.currentBaselines.some(item => item.snapshotId === previous)", StringComparison.Ordinal),
+        "future baseline selector should preserve an explicit existing baseline selection");
+    AssertTrue(
+        configureRule.Contains("else if (state.currentBaselines.length) select.value = state.currentBaselines[0].snapshotId", StringComparison.Ordinal),
+        "future baseline selector should default to the latest frozen baseline when none is selected");
+}
+
 static void TestHistoryInventoryProjectionUsesRollingSkuDemand()
 {
     const string sku = "AV-COM-201";
@@ -5666,6 +5682,59 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
             }
             AssertTrue(rejected, "response IDs must be unique and must not use the reserved NO_RESPONSE ID");
         }
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
+static void TestFrozenComparisonDrivesEveryFutureResultWorkspace()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-frozen-comparison-views-{Guid.NewGuid():N}.db");
+    try
+    {
+        var data = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(data), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "冻结多方案结果视图回归基线"));
+        var externalScenario = new ExternalScenarioDefinition(
+            "EXT-FROZEN-RESULT-VIEWS",
+            "冻结结果视图响应比较",
+            new[] { new ExternalDemandChange(null, "精益液压件", 2, 6, 1.35m, "客户需求上升") },
+            new[] { new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.55m, "供应商产出风险") },
+            new[] { new ExternalCapacityLoss("R-MIX", 3, 6, 0.65m, "设备能力损失") },
+            new[] { new ExternalKnownEvent("EVENT-001", "客户促销窗口", 2, 6) },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual", null, null, "DDS&OP 计划员", "2026-07-15T08:00:00Z",
+                "2026-07-16", "2026-09-30", "冻结结果视图回归", "人工录入：冻结结果视图回归"));
+        var responses = new[]
+        {
+            new ResponseConfiguration(
+                "RESP-FROZEN-CAPACITY",
+                "冻结临时能力",
+                new ScenarioRunParameterSet(CapacityAdjustments: Enumerable.Range(3, 4)
+                    .Select(week => new ResourceCapacityAdjustment("R-MIX", week, 1.35m, "冻结临时能力响应"))
+                    .ToList())),
+            new ResponseConfiguration(
+                "RESP-FROZEN-POLICY",
+                "冻结 MOQ 与订货周期覆盖",
+                new ScenarioRunParameterSet(SkuPolicyOverrides: new[] { new SkuPolicyOverride("HYD-100", 80m, 7) })),
+        };
+        var request = new ScenarioComparisonRequest(frozen.SnapshotId, externalScenario, responses, 12);
+        var comparison = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(data)),
+            new SeedScenarioAssumptionSource())
+            .Compare(request);
+
+        AssertEqual(2, comparison.ResponseCases.Count, "fixture comparison must retain two real responses");
+        AssertTrue(comparison.AllCases.All(item => item.Preview.Scenario.BufferTrend is not null
+            && item.Preview.Scenario.Rccp is not null
+            && item.Preview.Scenario.Constraints is not null
+            && item.Preview.Scenario.SupplierCollaboration is not null),
+            "fixture comparison cases must contain complete future workspaces");
+        RunFrozenComparisonViewsFixture(root: Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..")), comparison, request);
     }
     finally
     {
@@ -8016,6 +8085,57 @@ static void RunFutureInventoryFlowChartFixture(string root, ScenarioRunPreviewRe
     }
 }
 
+static void RunFrozenComparisonViewsFixture(
+    string root,
+    ScenarioComparisonResult comparison,
+    ScenarioComparisonRequest request)
+{
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "frozen-comparison-views.fixture.mjs");
+    var dtoPath = Path.Combine(Path.GetTempPath(), $"frozen-comparison-views-{Guid.NewGuid():N}.json");
+    File.WriteAllText(
+        dtoPath,
+        JsonSerializer.Serialize(new { comparison, request }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+    try
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = FindNodeExecutable(),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add(fixturePath);
+        process.StartInfo.ArgumentList.Add(dtoPath);
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Node frozen comparison views fixture timed out after 30 seconds");
+        }
+        Task.WaitAll(standardOutput, standardError);
+        var output = standardOutput.Result;
+        var error = standardError.Result;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Node frozen comparison views fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+        }
+        AssertTrue(output.Contains("frozen comparison view fixture passed", StringComparison.Ordinal),
+            $"Node frozen comparison views fixture did not report completion: {output}");
+    }
+    finally
+    {
+        File.Delete(dtoPath);
+    }
+}
+
 static void TestHistoryReviewRequestRaceFixtureRunsInStandardHarness()
 {
     var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -8254,8 +8374,10 @@ static void TestScenarioRunWorkspaceReplacesTeachingPageShell()
     AssertTrue(script.Contains("state.data?.ddmrpParameters", StringComparison.Ordinal), "DDMRP drawer should read from state data");
     AssertTrue(script.Contains("state.data?.guardrails", StringComparison.Ordinal), "guardrail drawer should read from state data");
     AssertTrue(script.Contains("renderMultiScenarioComparison", StringComparison.Ordinal), "script should render multi-scenario comparison");
-    AssertTrue(script.Contains("candidateImpactMatrix", StringComparison.Ordinal), "script should consume candidate impact matrix");
-    AssertTrue(script.Contains("管理取舍", StringComparison.Ordinal), "script should expose management trade-off labels");
+    AssertTrue(script.Contains("futureComparisonCases", StringComparison.Ordinal)
+        && script.Contains("data-future-result-case-select", StringComparison.Ordinal),
+        "script should consume frozen comparison cases through unified result selectors");
+    AssertTrue(script.Contains("后端可行性缺失", StringComparison.Ordinal), "script should preserve backend feasibility evidence labels");
     AssertTrue(css.Contains("width: calc(100vw - 48px)", StringComparison.Ordinal), "focused panel should use the available viewport width");
     AssertTrue(!script.Contains("cloneNode", StringComparison.Ordinal), "focused panel should move existing DOM rather than clone stable nodes");
     AssertTrue(script.Contains("initializeCollapsiblePanels", StringComparison.Ordinal), "script should initialize collapsible workspace panels");

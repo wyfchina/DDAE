@@ -642,8 +642,9 @@ export async function runFutureInventoryFlowChartFixtures(preview, scriptPath = 
     "the registered family click handler should select the first filtered family SKU");
 
   const caseSelect = runtime.elements.get("buffer-case-select");
+  caseSelect.dataset.futureResultCaseSelect = "";
   caseSelect.value = "baseline";
-  caseSelect.dispatchEvent({ type: "change", target: caseSelect });
+  runtime.document.dispatchEvent({ type: "change", target: caseSelect });
   const weekSelect = runtime.elements.get("buffer-week-range-select");
   weekSelect.value = "2-3";
   weekSelect.dispatchEvent({ type: "change", target: weekSelect });
