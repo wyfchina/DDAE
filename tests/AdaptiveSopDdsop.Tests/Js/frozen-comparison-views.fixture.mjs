@@ -352,11 +352,13 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       : String(url).includes("/coordination-items") ? [] : savedDetail,
   });
   collect(failures, "saved result automatic activation guard", () => {
+    vm.runInContext("state.savedFutureComparisons = { 'saved-cache': { runId: 'CACHED-RUN' } };", runtime.context);
     const liveComparison = readVm(runtime, "state.futureComparison");
     const stalePreview = { scenario: { marker: "STALE-PREVIEW" } };
     const saveState = {
       comparisonRequest: readVm(runtime, "state.futureComparisonRequest"),
       comparisonBaseline: readVm(runtime, "state.futureComparisonBaseline"),
+      savedFutureComparisons: readVm(runtime, "state.savedFutureComparisons"),
       disabled: runtime.elements.get("save-future-comparison").disabled,
       statusClassName: runtime.elements.get("future-comparison-save-status").className,
       statusText: runtime.elements.get("future-comparison-save-status").textContent,
@@ -375,6 +377,7 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
     assert.deepEqual({
       comparisonRequest: readVm(runtime, "state.futureComparisonRequest"),
       comparisonBaseline: readVm(runtime, "state.futureComparisonBaseline"),
+      savedFutureComparisons: readVm(runtime, "state.savedFutureComparisons"),
       disabled: runtime.elements.get("save-future-comparison").disabled,
       statusClassName: runtime.elements.get("future-comparison-save-status").className,
       statusText: runtime.elements.get("future-comparison-save-status").textContent,
@@ -395,6 +398,8 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       "saved result activation must not copy the saved result into state.preview");
     assert.equal(runtime.elements.get("save-future-comparison").disabled, true,
       "saved read-only result activation must disable comparison saving without a live request");
+    assert.deepEqual(readVm(runtime, "state.savedFutureComparisons"), runtime.context.__liveSaveState.savedFutureComparisons,
+      "saved result activation must preserve cached save metadata");
   });
   vm.runInContext("state.futureComparisonBaseline = __comparisonBaseline; renderFutureComparison(__comparisonFixture);", runtime.context);
 
@@ -434,6 +439,46 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       "a selected response without inventory evidence must remain missing instead of borrowing another case trend");
     assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes("没有缓冲趋势图数据"),
       "inventory workspace must report the selected response evidence gap");
+  });
+
+  collect(failures, "selected missing inventory clears stale workspace DOM", () => {
+    const stale = "STALE-INVENTORY-EVIDENCE";
+    ["buffer-inventory-options", "buffer-comparison-strip", "buffer-trend-kpis", "buffer-trend-chart", "inventory-flow-evidence", "inventory-flow-chart", "buffer-volatility-chart", "buffer-trend-heatmap", "buffer-family-summary-body", "buffer-trend-body", "buffer-replenishment-body", "buffer-sku-metadata", "buffer-trace-list"]
+      .forEach(id => { runtime.element(id).innerHTML = stale; });
+    runtime.element("buffer-trend-case-chip").textContent = stale;
+    runtime.element("buffer-selected-title").textContent = stale;
+    runtime.element("buffer-week-range-select").innerHTML = `<option value="1-12">${stale}</option>`;
+    runtime.element("buffer-week-range-select").value = "1-12";
+    runtime.element("buffer-week-range-select").disabled = false;
+    vm.runInContext("selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    ["buffer-inventory-options", "buffer-comparison-strip", "buffer-trend-kpis", "buffer-trend-chart", "inventory-flow-evidence", "inventory-flow-chart", "buffer-volatility-chart", "buffer-trend-heatmap", "buffer-family-summary-body", "buffer-trend-body", "buffer-replenishment-body", "buffer-sku-metadata", "buffer-trace-list"]
+      .forEach(id => assert.ok(!runtime.element(id).innerHTML.includes(stale), `${id} must clear stale inventory evidence`));
+    assert.ok(runtime.element("buffer-trend-case-chip").textContent.includes("证据缺失"),
+      "inventory case chip must identify the selected case evidence gap");
+    assert.equal(runtime.element("buffer-selected-title").textContent, "选中 SKU 水位趋势",
+      "inventory detail title must reset when the selected case has no evidence");
+    assert.ok(runtime.element("buffer-week-range-select").innerHTML.includes("证据缺失"),
+      "week control must show an evidence-missing option instead of a stale range");
+    assert.equal(runtime.element("buffer-week-range-select").disabled, true,
+      "week control must be disabled without selected-case inventory evidence");
+  });
+
+  collect(failures, "selected missing capacity clears stale workspace DOM", () => {
+    const stale = "STALE-CAPACITY-EVIDENCE";
+    ["rccp-resource-summary-body", "rccp-heatmap", "rccp-sku-contribution-body", "rccp-action-list", "rccp-load-chart", "constraint-capacity-summary-body", "constraint-heatmap", "constraint-gap-chart", "constraint-action-list", "constraint-trace-list"]
+      .forEach(id => { runtime.element(id).innerHTML = stale; });
+    runtime.element("rccp-case-chip").textContent = stale;
+    runtime.element("rccp-selected-title").textContent = stale;
+    runtime.element("constraint-selected-title").textContent = stale;
+    vm.runInContext("__comparisonFixture.allCases.find(item => item.responseId === __comparisonFixture.responseCases[1].responseId).preview.scenario.rccp = null; __comparisonFixture.allCases.find(item => item.responseId === __comparisonFixture.responseCases[1].responseId).preview.scenario.constraints = null; selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    ["rccp-resource-summary-body", "rccp-heatmap", "rccp-sku-contribution-body", "rccp-action-list", "rccp-load-chart", "constraint-capacity-summary-body", "constraint-heatmap", "constraint-gap-chart", "constraint-action-list", "constraint-trace-list"]
+      .forEach(id => assert.ok(!runtime.element(id).innerHTML.includes(stale), `${id} must clear stale capacity evidence`));
+    assert.ok(runtime.element("rccp-case-chip").textContent.includes("证据缺失"),
+      "RCCP case chip must identify the selected case evidence gap");
+    assert.equal(runtime.element("rccp-selected-title").textContent, "选中资源明细",
+      "RCCP resource detail title must reset without selected-case RCCP evidence");
+    assert.equal(runtime.element("constraint-selected-title").textContent, "选中资源受限 / 不受限明细",
+      "constraint detail title must reset without selected-case constraint evidence");
   });
 
   for (const id of ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]) {

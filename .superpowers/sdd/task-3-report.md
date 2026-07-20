@@ -29,3 +29,10 @@
 ## Concern
 
 - The environment cannot resolve `node` from PATH; verification uses the bundled absolute Node executable. The .NET runner still executes its fixture successfully via its configured runtime.
+
+## Review follow-up — stale selected-case evidence
+
+- RED: poisoned frozen-case DOM regression checks showed that choosing a case without `bufferTrend` retained the previous case's SKU options and comparison strip, and choosing a case without RCCP/constraints retained its resource load detail chart.
+- GREEN: null inventory, RCCP, and constraint render paths now clear titles, selectors, option lists, comparison/detail regions, and selected-resource state while visibly identifying missing selected-case evidence. Valid inventory rendering re-enables the week selector.
+- Saved read-only activation now preserves `savedFutureComparisons` metadata; it only clears the request/baseline needed to prevent stale comparison saving.
+- Verification: bundled Node syntax checks, the frozen-comparison fixture through the full custom runner, and `git diff --check` passed after the follow-up.

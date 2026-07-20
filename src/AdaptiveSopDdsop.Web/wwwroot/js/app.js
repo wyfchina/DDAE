@@ -2082,6 +2082,7 @@ function scopedFutureBufferDetailForCharts(detail) {
 function renderFutureInventorySelectionControls(selection) {
   const caseSelect = byId("buffer-case-select");
   const weekSelect = byId("buffer-week-range-select");
+  weekSelect.disabled = false;
   if (state.futureComparison) {
     renderFutureComparisonSelectors();
   } else {
@@ -2213,7 +2214,20 @@ function renderBufferTrendWorkspace(trend) {
   const initialSelection = normalizeFutureInventorySelection(trend);
   const filteredTrend = filterBufferTrendWorkspace(initialSelection.trend);
   if (!filteredTrend) {
+    const selectedCase = selectedFutureComparisonCase();
+    state.bufferTrend = null;
+    state.selectedBufferSku = null;
+    state.futureInventorySelection.sku = null;
+    state.futureInventorySelection.weekFrom = 1;
+    state.futureInventorySelection.weekThrough = null;
     byId("buffer-trend-kpis").innerHTML = "";
+    byId("buffer-trend-case-chip").textContent = `${caseLabel(selectedCase?.name || "所选方案")} · 证据缺失`;
+    byId("buffer-selected-title").textContent = "选中 SKU 水位趋势";
+    byId("buffer-inventory-options").innerHTML = `<div class="table-empty"><strong>所选方案缓冲趋势证据缺失</strong></div>`;
+    byId("buffer-comparison-strip").innerHTML = `<div class="table-empty"><strong>所选方案没有可比较的缓冲证据</strong></div>`;
+    byId("buffer-week-range-select").innerHTML = `<option value="">证据缺失</option>`;
+    byId("buffer-week-range-select").value = "";
+    byId("buffer-week-range-select").disabled = true;
     byId("buffer-trend-chart").innerHTML = `<div class="table-empty"><strong>没有缓冲趋势图数据</strong></div>`;
     byId("inventory-flow-evidence").innerHTML = `<div class="table-empty"><strong>没有物理库存投影证据</strong></div>`;
     byId("inventory-flow-chart").innerHTML = `<div class="table-empty"><strong>没有物理库存投影数据</strong></div>`;
@@ -3321,7 +3335,6 @@ function renderSavedFrozenScenarioResult(detail) {
   };
   state.futureComparisonRequest = null;
   state.futureComparisonBaseline = null;
-  state.savedFutureComparisons = {};
   renderFutureComparison({
     baselineSnapshotId: summary.baselineSnapshotId,
     baselineSnapshotNumber: summary.baselineSnapshotId,
@@ -3609,11 +3622,16 @@ function renderRccpDetailChart(detail) {
 
 function renderProductRccp(rccp, rccpCaseLabel = "基准方案") {
   if (!rccp) {
+    state.rccp = null;
+    state.selectedRccpResource = null;
     byId("rccp-kpis").innerHTML = "";
+    byId("rccp-case-chip").textContent = "所选方案 · 证据缺失";
     byId("rccp-resource-summary-body").innerHTML = emptyRow("没有 RCCP 数据", 8);
     byId("rccp-heatmap").innerHTML = `<div class="table-empty"><strong>没有 RCCP 热力格数据</strong></div>`;
     byId("rccp-sku-contribution-body").innerHTML = emptyRow("没有 SKU 贡献数据", 7);
     byId("rccp-action-list").innerHTML = "";
+    byId("rccp-selected-title").textContent = "选中资源明细";
+    renderRccpDetailChart(null);
     return;
   }
 
@@ -3706,11 +3724,11 @@ function renderSelectedRccpResource(rccp) {
 
 function renderConstraintWorkspace(constraints) {
   if (!constraints) {
+    state.constraints = null;
+    state.selectedRccpResource = null;
     byId("constraint-capacity-summary-body").innerHTML = emptyRow("没有受限 / 不受限数据", 8);
     byId("constraint-heatmap").innerHTML = `<div class="table-empty"><strong>没有约束缺口热力格数据</strong></div>`;
-    byId("constraint-gap-chart").innerHTML = `<div class="table-empty"><strong>没有约束明细数据</strong></div>`;
-    byId("constraint-action-list").innerHTML = "";
-    byId("constraint-trace-list").innerHTML = "";
+    renderSelectedConstraintResource(null);
     return;
   }
 
