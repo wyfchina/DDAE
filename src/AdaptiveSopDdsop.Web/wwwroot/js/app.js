@@ -1960,7 +1960,7 @@ function futureInventoryCases(fallbackTrend = null) {
     name: item.name,
     bufferTrend: item.preview?.scenario?.bufferTrend,
     inventoryFlow: item.preview?.scenario?.inventoryFlow,
-    scenarioMetricEvidence: item.preview?.scenario?.scenarioMetricEvidence,
+    scenarioMetricEvidence: item.preview?.scenario?.scenarioMetricEvidence || [],
   })).filter(item => item.bufferTrend);
   const previewCases = [state.preview?.baseline, state.preview?.scenario]
     .filter(item => item?.bufferTrend);
@@ -1980,9 +1980,12 @@ function normalizeFutureInventorySelection(trend, scopedTrend = null) {
   const cases = futureInventoryCases(trend);
   const requestedCaseId = state.futureInventorySelection.caseId;
   let previewCase = cases.find(item => item.caseId === requestedCaseId);
-  if (!previewCase) previewCase = cases.find(item => item.caseId === trend?.caseId);
-  if (!previewCase) previewCase = cases.find(item => item.caseId === "scenario");
-  if (!previewCase) previewCase = valueOr(cases[0], null);
+  const selectedFrozenCaseIsMissing = state.futureComparison
+    && requestedCaseId === state.futureComparisonSelection.responseId
+    && !previewCase;
+  if (!previewCase && !selectedFrozenCaseIsMissing) previewCase = cases.find(item => item.caseId === trend?.caseId);
+  if (!previewCase && !selectedFrozenCaseIsMissing) previewCase = cases.find(item => item.caseId === "scenario");
+  if (!previewCase && !selectedFrozenCaseIsMissing) previewCase = valueOr(cases[0], null);
   const selectedTrend = valueOr(previewCase?.bufferTrend, trend);
   const selectionTrend = valueOr(scopedTrend, selectedTrend);
   const skuDetails = valueOr(selectionTrend?.skuDetails, []);
@@ -2003,7 +2006,9 @@ function normalizeFutureInventorySelection(trend, scopedTrend = null) {
   if (!Number.isFinite(weekFrom) || weekFrom < minimumWeek || weekFrom > maximumWeek) weekFrom = minimumWeek;
   if (!Number.isFinite(weekThrough) || weekThrough < weekFrom || weekThrough > maximumWeek) weekThrough = maximumWeek;
 
-  state.futureInventorySelection.caseId = valueOr(previewCase?.caseId, valueOr(selectedTrend?.caseId, "baseline"));
+  state.futureInventorySelection.caseId = selectedFrozenCaseIsMissing
+    ? requestedCaseId
+    : valueOr(previewCase?.caseId, valueOr(selectedTrend?.caseId, "baseline"));
   state.futureInventorySelection.sku = sku;
   state.futureInventorySelection.weekFrom = weekFrom;
   state.futureInventorySelection.weekThrough = weekThrough;
@@ -3300,7 +3305,38 @@ async function loadSavedScenarioRuns(selectedRunId) {
   }
 }
 
-async function loadScenarioRunDetail(runId) {
+function renderSavedFrozenScenarioResult(detail) {
+  const summary = detail?.summary;
+  const result = detail?.result;
+  if (!summary?.baselineSnapshotId || !summary?.externalScenarioId || !summary?.responseId || !result) return;
+  const protectionAnalysis = result.protectionAnalysis || {};
+  const savedCase = {
+    responseId: summary.responseId,
+    name: summary.name,
+    externalScenarioId: summary.externalScenarioId,
+    preview: result,
+    breaches: protectionAnalysis.breaches || [],
+    timeBufferProjection: protectionAnalysis.timeBufferProjection || [],
+    capacityProtectionProjection: protectionAnalysis.capacityProtectionProjection || [],
+  };
+  state.futureComparisonRequest = null;
+  state.futureComparisonBaseline = null;
+  state.savedFutureComparisons = {};
+  renderFutureComparison({
+    baselineSnapshotId: summary.baselineSnapshotId,
+    baselineSnapshotNumber: summary.baselineSnapshotId,
+    noResponse: savedCase,
+    responseCases: [],
+    allCases: [savedCase],
+  });
+  byId("save-future-comparison").disabled = true;
+  byId("future-comparison-save-status").className = "status-chip neutral";
+  byId("future-comparison-save-status").textContent = "已保存场景结果（只读查看）";
+}
+
+async function loadScenarioRunDetail(runId, options) {
+  options = options || {};
+  const { activateResults = false } = options;
   const requestGeneration = ++state.scenarioDetailRequestGeneration;
   state.selectedScenarioRunId = runId;
   renderSavedScenarioRuns(state.savedScenarioRuns);
@@ -3326,11 +3362,15 @@ async function loadScenarioRunDetail(runId) {
   if (!changesResponse.ok || !coordinationResponse.ok) {
     throw new Error("场景关联记录查询失败。");
   }
-  renderScenarioAudit(
-    await detailResponse.json(),
-    await auditResponse.json(),
-    await changesResponse.json(),
-    await coordinationResponse.json());
+  const [detail, audit, changes, coordinationItems] = await Promise.all([
+    detailResponse.json(),
+    auditResponse.json(),
+    changesResponse.json(),
+    coordinationResponse.json(),
+  ]);
+  if (requestGeneration !== state.scenarioDetailRequestGeneration || runId !== state.selectedScenarioRunId) return;
+  renderScenarioAudit(detail, audit, changes, coordinationItems);
+  if (activateResults) renderSavedFrozenScenarioResult(detail);
 }
 
 async function saveScenarioRun() {
@@ -6607,10 +6647,8 @@ function renderFutureComparisonSelectors(cases = futureComparisonCases()) {
   saveResponseSelect.value = selectedCase?.responseId || "";
 }
 
-function renderFutureBreachWorkspace(result) {
-  const availableCases = futureComparisonCases(result);
-  const selectedCase = availableCases.find(item => item.responseId === state.futureComparisonSelection.responseId);
-  const cases = selectedCase ? [selectedCase] : availableCases;
+function renderFutureBreaches(result) {
+  const cases = futureComparisonCases(result);
   const breachRows = cases.flatMap(item => valueOr(item.breaches, []).map(breach => ({ caseName: item.name, ...breach })));
   byId("future-breach-body").innerHTML = breachRows.length
     ? breachRows.map(item => {
@@ -6630,29 +6668,38 @@ function renderFutureBreachWorkspace(result) {
     : emptyRow("没有可计算的保护击穿证据", 8);
 }
 
-function selectFutureComparisonCase(responseId, result = state.futureComparison) {
+function renderSelectedFutureComparisonViews() {
+  const selected = selectedFutureComparisonCase();
+  const scenario = selected?.preview?.scenario;
+  if (!selected || !scenario) return;
+  const result = { allCases: [selected] };
+
+  state.bufferTrend = scenario.bufferTrend || null;
+  state.futureInventorySelection.caseId = selected.responseId;
+  state.rccp = scenario.rccp || null;
+  state.constraints = scenario.constraints || null;
+  state.supplierCollaboration = scenario.supplierCollaboration || null;
+
+  renderBufferTrendWorkspace(state.bufferTrend);
+  renderFutureCapacityProtection(result);
+  renderProductRccp(state.rccp, selected.name);
+  renderConstraintWorkspace(state.constraints);
+  renderSupplierCollaborationWorkspace(state.supplierCollaboration);
+  renderFutureBreaches(result);
+  renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline);
+  renderPreviewBudget(selected.preview);
+}
+
+function selectFutureComparisonCase(responseId) {
   const cases = futureComparisonCases();
   const selectedCase = cases.find(item => item.responseId === responseId)
     || preferredFutureComparisonCase(cases)
     || cases[0];
   if (!selectedCase) return;
   state.futureComparisonSelection.responseId = selectedCase.responseId;
-  state.bufferTrend = selectedCase.preview?.scenario?.bufferTrend || null;
-  state.rccp = selectedCase.preview?.scenario?.rccp || null;
-  state.constraints = selectedCase.preview?.scenario?.constraints || null;
-  state.supplierCollaboration = selectedCase.preview?.scenario?.supplierCollaboration || null;
-  state.futureInventorySelection.caseId = selectedCase.responseId;
-  state.futureInventorySelection.weekFrom = 1;
-  state.futureInventorySelection.weekThrough = null;
   renderFutureComparisonSelectors(cases);
   renderMultiScenarioComparison(state.futureComparison);
-  renderBufferTrendWorkspace(state.bufferTrend);
-  renderProductRccp(state.rccp, selectedCase.name);
-  renderConstraintWorkspace(state.constraints);
-  renderSupplierCollaborationWorkspace(state.supplierCollaboration);
-  renderFutureCapacityProtection(state.futureComparison);
-  renderFutureBreachWorkspace(state.futureComparison);
-  renderTimeBufferBreachEvidence(result, state.futureComparisonBaseline);
+  renderSelectedFutureComparisonViews();
 }
 
 function renderFutureComparison(result) {
@@ -6697,7 +6744,7 @@ function renderFutureComparison(result) {
     const breachCountLabel = !breachEvidenceComplete ? "证据缺失" : allBreachEvidenceNotApplicable ? "不适用" : number(breached);
     return `<div class="${cardClasses}"><div class="comparison-case-heading"><h3>${escapeHtml(item.name)}</h3><span class="status-chip ${feasibilityClass}">${escapeHtml(feasibility.label)}${isBlocked ? " · 不可选定" : isPreferred ? " · 默认保存项" : ""}</span></div><p>${item.responseId === "NO_RESPONSE" ? "外部场景，不采取企业措施" : "外部场景 + 企业响应配置"}</p><div class="comparison-metrics"><div><span>服务</span><strong>${percent(metrics.serviceLevelPercent)}</strong></div><div><span>平均库存</span><strong>${metricOrEvidenceMissing(metrics.averageInventoryValue, money)}</strong></div><div><span>补货释放峰值</span><strong>${percent(metrics.peakLoadPercent)}</strong></div><div><span>供应缺口</span><strong>${number(metrics.supplyGap)}</strong></div><div><span>击穿对象</span><strong>${breachCountLabel}</strong></div></div></div>`;
   }).join("");
-  selectFutureComparisonCase(selectedCase?.responseId, result);
+  selectFutureComparisonCase(selectedCase?.responseId);
 }
 
 async function saveFutureComparison() {
@@ -6867,7 +6914,7 @@ async function loadCoordinationDetail(itemId) {
 
 async function openScenarioLineageDetail(runId) {
   navigateWorkspace("future-scenario-panel", "plan-comparison", false);
-  await loadScenarioRunDetail(runId);
+  await loadScenarioRunDetail(runId, { activateResults: true });
 }
 
 async function openMasterSettingLineageDetail(changeId) {

@@ -135,6 +135,11 @@ function addDisplaySentinels(comparison) {
     item.preview.scenario.rccp = { ...item.preview.scenario.rccp, marker };
     item.preview.scenario.constraints = { ...item.preview.scenario.constraints, marker };
     item.preview.scenario.supplierCollaboration = { ...item.preview.scenario.supplierCollaboration, marker };
+    item.preview.scenario.bufferTrend.name = marker;
+    item.preview.scenario.rccp.resourceSummaries[0].resourceName = marker;
+    item.preview.scenario.constraints.capacitySummaries[0].resourceName = marker;
+    item.preview.scenario.supplierCollaboration.summaries[0].supplier = marker;
+    item.preview.scenario.budget[0].family = marker;
     item.capacityProtectionProjection = [{
       upstreamResourceCode: marker,
       protectedCcrResourceCode: marker,
@@ -187,7 +192,7 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
   const page = await readFile(defaultPagePath, "utf8");
   const comparison = addDisplaySentinels(structuredClone(payload.comparison));
   const runtime = createRuntime(source, scriptPath);
-  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-ccr-utilization-body", "future-capacity-utilization-distribution", "future-breach-body", "future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]
+  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-ccr-utilization-body", "future-capacity-utilization-distribution", "future-breach-body", "future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select", "buffer-trend-case-chip", "rccp-resource-summary-body", "constraint-capacity-summary-body", "supplier-summary-body", "budget-comparison-body"]
     .forEach(id => runtime.element(id));
   const failures = [];
   const expectedResponseIds = comparison.allCases.map(item => item.responseId);
@@ -283,6 +288,116 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       "viewing a frozen response must not mutate save/select/approve/publish/effective workflow state");
   });
 
+  collect(failures, "selected detail workspaces", () => {
+    assert.equal(vm.runInContext("typeof renderSelectedFutureComparisonViews", runtime.context), "function",
+      "a selected frozen case must have one explicit detail-workspace render entry point");
+    vm.runInContext("selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    const detailMarkup = {
+      inventory: runtime.elements.get("buffer-trend-case-chip").textContent,
+      rccp: runtime.elements.get("rccp-resource-summary-body").innerHTML,
+      constraints: runtime.elements.get("constraint-capacity-summary-body").innerHTML,
+      supply: runtime.elements.get("supplier-summary-body").innerHTML,
+      budget: runtime.elements.get("budget-comparison-body").innerHTML,
+    };
+    assert.equal(detailMarkup.inventory, selectedCase.preview.scenario.bufferTrend.name,
+      "inventory workspace must render the selected response buffer evidence");
+    assert.ok(detailMarkup.rccp.includes(selectedCase.preview.scenario.rccp.resourceSummaries[0].resourceName),
+      "lower RCCP workbench must render the selected response resource evidence");
+    assert.ok(detailMarkup.constraints.includes(selectedCase.preview.scenario.constraints.capacitySummaries[0].resourceName),
+      "constraint workbench must render the selected response constraint evidence");
+    assert.ok(detailMarkup.supply.includes(selectedCase.preview.scenario.supplierCollaboration.summaries[0].supplier),
+      "supply workbench must render the selected response supplier evidence");
+    assert.ok(detailMarkup.budget.includes(selectedCase.preview.scenario.budget[0].family),
+      "budget workbench must render the selected response budget evidence");
+    assert.equal(readVm(runtime, "state.futureInventorySelection.caseId"), selectedCase.responseId,
+      "inventory selection must retain the outer frozen response ID");
+  });
+
+  collect(failures, "baseline exception source note", () => {
+    assert.match(page,
+      /<p id="baseline-exception-source-note" class="muted-note">以下异常信号来自当前基线，用于形成场景输入；上方击穿结果来自所选方案。<\/p>/,
+      "exception workspace must explicitly identify baseline input evidence");
+  });
+
+  const savedCase = structuredClone(selectedCase);
+  savedCase.responseId = "SAVED-RESP";
+  savedCase.name = "已保存响应方案 SAVED-RESP";
+  savedCase.preview.scenario.bufferTrend.name = "SAVED-BUFFER";
+  savedCase.preview.scenario.rccp.resourceSummaries[0].resourceName = "SAVED-RCCP";
+  savedCase.preview.scenario.constraints.capacitySummaries[0].resourceName = "SAVED-CONSTRAINT";
+  savedCase.preview.scenario.supplierCollaboration.summaries[0].supplier = "SAVED-SUPPLIER";
+  savedCase.preview.scenario.budget[0].family = "SAVED-BUDGET";
+  const savedDetail = {
+    summary: {
+      runId: "SAVED-RUN",
+      runNumber: "RUN-SAVED-RESULT",
+      name: savedCase.name,
+      baselineSnapshotId: "BASELINE-SAVED",
+      externalScenarioId: "EXT-SAVED",
+      responseId: savedCase.responseId,
+    },
+    result: {
+      ...savedCase.preview,
+      protectionAnalysis: {
+        breaches: savedCase.breaches,
+        timeBufferProjection: savedCase.timeBufferProjection,
+        capacityProtectionProjection: savedCase.capacityProtectionProjection,
+      },
+    },
+  };
+  runtime.context.fetch = async url => ({
+    ok: true,
+    status: 200,
+    json: async () => String(url).includes("/audit") ? [] : String(url).includes("/master-settings/") ? []
+      : String(url).includes("/coordination-items") ? [] : savedDetail,
+  });
+  collect(failures, "saved result automatic activation guard", () => {
+    const liveComparison = readVm(runtime, "state.futureComparison");
+    const stalePreview = { scenario: { marker: "STALE-PREVIEW" } };
+    const saveState = {
+      comparisonRequest: readVm(runtime, "state.futureComparisonRequest"),
+      comparisonBaseline: readVm(runtime, "state.futureComparisonBaseline"),
+      disabled: runtime.elements.get("save-future-comparison").disabled,
+      statusClassName: runtime.elements.get("future-comparison-save-status").className,
+      statusText: runtime.elements.get("future-comparison-save-status").textContent,
+    };
+    runtime.context.__liveComparison = liveComparison;
+    runtime.context.__staleSavedPreview = stalePreview;
+    runtime.context.__liveSaveState = saveState;
+    vm.runInContext("state.preview = __staleSavedPreview;", runtime.context);
+  });
+  await vm.runInContext("(async () => { await loadScenarioRunDetail('SAVED-RUN'); })()", runtime.context);
+  collect(failures, "saved result automatic activation guard", () => {
+    assert.deepEqual(readVm(runtime, "state.futureComparison"), runtime.context.__liveComparison,
+      "automatic saved-run detail loading must not overwrite a live frozen comparison");
+    assert.deepEqual(readVm(runtime, "state.preview"), runtime.context.__staleSavedPreview,
+      "automatic saved-run detail loading must not overwrite the legacy preview");
+    assert.deepEqual({
+      comparisonRequest: readVm(runtime, "state.futureComparisonRequest"),
+      comparisonBaseline: readVm(runtime, "state.futureComparisonBaseline"),
+      disabled: runtime.elements.get("save-future-comparison").disabled,
+      statusClassName: runtime.elements.get("future-comparison-save-status").className,
+      statusText: runtime.elements.get("future-comparison-save-status").textContent,
+    }, runtime.context.__liveSaveState,
+    "automatic saved-run detail loading must not alter live comparison save state");
+  });
+  await vm.runInContext("(async () => { await loadScenarioRunDetail('SAVED-RUN', { activateResults: true }); })()", runtime.context);
+  collect(failures, "saved result explicit activation", () => {
+    assert.equal(readVm(runtime, "state.futureComparison.allCases.length"), 1,
+      "explicit saved-run activation must create a one-case frozen result view");
+    assert.equal(readVm(runtime, "state.futureComparison.allCases[0].responseId"), savedCase.responseId,
+      "saved selector must expose the saved response rather than a synthetic no-response case");
+    assert.ok(!runtime.elements.get("future-comparison-cards").innerHTML.includes("不采取企业措施"),
+      "saved response card must not be presented as a no-response case");
+    assert.equal(readVm(runtime, "state.futureComparisonSelection.responseId"), savedCase.responseId,
+      "explicit saved-run activation must select its only response");
+    assert.equal(readVm(runtime, "state.preview.scenario.marker"), "STALE-PREVIEW",
+      "saved result activation must not copy the saved result into state.preview");
+    assert.equal(runtime.elements.get("save-future-comparison").disabled, true,
+      "saved read-only result activation must disable comparison saving without a live request");
+  });
+  vm.runInContext("state.futureComparisonBaseline = __comparisonBaseline; renderFutureComparison(__comparisonFixture);", runtime.context);
+
   collect(failures, "delegated result selectors", () => {
     const selectorIds = ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"];
     const selectors = selectorIds.map(id => runtime.element(id));
@@ -311,6 +426,14 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
     assert.ok(markup.includes("证据缺失"), "selected missing evidence must remain missing");
     unselectedCases.forEach(item => assert.ok(!markup.includes(item.name),
       `time-buffer detail must not retain ${item.responseId} evidence after switching`));
+  });
+
+  collect(failures, "selected missing inventory evidence isolation", () => {
+    vm.runInContext("__comparisonFixture.allCases.find(item => item.responseId === __comparisonFixture.responseCases[1].responseId).preview.scenario.bufferTrend = null; selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    assert.equal(readVm(runtime, "state.bufferTrend"), null,
+      "a selected response without inventory evidence must remain missing instead of borrowing another case trend");
+    assert.ok(runtime.elements.get("buffer-trend-chart").innerHTML.includes("没有缓冲趋势图数据"),
+      "inventory workspace must report the selected response evidence gap");
   });
 
   for (const id of ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]) {
