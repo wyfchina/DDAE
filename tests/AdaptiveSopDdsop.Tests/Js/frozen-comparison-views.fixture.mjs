@@ -164,10 +164,11 @@ function addDisplaySentinels(comparison) {
       isBreached: true, earliestRedWeek: 1, consecutiveRiskWeeks: 1, isUnrecovered: false,
       recoveryWeek: 2, affectedProducts: [marker], primaryCause: `${marker}-TIME`,
     }];
-    item.timeBufferProjection = [{
-      bufferId: `${marker}-TIME`, controlPoint: marker, week: 1, evidenceStatus: "Complete",
+    const horizonWeeks = Number(item.preview?.request?.horizonWeeks) || 12;
+    item.timeBufferProjection = Array.from({ length: horizonWeeks }, (_unused, weekIndex) => ({
+      bufferId: `${marker}-TIME`, controlPoint: marker, week: weekIndex + 1, evidenceStatus: "Complete",
       status: "Green", penetrationPercent: 1, cause: marker,
-    }];
+    }));
   });
   return comparison;
 }
@@ -196,9 +197,22 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
   const selectedTimeBreach = selectedCase.breaches.find(item => item.scopeType === "TimeBuffer");
   selectedTimeBreach.evidenceStatus = "EvidenceMissing";
   selectedCase.timeBufferProjection[0].evidenceStatus = "EvidenceMissing";
+  const completeTimeCase = comparison.responseCases[0];
+  const timeBufferDefinitions = comparison.allCases.map(item => {
+    const breach = item.breaches.find(candidate => candidate.scopeType === "TimeBuffer");
+    const projection = item.timeBufferProjection[0];
+    return {
+      bufferId: breach.target,
+      controlPoint: projection.controlPoint,
+      protectedActivity: `${projection.controlPoint}-ACTIVITY`,
+      bufferDays: 1,
+      evidenceStatus: "Complete",
+    };
+  });
 
   runtime.context.__comparisonFixture = comparison;
-  vm.runInContext("renderFutureComparison(__comparisonFixture);", runtime.context);
+  runtime.context.__comparisonBaseline = { payload: { planningInputs: { timeBuffers: timeBufferDefinitions } } };
+  vm.runInContext("state.futureComparisonBaseline = __comparisonBaseline; renderFutureComparison(__comparisonFixture);", runtime.context);
   const comparisonMarkup = runtime.elements.get("multi-scenario-comparison-body").innerHTML;
   const matrixMarkup = runtime.elements.get("candidate-impact-matrix-body").innerHTML;
   collect(failures, "comparison table", () => {
@@ -281,6 +295,12 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       "every selector must expose the identical frozen response IDs"));
     selectors.forEach(control => assert.equal(control.value, switchedResponseId,
       "delegated selection must synchronize every result selector"));
+    assert.equal(switchedResponseId, completeTimeCase.responseId,
+      "delegated selector sentinel must switch to the complete time-buffer case");
+    assert.ok(runtime.elements.get("time-buffer-breach-evidence-chip").className.includes("is-valid"),
+      "unselected sentinel must be genuinely Complete under renderer rules before the missing-evidence switch");
+    assert.ok(runtime.elements.get("time-buffer-breach-summary").innerHTML.includes("后端证据完整"),
+      "complete sentinel must have a matching definition and full-horizon projections");
   });
 
   collect(failures, "selected time-buffer evidence isolation", () => {
