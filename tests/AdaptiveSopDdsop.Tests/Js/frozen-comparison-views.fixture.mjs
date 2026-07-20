@@ -11,6 +11,7 @@ const defaultPagePath = path.join(root, "src", "AdaptiveSopDdsop.Web", "Pages", 
 
 function createRuntime(source, scriptPath) {
   const elements = new Map();
+  const fetchCalls = [];
   const createElement = (id = "") => {
     if (id && elements.has(id)) return elements.get(id);
     const classes = new Set();
@@ -91,7 +92,10 @@ function createRuntime(source, scriptPath) {
   const context = vm.createContext({
     console, document, window, location: window.location, history: window.history,
     navigator: { clipboard: { writeText: async () => {} } },
-    fetch: () => new Promise(() => {}),
+    fetch: (...args) => {
+      fetchCalls.push(args);
+      return new Promise(() => {});
+    },
     setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams,
     TextEncoder, TextDecoder, AbortController, Response, Request, Headers,
     structuredClone, crypto: globalThis.crypto, performance: globalThis.performance,
@@ -102,7 +106,7 @@ function createRuntime(source, scriptPath) {
   });
   context.globalThis = context;
   new vm.Script(source, { filename: scriptPath }).runInContext(context);
-  return { context, elements, element: createElement };
+  return { context, elements, element: createElement, fetchCalls };
 }
 
 function readVm(runtime, expression) {
@@ -113,6 +117,7 @@ function addDisplaySentinels(comparison) {
   const cases = comparison.allCases;
   cases.forEach((item, index) => {
     const marker = `FROZEN-${item.responseId}-${index}`;
+    const capacityBand = ["Red", "Yellow", "Green"][index] || "DeepRed";
     item.name = `${item.name} ${marker}`;
     item.preview.scenario.bufferTrend = { ...item.preview.scenario.bufferTrend, marker };
     item.preview.scenario.rccp = { ...item.preview.scenario.rccp, marker };
@@ -124,8 +129,20 @@ function addDisplaySentinels(comparison) {
       week: 1,
       plannedAvailableCapacity: 1,
       committedLoad: 1,
-      measure: { evidenceStatus: "Complete", utilizationPercent: 1, protectionStart: 1, protectionCapacity: 1, consumedProtection: 0, remainingProtection: 1, overload: 0, utilizationBand: "Green" },
+      measure: { evidenceStatus: "Complete", utilizationPercent: 1, protectionStart: 1, protectionCapacity: 1, consumedProtection: 0, remainingProtection: 1, overload: 0, utilizationBand: capacityBand },
     }];
+    item.preview.scenario.plan = {
+      ...item.preview.scenario.plan,
+      capacityLoads: [{
+        relationshipRole: "CcrUtilization",
+        resourceName: marker,
+        resourceCode: marker,
+        week: 1,
+        availableCapacity: 1,
+        requiredCapacity: 1,
+        capacityProtectionMeasure: { utilizationPercent: 1, utilizationBand: capacityBand },
+      }],
+    };
     item.breaches = [{
       scopeType: "CapacityBuffer", target: `${marker}-BREACH`, evidenceStatus: "Complete",
       isBreached: true, earliestRedWeek: 1, consecutiveRiskWeeks: 1, isUnrecovered: false,
@@ -149,12 +166,13 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
   const page = await readFile(defaultPagePath, "utf8");
   const comparison = addDisplaySentinels(structuredClone(payload.comparison));
   const runtime = createRuntime(source, scriptPath);
-  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-breach-body"]
+  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-ccr-utilization-body", "future-capacity-utilization-distribution", "future-breach-body"]
     .forEach(id => runtime.element(id));
   const failures = [];
   const expectedResponseIds = comparison.allCases.map(item => item.responseId);
-  const selectedCase = comparison.responseCases[1];
-  const otherCase = comparison.responseCases[0];
+  const selectedCase = comparison.allCases.find(item => item.responseId === comparison.responseCases[1].responseId);
+  assert.ok(selectedCase, "fixture must resolve the selected response from comparison.allCases");
+  const unselectedCases = comparison.allCases.filter(item => item.responseId !== selectedCase.responseId);
 
   runtime.context.__comparisonFixture = comparison;
   vm.runInContext("renderFutureComparison(__comparisonFixture);", runtime.context);
@@ -180,23 +198,40 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
     readVm(runtime, "futureInventoryCases().map(item => item.responseId || item.caseId)"),
     expectedResponseIds,
     "future inventory cases must come from frozen comparison.allCases and exclude state.preview"));
+  vm.runInContext("state.futureComparison = null;", runtime.context);
+  collect(failures, "legacy inventory preview fallback", () => assert.deepEqual(
+    readVm(runtime, "futureInventoryCases().map(item => item.caseId)"),
+    ["STALE-BASELINE", "STALE-SCENARIO"],
+    "without a frozen comparison, legacy preview baseline/scenario cases must remain available"));
+  vm.runInContext("state.futureComparison = __comparisonFixture;", runtime.context);
 
   vm.runInContext("state.futureComparisonSelection = { responseId: __comparisonFixture.responseCases[1].responseId };", runtime.context);
   vm.runInContext("renderFutureCapacityProtection(__comparisonFixture); renderFutureComparison(__comparisonFixture);", runtime.context);
   collect(failures, "selected capacity workspace", () => {
-    const markup = runtime.elements.get("future-capacity-protection-body").innerHTML;
-    assert.ok(markup.includes(selectedCase.name), "must show the selected-case capacity marker");
-    assert.ok(!markup.includes(otherCase.name), "must exclude the other response capacity marker");
+    const capacityMarkup = runtime.elements.get("future-capacity-protection-body").innerHTML;
+    const ccrMarkup = runtime.elements.get("future-ccr-utilization-body").innerHTML;
+    const distributionMarkup = runtime.elements.get("future-capacity-utilization-distribution").innerHTML;
+    assert.ok(capacityMarkup.includes(selectedCase.name), "capacity protection must show the selected-case marker");
+    assert.ok(ccrMarkup.includes(selectedCase.preview.scenario.plan.capacityLoads[0].resourceName), "CCR utilization must show the selected-case marker");
+    unselectedCases.forEach(item => {
+      assert.ok(!capacityMarkup.includes(item.name), `capacity protection must exclude ${item.responseId}`);
+      assert.ok(!ccrMarkup.includes(item.preview.scenario.plan.capacityLoads[0].resourceName), `CCR utilization must exclude ${item.responseId}`);
+    });
+    assert.ok(distributionMarkup.includes("绿区（0–60%）<strong>1</strong>"), "capacity distribution must retain only the selected Green sentinel");
+    assert.ok(distributionMarkup.includes("黄区（>60–80%）<strong>0</strong>"), "capacity distribution must exclude the Yellow sentinel");
+    assert.ok(distributionMarkup.includes("红区（>80–100%）<strong>0</strong>"), "capacity distribution must exclude the Red sentinel");
   });
   collect(failures, "selected breach workspace", () => {
     const markup = runtime.elements.get("future-breach-body").innerHTML;
     assert.ok(markup.includes(selectedCase.breaches[0].target), "must show the selected-case breach marker");
-    assert.ok(!markup.includes(otherCase.breaches[0].target), "must exclude the other response breach marker");
+    unselectedCases.forEach(item => assert.ok(!markup.includes(item.breaches[0].target), `must exclude ${item.responseId} breach marker`));
   });
 
   collect(failures, "unified response selection", () => {
     assert.equal(vm.runInContext("typeof selectFutureComparisonCase", runtime.context), "function",
       "selectFutureComparisonCase(responseId) must select a frozen response workspace");
+    const fetchCallCount = runtime.fetchCalls.length;
+    const workflowBefore = readVm(runtime, "({ savedFutureComparisons: state.savedFutureComparisons, savedScenarioRuns: state.savedScenarioRuns, selectedScenarioRunId: state.selectedScenarioRunId, ddomPackages: state.ddomPackages, selectedDdomPackageId: state.selectedDdomPackageId, currentDdomPackageDetail: state.currentDdomPackageDetail, currentMasterSettingDetail: state.currentMasterSettingDetail, selectedMasterChangeId: state.selectedMasterChangeId })");
     vm.runInContext("selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
     const selected = readVm(runtime, "({ responseId: state.futureComparisonSelection.responseId, buffer: state.bufferTrend.marker, rccp: state.rccp.marker, constraints: state.constraints.marker, supplier: state.supplierCollaboration.marker })");
     assert.deepEqual(selected, {
@@ -206,10 +241,17 @@ export async function runFrozenComparisonViewsFixture(payload, scriptPath = defa
       constraints: selectedCase.preview.scenario.constraints.marker,
       supplier: selectedCase.preview.scenario.supplierCollaboration.marker,
     }, "one response selection must switch every future workspace to that response");
+    assert.equal(runtime.fetchCalls.length, fetchCallCount, "viewing a frozen response must not fetch, save, select, approve, publish, or make it effective");
+    assert.deepEqual(readVm(runtime, "({ savedFutureComparisons: state.savedFutureComparisons, savedScenarioRuns: state.savedScenarioRuns, selectedScenarioRunId: state.selectedScenarioRunId, ddomPackages: state.ddomPackages, selectedDdomPackageId: state.selectedDdomPackageId, currentDdomPackageDetail: state.currentDdomPackageDetail, currentMasterSettingDetail: state.currentMasterSettingDetail, selectedMasterChangeId: state.selectedMasterChangeId })"), workflowBefore,
+      "viewing a frozen response must not mutate save/select/approve/publish/effective workflow state");
   });
 
   for (const id of ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]) {
-    collect(failures, `result selector ${id}`, () => assert.ok(page.includes(`id=\"${id}\"`), "must exist in result markup"));
+    collect(failures, `result selector ${id}`, () => {
+      const control = page.match(new RegExp(`<[^>]*\\bid=\\"${id}\\"[^>]*>`, "i"))?.[0];
+      assert.ok(control, "must exist in result markup");
+      assert.ok(control.includes("data-future-result-case-select"), "must declare the shared future-result selector attribute");
+    });
   }
   if (failures.length) throw new AggregateError(failures, "Frozen comparison view regression failures");
   console.log("frozen comparison view fixture passed");
