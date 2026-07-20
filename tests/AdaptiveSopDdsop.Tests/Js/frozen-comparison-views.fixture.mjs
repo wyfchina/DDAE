@@ -1,0 +1,221 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+
+const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(fixtureDirectory, "..", "..", "..");
+const defaultScriptPath = path.join(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js");
+const defaultPagePath = path.join(root, "src", "AdaptiveSopDdsop.Web", "Pages", "Index.cshtml");
+
+function createRuntime(source, scriptPath) {
+  const elements = new Map();
+  const createElement = (id = "") => {
+    if (id && elements.has(id)) return elements.get(id);
+    const classes = new Set();
+    const listeners = new Map();
+    const attributes = new Map();
+    const element = {
+      id,
+      innerHTML: "",
+      textContent: "",
+      value: "",
+      checked: false,
+      disabled: false,
+      hidden: false,
+      dataset: {},
+      style: {},
+      children: [],
+      parentElement: null,
+      classList: {
+        add: (...names) => names.forEach(name => classes.add(name)),
+        remove: (...names) => names.forEach(name => classes.delete(name)),
+        contains: name => classes.has(name),
+        toggle: (name, force) => {
+          const enabled = force === undefined ? !classes.has(name) : Boolean(force);
+          if (enabled) classes.add(name); else classes.delete(name);
+          return enabled;
+        },
+      },
+      addEventListener(type, handler) {
+        listeners.set(type, [...(listeners.get(type) || []), handler]);
+      },
+      setAttribute(name, value) { attributes.set(name, String(value)); },
+      getAttribute(name) { return attributes.get(name) ?? null; },
+      removeAttribute(name) { attributes.delete(name); },
+      removeEventListener(type, handler) {
+        listeners.set(type, (listeners.get(type) || []).filter(item => item !== handler));
+      },
+      appendChild(child) { element.children.push(child); child.parentElement = element; return child; },
+      remove() {},
+      focus() {},
+      click() { element.dispatchEvent({ type: "click", target: element }); },
+      dispatchEvent(event) {
+        event.target ??= element;
+        event.currentTarget = element;
+        event.preventDefault ??= () => { event.defaultPrevented = true; };
+        for (const handler of listeners.get(event.type) || []) handler(event);
+        return !event.defaultPrevented;
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      closest: () => null,
+      contains: () => false,
+      getBoundingClientRect: () => ({ top: 0, left: 0, width: 100, height: 20, bottom: 20, right: 100 }),
+    };
+    if (id) elements.set(id, element);
+    return element;
+  };
+  const documentListeners = new Map();
+  const document = {
+    readyState: "complete",
+    getElementById: id => createElement(id),
+    querySelector: selector => createElement(`selector:${selector}`),
+    querySelectorAll: () => [],
+    createElement: () => createElement(),
+    body: createElement("fixture-body"),
+    documentElement: createElement("fixture-html"),
+    addEventListener(type, handler) { documentListeners.set(type, [...(documentListeners.get(type) || []), handler]); },
+    removeEventListener() {},
+  };
+  const window = {
+    document,
+    location: { hash: "", pathname: "/", search: "" },
+    history: { replaceState() {}, pushState() {} },
+    addEventListener() {},
+    removeEventListener() {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    scrollTo() {},
+  };
+  const context = vm.createContext({
+    console, document, window, location: window.location, history: window.history,
+    navigator: { clipboard: { writeText: async () => {} } },
+    fetch: () => new Promise(() => {}),
+    setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams,
+    TextEncoder, TextDecoder, AbortController, Response, Request, Headers,
+    structuredClone, crypto: globalThis.crypto, performance: globalThis.performance,
+    requestAnimationFrame: () => 0, cancelAnimationFrame() {},
+    getComputedStyle: () => ({ display: "block" }), CSS: { escape: String },
+    MutationObserver: class { observe() {} disconnect() {} },
+    IntersectionObserver: class { observe() {} disconnect() {} },
+  });
+  context.globalThis = context;
+  new vm.Script(source, { filename: scriptPath }).runInContext(context);
+  return { context, elements, element: createElement };
+}
+
+function readVm(runtime, expression) {
+  return JSON.parse(vm.runInContext(`JSON.stringify(${expression})`, runtime.context));
+}
+
+function addDisplaySentinels(comparison) {
+  const cases = comparison.allCases;
+  cases.forEach((item, index) => {
+    const marker = `FROZEN-${item.responseId}-${index}`;
+    item.name = `${item.name} ${marker}`;
+    item.preview.scenario.bufferTrend = { ...item.preview.scenario.bufferTrend, marker };
+    item.preview.scenario.rccp = { ...item.preview.scenario.rccp, marker };
+    item.preview.scenario.constraints = { ...item.preview.scenario.constraints, marker };
+    item.preview.scenario.supplierCollaboration = { ...item.preview.scenario.supplierCollaboration, marker };
+    item.capacityProtectionProjection = [{
+      upstreamResourceCode: marker,
+      protectedCcrResourceCode: marker,
+      week: 1,
+      plannedAvailableCapacity: 1,
+      committedLoad: 1,
+      measure: { evidenceStatus: "Complete", utilizationPercent: 1, protectionStart: 1, protectionCapacity: 1, consumedProtection: 0, remainingProtection: 1, overload: 0, utilizationBand: "Green" },
+    }];
+    item.breaches = [{
+      scopeType: "CapacityBuffer", target: `${marker}-BREACH`, evidenceStatus: "Complete",
+      isBreached: true, earliestRedWeek: 1, consecutiveRiskWeeks: 1, isUnrecovered: false,
+      recoveryWeek: 2, affectedProducts: [marker], primaryCause: marker,
+    }];
+  });
+  return comparison;
+}
+
+function collect(failures, label, assertion) {
+  try { assertion(); } catch (error) { failures.push(new Error(`${label}: ${error.message}`)); }
+}
+
+export async function runFrozenComparisonViewsFixture(payload, scriptPath = defaultScriptPath) {
+  assert.ok(payload?.comparison?.allCases?.length >= 3,
+    "fixture must receive a real ScenarioComparisonResult with no-response and two response cases");
+  assert.equal(payload?.request?.responseOptions?.length, 2,
+    "fixture must receive the two real response configurations that produced the comparison");
+
+  const source = await readFile(scriptPath, "utf8");
+  const page = await readFile(defaultPagePath, "utf8");
+  const comparison = addDisplaySentinels(structuredClone(payload.comparison));
+  const runtime = createRuntime(source, scriptPath);
+  ["multi-scenario-comparison-body", "candidate-impact-matrix-body", "future-capacity-protection-body", "future-breach-body"]
+    .forEach(id => runtime.element(id));
+  const failures = [];
+  const expectedResponseIds = comparison.allCases.map(item => item.responseId);
+  const selectedCase = comparison.responseCases[1];
+  const otherCase = comparison.responseCases[0];
+
+  runtime.context.__comparisonFixture = comparison;
+  vm.runInContext("renderFutureComparison(__comparisonFixture);", runtime.context);
+  const comparisonMarkup = runtime.elements.get("multi-scenario-comparison-body").innerHTML;
+  const matrixMarkup = runtime.elements.get("candidate-impact-matrix-body").innerHTML;
+  collect(failures, "comparison table", () => {
+    comparison.allCases.forEach(item => assert.ok(comparisonMarkup.includes(item.name), `must include ${item.name}`));
+    assert.ok(!comparisonMarkup.includes("选择候选组合后"), "must not retain the candidate-combination placeholder");
+  });
+  collect(failures, "candidate impact matrix", () => {
+    comparison.responseCases.forEach(item => {
+      assert.ok(matrixMarkup.includes(item.name), `must include response name ${item.name}`);
+      assert.ok(matrixMarkup.includes(item.responseId), `must include response ID ${item.responseId}`);
+    });
+    assert.ok(!matrixMarkup.includes("将在候选组合选择后"), "must not retain the candidate-combination placeholder");
+  });
+
+  runtime.context.__stalePreview = structuredClone(comparison.allCases[0].preview);
+  runtime.context.__stalePreview.baseline.caseId = "STALE-BASELINE";
+  runtime.context.__stalePreview.scenario.caseId = "STALE-SCENARIO";
+  vm.runInContext("state.preview = __stalePreview; state.futureComparison = __comparisonFixture;", runtime.context);
+  collect(failures, "future inventory case source", () => assert.deepEqual(
+    readVm(runtime, "futureInventoryCases().map(item => item.responseId || item.caseId)"),
+    expectedResponseIds,
+    "future inventory cases must come from frozen comparison.allCases and exclude state.preview"));
+
+  vm.runInContext("state.futureComparisonSelection = { responseId: __comparisonFixture.responseCases[1].responseId };", runtime.context);
+  vm.runInContext("renderFutureCapacityProtection(__comparisonFixture); renderFutureComparison(__comparisonFixture);", runtime.context);
+  collect(failures, "selected capacity workspace", () => {
+    const markup = runtime.elements.get("future-capacity-protection-body").innerHTML;
+    assert.ok(markup.includes(selectedCase.name), "must show the selected-case capacity marker");
+    assert.ok(!markup.includes(otherCase.name), "must exclude the other response capacity marker");
+  });
+  collect(failures, "selected breach workspace", () => {
+    const markup = runtime.elements.get("future-breach-body").innerHTML;
+    assert.ok(markup.includes(selectedCase.breaches[0].target), "must show the selected-case breach marker");
+    assert.ok(!markup.includes(otherCase.breaches[0].target), "must exclude the other response breach marker");
+  });
+
+  collect(failures, "unified response selection", () => {
+    assert.equal(vm.runInContext("typeof selectFutureComparisonCase", runtime.context), "function",
+      "selectFutureComparisonCase(responseId) must select a frozen response workspace");
+    vm.runInContext("selectFutureComparisonCase(__comparisonFixture.responseCases[1].responseId);", runtime.context);
+    const selected = readVm(runtime, "({ responseId: state.futureComparisonSelection.responseId, buffer: state.bufferTrend.marker, rccp: state.rccp.marker, constraints: state.constraints.marker, supplier: state.supplierCollaboration.marker })");
+    assert.deepEqual(selected, {
+      responseId: selectedCase.responseId,
+      buffer: selectedCase.preview.scenario.bufferTrend.marker,
+      rccp: selectedCase.preview.scenario.rccp.marker,
+      constraints: selectedCase.preview.scenario.constraints.marker,
+      supplier: selectedCase.preview.scenario.supplierCollaboration.marker,
+    }, "one response selection must switch every future workspace to that response");
+  });
+
+  for (const id of ["future-result-case-select", "buffer-case-select", "rccp-case-select", "supplier-case-select", "breach-case-select"]) {
+    collect(failures, `result selector ${id}`, () => assert.ok(page.includes(`id=\"${id}\"`), "must exist in result markup"));
+  }
+  if (failures.length) throw new AggregateError(failures, "Frozen comparison view regression failures");
+  console.log("frozen comparison view fixture passed");
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const dtoPath = process.argv[2];
+  await runFrozenComparisonViewsFixture(JSON.parse(await readFile(dtoPath, "utf8")));
+}

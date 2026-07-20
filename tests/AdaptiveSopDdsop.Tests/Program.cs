@@ -128,6 +128,7 @@ var tests = new (string Name, Action Run)[]
     ("Scenario demo template supply disturbance changes backend results", TestScenarioDemoTemplateSupplyDisturbanceChangesBackendResults),
     ("Scenario demo template capacity disturbance changes backend results", TestScenarioDemoTemplateCapacityDisturbanceChangesBackendResults),
     ("Scenario comparison separates external events from response configurations on one frozen baseline", TestScenarioComparisonSeparatesExternalEventsAndResponses),
+    ("Frozen comparison drives every future result workspace", TestFrozenComparisonDrivesEveryFutureResultWorkspace),
     ("Scenario supply response restores internal committed supply without external input", TestScenarioSupplyResponseRestoresCommittedSupply),
     ("Scenario comparison recalculates from the frozen snapshot instead of live inventory", TestScenarioComparisonUsesFrozenSnapshotValues),
     ("Frozen comparison save persists baseline scenario and response lineage", TestFrozenComparisonSavePersistsBaselineScenarioAndResponseLineage),
@@ -5674,6 +5675,59 @@ static void TestScenarioComparisonSeparatesExternalEventsAndResponses()
     }
 }
 
+static void TestFrozenComparisonDrivesEveryFutureResultWorkspace()
+{
+    var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-frozen-comparison-views-{Guid.NewGuid():N}.db");
+    try
+    {
+        var data = SeedData.Create();
+        var baselineService = new CurrentBaselineService(new SeedCurrentBaselineDataSource(data), databasePath);
+        var frozen = baselineService.Freeze(new CurrentBaselineFreezeRequest("DDS&OP 计划员", "冻结多方案结果视图回归基线"));
+        var externalScenario = new ExternalScenarioDefinition(
+            "EXT-FROZEN-RESULT-VIEWS",
+            "冻结结果视图响应比较",
+            new[] { new ExternalDemandChange(null, "精益液压件", 2, 6, 1.35m, "客户需求上升") },
+            new[] { new ExternalSupplyRisk("华东铸件", "铸件", 3, 8, 0.55m, "供应商产出风险") },
+            new[] { new ExternalCapacityLoss("R-MIX", 3, 6, 0.65m, "设备能力损失") },
+            new[] { new ExternalKnownEvent("EVENT-001", "客户促销窗口", 2, 6) },
+            Metadata: new ScenarioAssumptionMetadata(
+                "Manual", null, null, "DDS&OP 计划员", "2026-07-15T08:00:00Z",
+                "2026-07-16", "2026-09-30", "冻结结果视图回归", "人工录入：冻结结果视图回归"));
+        var responses = new[]
+        {
+            new ResponseConfiguration(
+                "RESP-FROZEN-CAPACITY",
+                "冻结临时能力",
+                new ScenarioRunParameterSet(CapacityAdjustments: Enumerable.Range(3, 4)
+                    .Select(week => new ResourceCapacityAdjustment("R-MIX", week, 1.35m, "冻结临时能力响应"))
+                    .ToList())),
+            new ResponseConfiguration(
+                "RESP-FROZEN-POLICY",
+                "冻结 MOQ 与订货周期覆盖",
+                new ScenarioRunParameterSet(SkuPolicyOverrides: new[] { new SkuPolicyOverride("HYD-100", 80m, 7) })),
+        };
+        var request = new ScenarioComparisonRequest(frozen.SnapshotId, externalScenario, responses, 12);
+        var comparison = new ScenarioComparisonService(
+            baselineService,
+            new ScenarioRunPreviewService(new SeedScenarioWorkspaceDataSource(data)),
+            new SeedScenarioAssumptionSource())
+            .Compare(request);
+
+        AssertEqual(2, comparison.ResponseCases.Count, "fixture comparison must retain two real responses");
+        AssertTrue(comparison.AllCases.All(item => item.Preview.Scenario.BufferTrend is not null
+            && item.Preview.Scenario.Rccp is not null
+            && item.Preview.Scenario.Constraints is not null
+            && item.Preview.Scenario.SupplierCollaboration is not null),
+            "fixture comparison cases must contain complete future workspaces");
+        RunFrozenComparisonViewsFixture(root: Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..")), comparison, request);
+    }
+    finally
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        DeleteSqliteFiles(databasePath);
+    }
+}
+
 static void TestScenarioSupplyResponseRestoresCommittedSupply()
 {
     var databasePath = Path.Combine(Path.GetTempPath(), $"ddae-supply-response-{Guid.NewGuid():N}.db");
@@ -8009,6 +8063,57 @@ static void RunFutureInventoryFlowChartFixture(string root, ScenarioRunPreviewRe
         }
         AssertTrue(output.Contains("future inventory flow chart fixture groups passed", StringComparison.Ordinal),
             $"Node future inventory-flow chart fixture did not report completion: {output}");
+    }
+    finally
+    {
+        File.Delete(dtoPath);
+    }
+}
+
+static void RunFrozenComparisonViewsFixture(
+    string root,
+    ScenarioComparisonResult comparison,
+    ScenarioComparisonRequest request)
+{
+    var fixturePath = Path.Combine(root, "tests", "AdaptiveSopDdsop.Tests", "Js", "frozen-comparison-views.fixture.mjs");
+    var dtoPath = Path.Combine(Path.GetTempPath(), $"frozen-comparison-views-{Guid.NewGuid():N}.json");
+    File.WriteAllText(
+        dtoPath,
+        JsonSerializer.Serialize(new { comparison, request }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+    try
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = FindNodeExecutable(),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add(fixturePath);
+        process.StartInfo.ArgumentList.Add(dtoPath);
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Node frozen comparison views fixture timed out after 30 seconds");
+        }
+        Task.WaitAll(standardOutput, standardError);
+        var output = standardOutput.Result;
+        var error = standardError.Result;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Node frozen comparison views fixture failed with exit code {process.ExitCode}: {error}{Environment.NewLine}{output}");
+        }
+        AssertTrue(output.Contains("frozen comparison view fixture passed", StringComparison.Ordinal),
+            $"Node frozen comparison views fixture did not report completion: {output}");
     }
     finally
     {
