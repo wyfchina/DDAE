@@ -107,6 +107,7 @@ var tests = new (string Name, Action Run)[]
     ("Current baseline blocks incomplete DDMRP sizing evidence", TestCurrentBaselineBlocksIncompleteDdmrpSizingEvidence),
     ("Legacy frozen baseline keeps missing lead-time factor visible and cannot be recalculated", TestLegacyFrozenBaselineKeepsMissingLeadTimeFactor),
     ("Current baseline UI follows item-level freeze blockers", TestCurrentBaselineUiFollowsItemLevelFreezeBlockers),
+    ("Future scenario baseline selector defaults to latest frozen snapshot", TestFutureScenarioBaselineSelectorDefaultsToLatestFrozenSnapshot),
     ("Current baseline UI shows typed planning evidence without zero backfill", TestCurrentBaselineUiShowsTypedPlanningEvidenceWithoutZeroBackfill),
     ("Current baseline UI exposes one immutable history reconciliation card", TestCurrentBaselineUiExposesHistoryReconciliation),
     ("Current baseline executable fixture preserves blockers and explicit zero evidence", TestCurrentBaselineExecutableFixturePreservesBlockersAndZeroEvidence),
@@ -3992,6 +3993,20 @@ static void TestCurrentBaselineUiFollowsItemLevelFreezeBlockers()
     AssertTrue(
         !renderRule.Contains("item.isRequired &&", StringComparison.Ordinal),
         "baseline renderer must not treat a nonblocking missing item as a required-section freeze blocker");
+}
+
+static void TestFutureScenarioBaselineSelectorDefaultsToLatestFrozenSnapshot()
+{
+    var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var script = File.ReadAllText(Path.Combine(root, "src", "AdaptiveSopDdsop.Web", "wwwroot", "js", "app.js"));
+    var configureRule = SourceFunctionBody(script, "configureFutureBaselineSelect");
+
+    AssertTrue(
+        configureRule.Contains("state.currentBaselines.some(item => item.snapshotId === previous)", StringComparison.Ordinal),
+        "future baseline selector should preserve an explicit existing baseline selection");
+    AssertTrue(
+        configureRule.Contains("else if (state.currentBaselines.length) select.value = state.currentBaselines[0].snapshotId", StringComparison.Ordinal),
+        "future baseline selector should default to the latest frozen baseline when none is selected");
 }
 
 static void TestHistoryInventoryProjectionUsesRollingSkuDemand()

@@ -5824,6 +5824,7 @@ function configureFutureBaselineSelect() {
       ? [`<option value="">请选择冻结基线</option>`, ...state.currentBaselines.map(item => `<option value="${escapeHtml(item.snapshotId)}">${escapeHtml(item.snapshotNumber)} · ${escapeHtml(item.asOfUtc)} · ${baselineStatusLabel(item.status)}</option>`)].join("")
       : `<option value="">请先冻结当前基线</option>`;
     if (state.currentBaselines.some(item => item.snapshotId === previous)) select.value = previous;
+    else if (state.currentBaselines.length) select.value = state.currentBaselines[0].snapshotId;
   });
 }
 
